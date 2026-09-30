@@ -1,0 +1,284 @@
+import { create } from 'zustand'
+import { api, ApiError } from './api'
+import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
+import {
+  emptySelection, type AgentRun, type ModelResponse, type Proposal, type Row, type Selection, type Status,
+} from './types'
+
+export type Tab = 'points' | 'equipment' | 'connections' | 'graph'
+
+interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
+
+interface State {
+  status: Status | null
+  projectId: string | null
+  model: ModelResponse | null
+  rows: Map<string, Row>
+  selection: Selection
+  anchor: string | null
+  tab: Tab
+  inspectId: string | null
+  runs: Record<string, AgentRun>
+  activeRunId: string | null
+  proposal: Proposal | null
+  provider: string | null
+  toast: Toast | null
+  busy: boolean
+  sourcesVersion: number
+  sourcesOpen: boolean
+  sourcesWide: boolean
+
+  toggleSources: () => void
+  toggleSourcesWide: () => void
+  loadStatus: () => Promise<void>
+  openProject: (id: string | null) => Promise<void>
+  reload: () => Promise<void>
+  click: (target: ClickTarget, mods: Modifiers, order: string[]) => void
+  setSelection: (sel: Selection) => void
+  clearSelection: () => void
+  setTab: (tab: Tab) => void
+  inspect: (id: string | null) => void
+  edit: (ops: Record<string, unknown>[], summary?: string) => Promise<boolean>
+  undo: () => Promise<void>
+  redo: () => Promise<void>
+  assist: (instruction: string) => Promise<boolean>
+  replyToProposal: (instruction: string) => Promise<boolean>
+  startBuild: (sourceIds: string[], instruction: string) => Promise<boolean>
+  cancelRun: () => Promise<void>
+  applyProposal: () => Promise<void>
+  dismissProposal: () => Promise<void>
+  regenerate: () => Promise<void>
+  setProvider: (p: string) => void
+  handleEvent: (ev: { type: string; head?: string; summary?: string; run?: AgentRun }) => void
+  notify: (t: Toast | null) => void
+}
+
+const indexRows = (m: ModelResponse | null) => {
+  const map = new Map<string, Row>()
+  if (!m) return map
+  for (const r of [...m.view.equipment, ...m.view.points, ...m.view.connections]) map.set(r.id, r)
+  return map
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+export const useStore = create<State>((set, get) => ({
+  status: null,
+  projectId: null,
+  model: null,
+  rows: new Map(),
+  selection: emptySelection(),
+  anchor: null,
+  tab: 'points',
+  inspectId: null,
+  runs: {},
+  activeRunId: null,
+  proposal: null,
+  provider: null,
+  toast: null,
+  busy: false,
+  sourcesVersion: 0,
+  sourcesOpen: localStorage.getItem('workbench.sourcesOpen') !== 'false',
+
+  sourcesWide: localStorage.getItem('workbench.sourcesWide') === 'true',
+  toggleSourcesWide: () => {
+    const sourcesWide = !get().sourcesWide
+    localStorage.setItem('workbench.sourcesWide', String(sourcesWide))
+    set({ sourcesWide })
+  },
+  toggleSources: () => {
+    const sourcesOpen = !get().sourcesOpen
+    localStorage.setItem('workbench.sourcesOpen', String(sourcesOpen))
+    set({ sourcesOpen })
+  },
+
+  loadStatus: async () => {
+    const status = await api.status()
+    const def = status.providers.find((p) => p.default)
+    set({ status, provider: get().provider ?? def?.name ?? null })
+  },
+
+  openProject: async (id) => {
+    set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null,
+          runs: {}, activeRunId: null, inspectId: null })
+    if (id) {
+      localStorage.setItem('workbench.project', id)
+      await get().reload()
+      // restore the latest pending proposal, if any
+      const pending = (await api.proposals(id)).find((p) => p.status === 'pending' || p.status === 'stale')
+      if (pending) set({ proposal: pending })
+    } else {
+      localStorage.removeItem('workbench.project')
+    }
+  },
+
+  reload: async () => {
+    const pid = get().projectId
+    if (!pid) return
+    const model = await api.model(pid)
+    const rows = indexRows(model)
+    const live = new Set(rows.keys())
+    let proposal = get().proposal
+    if (proposal && proposal.status === 'pending' && proposal.base_revision !== model.head) {
+      proposal = { ...proposal, status: 'stale' }
+    }
+    set({ model, rows, selection: pruneSelection(get().selection, live), proposal,
+          inspectId: get().inspectId && live.has(get().inspectId!) ? get().inspectId : null })
+  },
+
+  click: (target, mods, order) => {
+    const selection = applyClick(get().selection, target, mods, order, get().anchor)
+    set({ selection, anchor: mods.shift ? get().anchor : target.id, inspectId: target.id })
+  },
+  setSelection: (selection) => set({ selection }),
+  clearSelection: () => set({ selection: emptySelection(), anchor: null }),
+  setTab: (tab) => set({ tab }),
+  inspect: (inspectId) => set({ inspectId }),
+
+  edit: async (ops, summary) => {
+    const { projectId, model } = get()
+    if (!projectId || !model) return false
+    set({ busy: true })
+    try {
+      const res = await api.edit(projectId, model.head, ops, summary)
+      await get().reload()
+      get().notify({ kind: 'success', text: `Saved as ${res.revision.id}: ${res.revision.summary}`
+        + (res.notes.length ? ` — note: ${res.notes.join('; ')}` : ''),
+        action: { label: 'Undo', run: () => void get().undo() } })
+      return true
+    } catch (e) {
+      if (e instanceof ApiError && e.isStale) {
+        await get().reload()
+        get().notify({ kind: 'error', text: 'The model changed before your edit was saved. Please redo the edit.' })
+      } else get().notify({ kind: 'error', text: `Edit not saved: ${errorText(e)}` })
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  undo: async () => {
+    const pid = get().projectId
+    if (!pid) return
+    try {
+      const { head } = await api.undo(pid)
+      await get().reload()
+      get().notify({ kind: 'info', text: `Undone — now at ${head}`, action: { label: 'Redo', run: () => void get().redo() } })
+    } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
+  },
+  redo: async () => {
+    const pid = get().projectId
+    if (!pid) return
+    try {
+      const { head } = await api.redo(pid)
+      await get().reload()
+      get().notify({ kind: 'info', text: `Redone — now at ${head}` })
+    } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
+  },
+
+  assist: async (instruction) => {
+    const { projectId, model, selection, provider } = get()
+    if (!projectId || !model) return false
+    try {
+      const run = await api.assist(projectId, model.head, selection, instruction, provider ?? undefined)
+      set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id, proposal: null })
+      return true
+    } catch (e) {
+      if (e instanceof ApiError && e.isStale) await get().reload()
+      get().notify({ kind: 'error', text: `Could not start the assistant: ${errorText(e)}` })
+      return false
+    }
+  },
+
+  replyToProposal: async (instruction) => {
+    const { projectId, proposal, provider } = get()
+    if (!projectId || !proposal || proposal.status !== 'pending') return false
+    try {
+      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined)
+      set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id })
+      return true
+    } catch (e) {
+      if (e instanceof ApiError && e.isStale) await get().reload()
+      get().notify({ kind: 'error', text: `Could not send reply: ${errorText(e)}` })
+      return false
+    }
+  },
+
+  startBuild: async (sourceIds, instruction) => {
+    const { projectId, model, provider } = get()
+    if (!projectId || !model) return false
+    try {
+      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined)
+      set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id, proposal: null })
+      return true
+    } catch (e) {
+      if (e instanceof ApiError && e.isStale) await get().reload()
+      get().notify({ kind: 'error', text: `Could not start the build: ${errorText(e)}` })
+      return false
+    }
+  },
+
+  cancelRun: async () => {
+    const { projectId, activeRunId } = get()
+    if (!projectId || !activeRunId) return
+    const run = await api.cancelRun(projectId, activeRunId)
+    set({ runs: { ...get().runs, [run.id]: run } })
+  },
+
+  applyProposal: async () => {
+    const { projectId, proposal } = get()
+    if (!projectId || !proposal) return
+    set({ busy: true })
+    try {
+      const rev = await api.applyProposal(projectId, proposal.id)
+      set({ proposal: { ...proposal, status: 'applied', applied_revision: rev.id } })
+      await get().reload()
+      get().notify({ kind: 'success', text: `Applied as ${rev.id}`, action: { label: 'Undo', run: () => void get().undo() } })
+    } catch (e) {
+      if (e instanceof ApiError && e.isStale) {
+        set({ proposal: { ...proposal, status: 'stale' } })
+        await get().reload()
+        get().notify({ kind: 'error', text: 'The model changed since this proposal was made. Regenerate it against the current model.' })
+      } else get().notify({ kind: 'error', text: `Could not apply: ${errorText(e)}` })
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  dismissProposal: async () => {
+    const { projectId, proposal } = get()
+    if (!projectId || !proposal) return
+    await api.dismissProposal(projectId, proposal.id)
+    set({ proposal: null })
+  },
+
+  regenerate: async () => {
+    const { projectId, proposal, provider } = get()
+    if (!projectId || !proposal) return
+    try {
+      const run = await api.regenerate(projectId, proposal.id, provider ?? undefined)
+      set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id, proposal: null })
+    } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
+  },
+
+  setProvider: (provider) => set({ provider }),
+
+  handleEvent: (ev) => {
+    const s = get()
+    if (ev.type === 'revision' || ev.type === 'issues') {
+      if (!s.model || ev.head !== s.model.head || ev.type === 'issues') void s.reload()
+      if (ev.type === 'revision') set({ sourcesVersion: get().sourcesVersion + 1 })  // record status follows the model
+    } else if (ev.type === 'sources') {
+      set({ sourcesVersion: s.sourcesVersion + 1 })
+    } else if (ev.type === 'run' && ev.run) {
+      const run = ev.run
+      set({ runs: { ...s.runs, [run.id]: run } })
+      if (run.id === s.activeRunId && run.status === 'succeeded' && run.outcome.proposal_id
+          && s.proposal?.id !== run.outcome.proposal_id && s.projectId) {
+        void api.proposal(s.projectId, run.outcome.proposal_id).then((proposal) => set({ proposal }))
+      }
+    }
+  },
+
+  notify: (toast) => set({ toast }),
+}))

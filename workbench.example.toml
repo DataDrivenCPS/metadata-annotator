@@ -1,0 +1,48 @@
+# Copy to workbench.toml (or point WORKBENCH_CONFIG at it). Every setting is optional.
+
+[workbench]
+# data_dir = "./workbench-data"     # projects + caches
+# host = "127.0.0.1"
+# port = 8765
+
+# Vocabularies a new project can target (the dropdown on the projects page). Built in:
+# watr, 223p, brick, loaded from the sources the BuildingMOTIF skill prescribes. The first
+# use of each downloads it and its imports once (~30 s); after that it loads from cache.
+# default_vocabulary = "watr"          # (in [workbench])
+#
+# [vocabularies.brick]
+# sources = ["brick/Brick.ttl"]        # BuildingMOTIF builtin, or a URL / local path
+#
+# [vocabularies.mysite]                # an additional profile
+# label = "My site extensions"
+# family = "s223"                      # s223 or brick: how points/equipment are written
+# sources = ["https://open223.info/223p.ttl", "/path/to/extensions.ttl"]
+
+[llm]
+default = "local"
+
+# llama.cpp server, started separately, e.g. with llama (https://llama.app):
+#   llama serve -hf <user>/<model-GGUF>:<quant> --port 8081 -c 32768
+# or a plain llama-server binary: llama-server -m <model>.gguf --port 8081 --jinja -c 32768
+# Use a vision model (+ --mmproj) and set supports_images = true for diagram extraction.
+[llm.providers.local]
+kind = "openai"
+base_url = "http://127.0.0.1:8081/v1"
+model = "local"
+supports_images = false
+timeout_s = 600
+
+# Any OpenAI-compatible remote endpoint, e.g. OpenRouter
+[llm.providers.openrouter]
+kind = "openai"
+base_url = "https://openrouter.ai/api/v1"
+model = "google/gemma-4-31b-it"
+api_key_env = "OPENROUTER_API_KEY"
+supports_images = true
+
+# Anthropic Messages API (official SDK); reads ANTHROPIC_API_KEY
+[llm.providers.anthropic]
+kind = "anthropic"
+model = "claude-opus-5-5"
+api_key_env = "ANTHROPIC_API_KEY"
+# request_options = { effort = "medium", fallbacks = true }

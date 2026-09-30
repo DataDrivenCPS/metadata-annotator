@@ -1,0 +1,43 @@
+# A small Brick model for tests: one AHU feeding two VAV boxes.
+# Deliberate mistake: A1.RM1107.Zone Air Temp is typed as a generic brick:Sensor.
+@prefix bldg: <urn:example:hvac-mini/> .
+@prefix brick: <https://brickschema.org/schema/Brick#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix unit: <http://qudt.org/vocab/unit/> .
+
+<urn:example:hvac-mini> a owl:Ontology ;
+    owl:imports <https://brickschema.org/schema/1.4/Brick> .
+
+bldg:AHU-A1 a brick:AHU ;
+    rdfs:label "AHU-A1" ;
+    brick:hasPart bldg:AHU-A1-SF ;
+    brick:hasPoint bldg:AHU-A1-SAT ;
+    brick:feeds bldg:VAV-RM1105, bldg:VAV-RM1107 .
+
+bldg:AHU-A1-SF a brick:Supply_Fan ;
+    rdfs:label "AHU-A1 Supply Fan" ;
+    brick:hasPoint bldg:AHU-A1-SF-SS .
+
+bldg:AHU-A1-SAT a brick:Supply_Air_Temperature_Sensor ;
+    rdfs:label "AHU.A1:Supply Air Temp" ;
+    brick:hasUnit unit:DEG_F .
+
+bldg:AHU-A1-SF-SS a brick:Start_Stop_Command ;
+    rdfs:label "AHU.A1:SF.Start Stop" .
+
+bldg:VAV-RM1105 a brick:Variable_Air_Volume_Box_With_Reheat ;
+    rdfs:label "A1.RM1105" ;
+    brick:hasPoint bldg:RM1105-ZAT, bldg:RM1105-STPT, bldg:RM1105-DMPR, bldg:RM1105-VLV .
+
+bldg:RM1105-ZAT a brick:Zone_Air_Temperature_Sensor ; rdfs:label "A1.RM1105.Zone Air Temp" ; brick:hasUnit unit:DEG_F .
+bldg:RM1105-STPT a brick:Zone_Air_Temperature_Setpoint ; rdfs:label "A1.RM1105:CTL STPT" ; brick:hasUnit unit:DEG_F .
+bldg:RM1105-DMPR a brick:Damper_Position_Command ; rdfs:label "A1.RM1105:DMPR COMD" .
+bldg:RM1105-VLV a brick:Valve_Command ; rdfs:label "A1.RM1105:VLV COMD" .
+
+bldg:VAV-RM1107 a brick:Variable_Air_Volume_Box_With_Reheat ;
+    rdfs:label "A1.RM1107" ;
+    brick:hasPoint bldg:RM1107-ZAT, bldg:RM1107-DMPR .
+
+bldg:RM1107-ZAT a brick:Sensor ; rdfs:label "A1.RM1107.Zone Air Temp" .
+bldg:RM1107-DMPR a brick:Damper_Position_Command ; rdfs:label "A1.RM1107:DMPR COMD" .

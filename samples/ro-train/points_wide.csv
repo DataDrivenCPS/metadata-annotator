@@ -1,0 +1,4 @@
+Field,LT-101,TT-101,P-101-STS,P-101-CMD,PT-101,AT-101
+Description,Raw water tank level,Raw water temperature,Feed pump run status,Feed pump start/stop,Feed pump discharge pressure,Feed pH
+Units,ft,degC,,,psi,pH
+Signal,AI,AI,DI,DO,AI,AI

@@ -1,0 +1,16 @@
+Tag,Description,Units,IO Type,Equipment
+LT-101,Raw water tank level,ft,AI,TK-101
+TT-101,Raw water temperature,degC,AI,TK-101
+P-101-STS,Feed pump run status,,DI,P-101
+P-101-CMD,Feed pump start/stop,,DO,P-101
+PT-101,Feed pump discharge pressure,psi,AI,P-101
+AT-101,Feed pH,pH,AI,P-101
+PDT-101,Cartridge filter differential pressure,psid,AI,CF-101
+P-201-SPD,HP pump speed command,%,AO,P-201
+PT-201,RO feed pressure,psi,AI,P-201
+CT-101,RO feed conductivity,uS/cm,AI,RO-1
+CT-201,Permeate conductivity,uS/cm,AI,RO-1
+FT-201,Permeate flow,gpm,AI,RO-1
+FT-301,Concentrate flow,gpm,AI,RO-1
+LT-201,Permeate tank level,ft,AI,TK-201
+PT-201,RO feed pressure (redundant transmitter),psi,AI,P-201

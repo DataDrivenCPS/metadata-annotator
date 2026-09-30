@@ -1,0 +1,4 @@
+repository: https://github.com/NatLabRockies/BuildingMOTIF
+branch: gtf-buildingmotif
+commit: 78b304aaec253e1d2d988fe834544e6904233693
+path: .agents/skills/buildingmotif

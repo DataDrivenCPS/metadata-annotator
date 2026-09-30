@@ -1,0 +1,13 @@
+# local clones used for reference only; versions are pinned in backend/skill/UPSTREAM.yml,
+# backend/ontologies/PROVENANCE.md, and backend/uv.lock
+vendor/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+frontend/dist/
+backend/build/
+workbench-data/
+*.sqlite-journal
+.pytest_cache/
+workbench.toml

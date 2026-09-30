@@ -1,0 +1,37 @@
+[project]
+name = "workbench"
+version = "0.1.0"
+description = "Knowledge-graph modeling workbench backend"
+authors = [
+    { name = "Gabe Fierro", email = "gtfierro@mines.edu" }
+]
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "anthropic>=1.10.0",
+    "buildingmotif",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+workbench = "workbench.api:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+buildingmotif = { git = "https://github.com/NatLabRockies/BuildingMOTIF.git", rev = "78b304aaec253e1d2d988fe834544e6904233693" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:rdflib.*"]
+markers = ["llm: needs a configured model endpoint (WORKBENCH_TEST_PROVIDER)"]

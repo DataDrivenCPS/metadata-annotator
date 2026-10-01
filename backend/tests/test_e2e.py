@@ -120,8 +120,14 @@ def test_assistant_and_review_flow(live, page):
     page.goto(base)
     health = page.locator(".topbar .health")
     expect(health).to_contain_text("violation(s)")
-    # the repair engine's summary appears under the validator message
-    expect(page.locator(".issue", has_text="TK-101").locator(".repair-line")).to_contain_text("have 0, need 1")
+    # Issues tab: the repair engine's summary under the validator message; clicking an issue
+    # inspects its object without leaving the list
+    health.click()
+    tank = page.locator(".issue", has_text="TK-101")
+    expect(tank.locator(".repair-line")).to_contain_text("have 0, need 1")
+    tank.locator(".issue-message").click()
+    expect(page.locator(".inspector h4")).to_contain_text("TK-101")
+    expect(page.locator("nav.tabs button.active", has_text="Issues")).to_have_count(1)
 
     # Inspector, and the RDF on its own tab
     page.locator("nav.tabs button", has_text="Equipment").first.click()

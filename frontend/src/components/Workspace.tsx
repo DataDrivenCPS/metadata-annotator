@@ -4,18 +4,20 @@ import { useStore, type Tab } from '../store'
 import { AssistantPanel } from './AssistantPanel'
 import { Drawer } from './Drawer'
 import { GraphView } from './GraphView'
+import { IssuesView } from './IssuesView'
 import { ConnectionsTable, EquipmentTable, PointsTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
 
-const TABS: [Tab, string][] = [['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'], ['graph', 'Graph']]
+const TABS: [Tab, string][] = [
+  ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'], ['graph', 'Graph'], ['issues', 'Issues'],
+]
 
 export function Workspace() {
   const projectId = useStore((s) => s.projectId)!
   const model = useStore((s) => s.model)
   const tab = useStore((s) => s.tab)
   const setTab = useStore((s) => s.setTab)
-  const setDrawerTab = useStore((s) => s.setDrawerTab)
   const handleEvent = useStore((s) => s.handleEvent)
   const openProject = useStore((s) => s.openProject)
   const undo = useStore((s) => s.undo)
@@ -56,8 +58,9 @@ export function Workspace() {
   const v = model.revision.validation
   const openViolations = model.issues.filter((i) => i.resolution_state === 'open' && i.severity === 'violation').length
   const dismissedCount = model.issues.filter((i) => i.resolution_state === 'dismissed').length
+  const problems = model.issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion').length
   const counts = { points: model.view.points.length, equipment: model.view.equipment.length,
-                   connections: model.view.connections.length, graph: model.view.equipment.length }
+                   connections: model.view.connections.length, graph: model.view.equipment.length, issues: problems }
 
   return (
     <div className="workspace">
@@ -70,8 +73,8 @@ export function Workspace() {
           {model.head} · saved
         </span>
         {v && <button className={`health ${openViolations ? 'bad' : 'good'}`}
-          title={`Validated in ${v.duration_s}s: ${openViolations} open violation(s)${dismissedCount ? `, ${dismissedCount} dismissed issue(s)` : ''}. Click to open the Issues tray, which also includes warnings and source findings.`}
-          onClick={() => setDrawerTab('issues')}>
+          title={`Validated in ${v.duration_s}s: ${openViolations} open violation(s)${dismissedCount ? `, ${dismissedCount} dismissed issue(s)` : ''}. Click to open Issues, which also includes warnings and source findings.`}
+          onClick={() => setTab('issues')}>
           {openViolations ? `${openViolations} violation(s)` : dismissedCount ? 'no open violations' : 'model checks pass'}
           {dismissedCount > 0 && <span className="muted"> · {dismissedCount} dismissed</span>}
         </button>}
@@ -95,8 +98,9 @@ export function Workspace() {
         <section className="model-pane" style={{ gridTemplateRows: `auto minmax(100px, 1fr) 10px ${drawerHeight}px` }}>
           <nav className="tabs">
             {TABS.map(([id, label]) => (
-              <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
-                {label} <span className="count">{counts[id]}</span>
+              <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}
+                title={id === 'issues' ? 'Validation findings plus source extraction and association issues' : undefined}>
+                {label} <span className={`count ${id === 'issues' && counts[id] ? 'warn' : ''}`}>{counts[id]}</span>
               </button>
             ))}
           </nav>
@@ -105,8 +109,9 @@ export function Workspace() {
             {tab === 'equipment' && <EquipmentTable />}
             {tab === 'connections' && <ConnectionsTable />}
             {tab === 'graph' && <GraphView />}
+            {tab === 'issues' && <IssuesView />}
           </div>
-          <ResizeHandle label="Resize issues and inspector tray" onResize={resizeDrawer} />
+          <ResizeHandle label="Resize inspector tray" onResize={resizeDrawer} />
           <Drawer />
         </section>
         <AssistantPanel />

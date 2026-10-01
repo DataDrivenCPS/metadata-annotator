@@ -78,6 +78,7 @@ textarea { width: 100%; resize: vertical; }
 .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 12px; }
 .tabs button.active { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
 .tabs .count { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.tabs .count.warn { color: var(--warn); font-weight: 600; }
 .tabs.small button { padding: 4px 10px; font-size: 13px; }
 .tab-body { min-height: 0; overflow: hidden; background: var(--panel); }
 
@@ -137,6 +138,7 @@ table.data td.empty { text-align: center; color: var(--muted); padding: 30px; }
 .issue-selection-bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--panel); font-size: 12px; }
 .issue-selection-bar .primary { margin-left: auto; }
 .issue { display: flex; gap: 8px; align-items: baseline; padding: 4px 10px; }
+.issue .issue-actions { display: flex; gap: 6px; white-space: nowrap; }
 .issue input[type="checkbox"] { flex: 0 0 auto; margin: 0; vertical-align: middle; }
 .issue:hover { background: #f7f9fb; }
 .issue.dismissed .issue-text { color: var(--muted); }

@@ -6,8 +6,8 @@ import {
   emptySelection, type AgentRun, type IssueRepair, type ModelResponse, type Proposal, type Row, type Selection, type Status,
 } from './types'
 
-export type Tab = 'points' | 'equipment' | 'connections' | 'graph'
-export type DrawerTab = 'issues' | 'inspector' | 'rdf' | 'history'
+export type Tab = 'points' | 'equipment' | 'connections' | 'graph' | 'issues'
+export type DrawerTab = 'inspector' | 'rdf' | 'history'
 
 interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
 
@@ -86,7 +86,7 @@ export const useStore = create<State>((set, get) => ({
   selection: emptySelection(),
   anchor: null,
   tab: 'points',
-  drawerTab: 'issues',
+  drawerTab: 'inspector',
   inspectId: null,
   runs: {},
   activeRunId: null,
@@ -122,7 +122,7 @@ export const useStore = create<State>((set, get) => ({
 
   openProject: async (id) => {
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
-          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'issues', assistantDraft: '', assistantNewRequest: false })
+          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantNewRequest: false })
     if (id) {
       localStorage.setItem('workbench.project', id)
       await get().reload()

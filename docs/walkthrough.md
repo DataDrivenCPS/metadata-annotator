@@ -4,9 +4,11 @@ Uses the sample project (`samples/ro-train/model.ttl`): a brackish-water RO trai
 deliberate mistakes. Start the app (see README), open <http://127.0.0.1:8765>, and choose
 **Open sample project**.
 
-The header shows `rev-2 · saved` and **5 problem(s)**. The Issues tab lists them in plant
-language, e.g. "CT-201: Inconsistent dimensionalities among the Property's Unit and Quantity
-Kind" and "TK-301 Concentrate Tank needs an inlet carrying a fluid".
+The header shows `rev-2 · saved` and the open violations; click it (or the **Issues** tab) to
+list them. Each issue is the validator's own message, e.g. "CT-201: s223: Inconsistent
+dimensionalities among the `Property`'s `Unit` and `Property`'s `QuantityKind`", with the repair
+engine's summary under it, e.g. "s223:hasConnectionPoint: have 0, need 1" for TK-301. Clicking an
+issue inspects its object below without leaving the list; **show in table** jumps to its row.
 
 ## 1. Correct an incorrectly interpreted point
 

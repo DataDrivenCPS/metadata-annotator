@@ -110,6 +110,9 @@ reopening it. It runs with the rest of the backend tests. It needs `cd frontend 
 build` (it fails if `frontend/dist` is older than `frontend/src`) and, once,
 `cd backend && uv run playwright install chromium` (it is skipped without a browser).
 
+CI (`.github/workflows/ci.yml`) runs the frontend lint, tests and build, and the full backend
+suite including the browser test, caching `workbench-data/cache` so vocabularies download once.
+
 Covered: selection stays correct after sorting/filtering; duplicate labels stay distinct;
 stale proposals are rejected; apply/undo restores the exact graph; save/reopen fidelity
 (graph, ids, locks, layout, history); the applied graph equals the previewed triple diff;

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  backend:
+    # Includes the browser smoke test, which needs the built frontend and Chromium.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+      # Vocabularies (and their owl:imports) download on first use; the tests reuse this cache.
+      - uses: actions/cache@v4
+        with:
+          path: workbench-data/cache
+          key: vocab-${{ hashFiles('backend/src/workbench/config.py', 'backend/src/workbench/vocabulary.py', 'backend/uv.lock') }}
+          restore-keys: vocab-
+      - name: Install dependencies
+        working-directory: backend
+        run: uv sync && uv run playwright install --with-deps chromium
+      - name: Test
+        working-directory: backend
+        run: uv run pytest -rs

@@ -29,6 +29,8 @@ npm run lint      # oxlint
 npm test          # vitest run; single file: npx vitest run src/store.test.ts
 ```
 
+CI: `.github/workflows/ci.yml` runs the frontend lint/test/build and the full backend suite (including the browser test), caching `workbench-data/cache`.
+
 Scripts: `backend/scripts/build_sample.py` regenerates `samples/ro-train/*` deterministically (the sample model contains three deliberate mistakes used by the walkthrough — don't "fix" them). `backend/scripts/integration_proof.py` is a standalone BuildingMOTIF + WaTr smoke check.
 
 Config: `workbench.toml` (gitignored; copy `workbench.example.toml`) or `WORKBENCH_CONFIG`. Env overrides: `WORKBENCH_DATA_DIR`, `WORKBENCH_PROVIDER`. The local LLM provider expects llama.cpp's server on port 8081 (`run_server.sh` is the author's local launch command).

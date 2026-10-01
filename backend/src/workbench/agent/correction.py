@@ -503,6 +503,10 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     messages: list[dict[str, Any]] = [{"role": "user", "content": context}]
     outcome = CorrectionOutcome(proposal=None)
     repairs = 0
+    # A build starts unconnected, so its gate findings are expected; don't second-guess it.
+    gate_checked = build_from_sources or (prior_proposal is not None and prior_proposal.kind == "build")
+    # A reply is only questioned about what it adds to the pending proposal.
+    inherited = set((prior_proposal.gate or {}).get("introduced", [])) if prior_proposal and not reconsider else set()
     progress("context", "Read the selection and related model objects", {"chars": len(context)})
 
     for step in range(MAX_STEPS + MAX_REPAIRS):
@@ -609,6 +613,20 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             continue
         progress("validated", f"Validated candidate: {cand.summary.violations} violation(s)",
                  {"conforms": cand.summary.conforms})
+        gate = project.gate(cand) if cand.diff.added or cand.diff.removed else None
+        introduced = [v for v in (gate or {}).get("introduced", []) if v not in inherited]
+        if introduced and not gate_checked and step < MAX_STEPS + MAX_REPAIRS - 1:
+            # One chance to respond to the repair engine, as in BuildingMOTIF's gated repair loop.
+            gate_checked = True
+            progress("gated", f"Soundness gate: introduces {len(introduced)} violation(s); "
+                              "asking the model to check", {"introduced": introduced})
+            messages.append({"role": "user", "content":
+                             "The repair engine's soundness gate reports that this change introduces violations:\n- "
+                             + "\n- ".join(introduced)
+                             + "\nIf another change would avoid them, propose that instead. If they are expected"
+                               " (for example new equipment that is not connected yet), propose the same"
+                               " operations again and say so in the explanation."})
+            continue
         vocab_refs = {op_term for op in cand.ops for op_term in _terms(op)}
         for iri in sorted(vocab_refs)[:10]:
             t = project.vocab.term(iri)
@@ -660,7 +678,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             followup_issues=followup_issues,
             parent_proposal_id=prior_proposal.id if prior_proposal else None,
             conversation=conversation,
-            issue_dismissals=dismissals)
+            issue_dismissals=dismissals,
+            gate=gate)
         if prior_proposal:
             project.dismiss_proposal(prior_proposal.id)
         return outcome

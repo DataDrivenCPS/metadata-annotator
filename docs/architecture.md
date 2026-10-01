@@ -122,6 +122,11 @@ stored as `proposal.gate`): sound = introduces no violation, progress = fixes at
 the fixed/introduced violations. ΔG is taken between the before and after models *after*
 SHACL-AF inference (one repair session per side, ~2 s); gating the raw edit judges new nodes
 without the triples 223P's rules infer and reports violations full validation does not.
+When the gate reports introduced violations, the correction agent gets one chance to respond
+(revise, or re-propose and say why they are expected) before the proposal is saved, as in
+BuildingMOTIF's gated repair loop. Source builds and replies to them are not nudged (new
+equipment starts unconnected), and a reply is only asked about violations its pending
+proposal did not already introduce.
 
 A revision's stored summary is recounted on read (`issues.recount`) with the current issue
 grouping, so older revisions, History and proposal "Model checks" agree with the issue list.

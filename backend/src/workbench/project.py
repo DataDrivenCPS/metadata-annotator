@@ -485,6 +485,7 @@ class Project:
                       parent_proposal_id: str | None = None,
                       conversation: list[dict[str, str]] | None = None,
                       issue_dismissals: list | None = None,
+                      gate: dict | None = None,
                       ) -> ChangeProposal:
         before_expl = {i.explanation for i in before_issues if i.severity != "suggestion"}
         after_expl = {i.explanation for i in cand.issues if i.severity != "suggestion"}
@@ -515,7 +516,7 @@ class Project:
             parent_proposal_id=parent_proposal_id,
             conversation=conversation or [],
             issue_dismissals=issue_dismissals or [],
-            gate=self.gate(cand) if cand.diff.added or cand.diff.removed else None,
+            gate=gate or (self.gate(cand) if cand.diff.added or cand.diff.removed else None),
         )
         self._put_proposal(prop)
         return prop

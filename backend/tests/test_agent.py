@@ -259,3 +259,29 @@ def test_reply_can_withdraw_a_dismissal(sample_project, guidance):
                          lambda *a: None, CancelToken(), prior_proposal=prior.proposal)
     assert "would also dismiss" in second.seen[0][0]["content"]
     assert out.proposal is not None and out.proposal.issue_dismissals == []
+
+
+def test_gate_gives_the_model_one_chance_to_respond(sample_project, guidance):
+    p = sample_project
+    tank = {"op": "create_equipment", "label": "TK-999 Spare Tank", "type": "watr:Tank"}
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "Add the spare tank.", "operations": [tank]},
+        {"action": "propose", "explanation": "Add the spare tank; it is not piped yet, so the inlet "
+                                             "and outlet findings are expected.", "operations": [tank]},
+    ])
+    out, events = run(p, llm, guidance, SelectionScope(), "add a spare tank TK-999")
+    assert any(stage == "gated" for stage, _, _ in events)
+    nudge = llm.seen[1][-1]["content"]
+    assert "soundness gate" in nudge and "TK-999 Spare Tank · watr:Tank" in nudge
+    assert out.proposal is not None and out.steps == 2
+    assert out.proposal.gate["introduced"] == ["TK-999 Spare Tank · watr:Tank"]
+
+
+def test_sound_changes_are_not_questioned(sample_project, guidance):
+    p = sample_project
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    llm = ScriptedLLM([{"action": "propose", "explanation": "Permeate conductivity is in uS/cm.",
+                        "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"}]}])
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "fix the CT-201 unit")
+    assert out.steps == 1 and not any(stage == "gated" for stage, _, _ in events)
+    assert out.proposal.gate["sound"] and out.proposal.gate["progress"]

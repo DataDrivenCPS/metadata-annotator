@@ -30,10 +30,14 @@ buildingmotif = { git = "https://github.com/NatLabRockies/BuildingMOTIF.git", re
 
 [dependency-groups]
 dev = [
+    "playwright>=1.63.0",
     "pytest>=9.1.1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning:rdflib.*"]
-markers = ["llm: needs a configured model endpoint (WORKBENCH_TEST_PROVIDER)"]
+markers = [
+    "llm: needs a configured model endpoint (WORKBENCH_TEST_PROVIDER)",
+    "e2e: browser smoke test; needs the built frontend and a Playwright browser",
+]

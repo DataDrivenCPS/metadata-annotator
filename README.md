@@ -100,7 +100,15 @@ The provider can also be chosen per request in the assistant panel.
 cd backend && uv run pytest              # service, API, agent mechanics (scripted model)
 WORKBENCH_CONFIG=../workbench.toml WORKBENCH_TEST_PROVIDER=openrouter uv run pytest -m llm   # real model
 cd frontend && npm test                  # selection/sort/filter logic
+cd backend && uv run pytest -m e2e       # browser smoke test only (see below)
 ```
+
+The browser smoke test (`backend/tests/test_e2e.py`) runs the built app against a live server
+and a scripted model in headless Chromium: inspector and RDF tab, a question from the
+assistant, answering it with nothing selected, applying a proposed issue dismissal and
+reopening it. It runs with the rest of the backend tests. It needs `cd frontend && npm run
+build` (it fails if `frontend/dist` is older than `frontend/src`) and, once,
+`cd backend && uv run playwright install chromium` (it is skipped without a browser).
 
 Covered: selection stays correct after sorting/filtering; duplicate labels stay distinct;
 stale proposals are rejected; apply/undo restores the exact graph; save/reopen fidelity

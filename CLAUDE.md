@@ -19,6 +19,7 @@ uv run --project backend workbench --config workbench.toml     # from repo root;
 cd backend && uv run pytest                                     # all non-LLM tests
 cd backend && uv run pytest tests/test_project.py::test_name    # single test
 cd backend && WORKBENCH_CONFIG=../workbench.toml WORKBENCH_TEST_PROVIDER=openrouter uv run pytest -m llm   # real model
+cd backend && uv run pytest -m e2e                                # browser smoke test (needs npm run build + uv run playwright install chromium)
 
 # Frontend
 cd frontend && npm ci

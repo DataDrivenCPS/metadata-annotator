@@ -89,6 +89,8 @@ export interface Proposal {
   parent_proposal_id?: string | null
   conversation?: { role: 'user' | 'assistant'; text: string }[]
   issue_dismissals?: IssueDismissal[]
+  /** The repair engine's soundness gate on this change (pyshifty). */
+  gate?: { sound: boolean; progress: boolean; fixed: string[]; introduced: string[] } | null
 }
 export interface IssueDismissal { id: string; explanation: string; severity: string; reason: string }
 export interface BuildMapping {

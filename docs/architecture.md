@@ -117,6 +117,15 @@ offending values, whether it is blocked (opaque SPARQL), and the repair tree's e
 `Project.repairs` joins witnesses to issues on (focus, statement id) and renders IRIs like issue
 text; `GET /api/projects/{pid}/repairs` serves it and the agent's issue context includes it.
 
+Every proposal with a model change also carries the engine's **soundness gate** (`Project.gate`,
+stored as `proposal.gate`): sound = introduces no violation, progress = fixes at least one, with
+the fixed/introduced violations. ΔG is taken between the before and after models *after*
+SHACL-AF inference (one repair session per side, ~2 s); gating the raw edit judges new nodes
+without the triples 223P's rules infer and reports violations full validation does not.
+
+A revision's stored summary is recounted on read (`issues.recount`) with the current issue
+grouping, so older revisions, History and proposal "Model checks" agree with the issue list.
+
 Dismissals live in `issue_dismissals` (who, reason, proposal). A dismissal that came with a
 published change records that revision and applies only while it is in the head's history,
 so undoing the change reopens the issue; other dismissals hold until reopened.

@@ -187,6 +187,8 @@ class ChangeProposal(BaseModel):
     parent_proposal_id: str | None = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
     issue_dismissals: list[IssueDismissal] = Field(default_factory=list)
+    # The repair engine's soundness gate on this change: sound, progress, fixed, introduced.
+    gate: dict[str, Any] | None = None
 
 
 # ------------------------------------------------------------------- issues

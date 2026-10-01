@@ -540,20 +540,21 @@ class Vocabulary:
                 ))
         return ValidationRun(bool(result.conforms), findings, time.perf_counter() - t0)
 
-    def repair_witnesses(self, data: Graph) -> list[dict]:
-        """pyshifty's algebraic repair witnesses for a model: per failing (focus, statement), the
-        failing leaves, the missing edges, the offending values and the repair tree's edits.
-
-        The same engine BuildingMOTIF's ``AlgebraicValidationContext`` wraps, called directly.
-        Everything returned is the engine's own output; IRIs are left for the caller to render.
-        """
+    def repair_session(self, data: Graph):
+        """pyshifty's algebraic repair session for a model graph (the engine BuildingMOTIF's
+        ``AlgebraicValidationContext`` wraps, called directly). Reusable for witnesses and gating."""
         if self._shapes_bytes is None:
             raise RuntimeError("vocabulary not loaded")
         import shifty
 
         payload = data.serialize(format="turtle", encoding="utf-8")
         with self._repair_lock:
-            session = shifty.RepairSession(self._shapes_bytes, payload)
+            return shifty.RepairSession(self._shapes_bytes, payload)
+
+    def repair_witnesses(self, session) -> list[dict]:
+        """Per failing (focus, statement): the failing leaves, the missing edges, the offending
+        values and the repair tree's edits. The engine's own output; IRIs are left for the caller."""
+        with self._repair_lock:
             out = []
             for w in session.witnesses():
                 tree = w.repair_tree()
@@ -572,6 +573,28 @@ class Vocabulary:
                     "repair": tree.explain(),
                 })
         return out
+
+    def gate(self, session, after: Graph) -> dict:
+        """The repair engine's soundness gate for changing the session's model into ``after``:
+        re-validates G ⊕ ΔG and diffs the violations. Sound = introduces nothing; progress =
+        fixes something.
+
+        ΔG is taken between the two models *after* SHACL-AF inference (a session per side):
+        gating the raw edit would judge new nodes without the triples 223P's rules infer, and
+        report violations that full validation does not.
+        """
+        import shifty
+
+        after_session = self.repair_session(after)
+        side = lambda g: g.serialize(format="turtle") if len(g) else None  # noqa: E731
+        with self._repair_lock:
+            g, g2 = session.to_graph(), after_session.to_graph()
+            outcome = session.gate(shifty.delta_from_graph(add=side(g2 - g), delete=side(g - g2)))
+        violation = lambda v: {"focus": _strip_iri(str(v.focus_node)),  # noqa: E731
+                               "shape": _strip_iri(v.shape_name) if v.shape_name else None}
+        return {"sound": bool(outcome.is_sound), "progress": bool(outcome.is_progress),
+                "fixed": [violation(v) for v in outcome.fixed],
+                "introduced": [violation(v) for v in outcome.introduced]}
 
 
 def _tokens(text: str) -> list[str]:

@@ -127,6 +127,19 @@ def render_repair(pg: ProjectGraph, vocab: Vocabulary, w: dict) -> dict:
     }
 
 
+def recount(stored: list[dict], summary: ValidationSummary) -> ValidationSummary:
+    """A revision's stored summary with its counts regrouped the way issues are read now,
+    so revisions validated under an older grouping report the issues the list shows."""
+    severity: dict[str, str] = {}
+    for issue in stored:
+        eid = issue["affected_ids"][0] if issue.get("affected_ids") else None
+        for d in issue.get("details", {}).get("findings", []):
+            severity.setdefault(finding_key(eid, d), SEVERITY.get(d.get("severity") or "", "warning"))
+    values = list(severity.values())
+    return summary.model_copy(update={"violations": values.count("violation"), "warnings": values.count("warning"),
+                                      "suggestions": values.count("suggestion")})
+
+
 def summarize(issues: list[ReviewIssue], run: ValidationRun) -> ValidationSummary:
     return ValidationSummary(
         conforms=run.conforms,

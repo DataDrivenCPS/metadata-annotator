@@ -25,7 +25,7 @@ from rdflib.namespace import OWL, RDF
 from . import operations as ops_mod
 from .events import EventBus
 from .graph import ProjectGraph, model_shell
-from .issues import group_findings, issues_from_validation, render_repair, summarize
+from .issues import group_findings, issues_from_validation, recount, render_iri, render_repair, summarize
 from .operations import ApplyResult, OperationError, OperationList
 from .projection import ModelView, ensure_ids, project
 from .schemas import (
@@ -168,6 +168,7 @@ class Project:
         self._graph_cache: dict[str, ProjectGraph] = {}
         self._view_cache: dict[str, ModelView] = {}
         self._repair_cache: dict[str, dict[str, dict]] = {}
+        self._repair_sessions: dict[str, object] = {}
         self._migrate_issue_states()
 
     # ------------------------------------------------------------- creation
@@ -211,12 +212,15 @@ class Project:
         return self._row_to_revision(row)
 
     def _row_to_revision(self, row) -> Revision:
+        validation = ValidationSummary.model_validate_json(row["validation"]) if row["validation"] else None
+        if validation is not None:
+            validation = recount(json.loads(row["issues"] or "[]"), validation)
         return Revision(
             id=row["id"], parent_id=row["parent_id"], created_at=row["created_at"],
             author=row["author"], kind=row["kind"], summary=row["summary"],
             proposal_id=row["proposal_id"],
             operations=OperationList.validate_json(row["operations"]),
-            validation=ValidationSummary.model_validate_json(row["validation"]) if row["validation"] else None,
+            validation=validation,
         )
 
     def revisions(self) -> list[Revision]:
@@ -282,7 +286,7 @@ class Project:
             return cached
         pg = self.graph(rid)
         try:
-            witnesses = self.vocab.repair_witnesses(pg.model)
+            witnesses = self.vocab.repair_witnesses(self._repair_session(rid))
         except Exception:  # noqa: BLE001 - optional detail; issues still show the validator message
             log.exception("repair witnesses failed for %s %s", self.id, rid)
             return {}
@@ -299,6 +303,28 @@ class Project:
         if len(self._repair_cache) > 8:
             self._repair_cache.pop(next(iter(self._repair_cache)))
         self._repair_cache[rid] = out
+        return out
+
+    def _repair_session(self, rid: str):
+        session = self._repair_sessions.get(rid)
+        if session is None:
+            session = self.vocab.repair_session(self.graph(rid).model)
+            if len(self._repair_sessions) > 4:
+                self._repair_sessions.pop(next(iter(self._repair_sessions)))
+            self._repair_sessions[rid] = session
+        return session
+
+    def gate(self, cand: "Candidate") -> dict | None:
+        """The repair engine's soundness gate for a candidate against its base revision, with
+        fixed/introduced violations shown as entity labels and shapes."""
+        try:
+            out = self.vocab.gate(self._repair_session(cand.base), cand.after.model)
+        except Exception:  # noqa: BLE001 - optional verdict; the proposal's own validation still applies
+            log.exception("repair gate failed for %s on %s", self.id, cand.base)
+            return None
+        for key, pg in (("fixed", cand.before), ("introduced", cand.after)):
+            out[key] = [render_iri(pg, self.vocab, v["focus"])
+                        + (f" · {self.vocab.curie(v['shape'])}" if v["shape"] else "") for v in out[key]]
         return out
 
     def set_issue_state(self, issue_id: str, state: str, dismissed_by: str = "person", reason: str | None = None,
@@ -489,6 +515,7 @@ class Project:
             parent_proposal_id=parent_proposal_id,
             conversation=conversation or [],
             issue_dismissals=issue_dismissals or [],
+            gate=self.gate(cand) if cand.diff.added or cand.diff.removed else None,
         )
         self._put_proposal(prop)
         return prop
@@ -555,6 +582,7 @@ class Project:
                         resolved=sorted(before_expl - after_expl),
                         introduced=sorted(after_expl - before_expl))
                     prop.notes = cand.result.notes
+                    prop.gate = self.gate(cand) if cand.diff.added or cand.diff.removed else None
                 else:
                     cand = self.build_candidate(head, prop.operations, prop.selection, lock=not build)
             except OperationError:

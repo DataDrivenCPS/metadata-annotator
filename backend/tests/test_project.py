@@ -301,3 +301,42 @@ def test_repairs_come_from_the_repair_engine(sample_project):
     ro1 = repairs[next(i.id for i in p.issues(p.head()) if i.explanation.startswith("RO-1"))]
     assert ro1["blocked"] and ro1["shape"] == "s223:Filter"
     assert p.repairs(p.head()) is repairs  # computed once per revision
+
+
+def test_revision_counts_match_the_issue_list_for_old_groupings(sample_project):
+    import json
+
+    p = sample_project
+    head = p.head()
+    with p.store.tx() as db:
+        stored = json.loads(db.execute("SELECT issues FROM revisions WHERE id=?", (head,)).fetchone()["issues"])
+        ro1 = [i for i in stored if i["explanation"].startswith("RO-1")]
+        # the old grouping merged RO-1's findings into one issue and stored that count
+        merged = {**ro1[0], "id": "val-oldgroup", "details": {"findings": [d for i in ro1 for d in i["details"]["findings"]]}}
+        legacy = [i for i in stored if i not in ro1] + [merged]
+        db.execute("UPDATE revisions SET issues=?, validation=json_set(validation, '$.violations', ?) WHERE id=?",
+                   (json.dumps(legacy), len(legacy), head))
+    shown = [i for i in p.issues(head) if i.origin == "validation" and i.severity == "violation"]
+    assert p.revision(head).validation.violations == len(shown) > len(legacy)
+
+
+def test_proposals_carry_the_soundness_gate(sample_project):
+    p = sample_project
+    base = p.head()
+    ct = by_label(p.view(base).points, "CT-201")
+
+    def propose(*raw):
+        cand = p.build_candidate(base, ops(*raw))
+        return p.save_proposal(cand, SelectionScope(), "test", "", [], [], None,
+                               p.revision(base).validation, p.issues(base))
+
+    fix = propose({"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"})
+    assert fix.gate["sound"] and fix.gate["progress"]
+    assert fix.gate["fixed"] == ["CT-201 · s223:QuantifiableProperty"]
+    bare = propose({"op": "create_equipment", "label": "TK-999 Spare Tank", "type": "watr:Tank"})
+    assert not bare.gate["sound"] and bare.gate["introduced"] == ["TK-999 Spare Tank · watr:Tank"]
+    # a new connection's inferred structure is gated too, so it isn't judged incomplete
+    v = p.view(base)
+    line = propose({"op": "create_connection", "from_equipment": by_label(v.equipment, "RO-1").id,
+                    "to_equipment": by_label(v.equipment, "TK-301").id, "label": "L-07", "medium": "watr:Water-Brine"})
+    assert line.gate["introduced"] == [] and line.gate["sound"]

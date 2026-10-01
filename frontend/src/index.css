@@ -204,6 +204,10 @@ pre.code { background: #f6f8fa; border: 1px solid var(--border); border-radius: 
 .needs-input-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #8250df; color: white; font-size: 12px; }
 .needs-input ul { margin: 6px 0; padding-left: 20px; }
 .needs-input li { margin: 3px 0; line-height: 1.45; }
+.gate { margin: 8px 0; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
+.gate.sound { background: #eef8f0; color: var(--ok); }
+.gate.unsound { background: #fff4e5; color: var(--warn); }
+.gate div { margin-top: 2px; color: var(--text); }
 .dismissals ul { list-style: none; margin: 6px 0; padding: 0; }
 .dismissals li { padding: 5px 0; border-top: 1px solid #efe8f7; color: var(--text); }
 .dismissal-reason { margin-top: 3px; font-size: 12px; color: var(--muted); }
@@ -212,9 +216,9 @@ pre.code { background: #f6f8fa; border: 1px solid var(--border); border-radius: 
 .composer textarea { min-height: 64px; resize: vertical; }
 .composer-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
 .composer-mode { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #f6f1fc; color: #6f42c1; }
-.composer-mode.questions { background: #8250df; color: white; }
-.composer-mode.questions button.link { color: white; text-decoration: underline; }
-.composer-mode.new { background: #eef1f4; color: var(--muted); }
+.composer-mode.mode-questions { background: #8250df; color: white; }
+.composer-mode.mode-questions button.link { color: white; text-decoration: underline; }
+.composer-mode.mode-new { background: #eef1f4; color: var(--muted); }
 .assist-actions { display: flex; align-items: center; gap: 8px; }
 .assist-actions select { flex: 1; min-width: 0; }
 .resize-handle { position: relative; z-index: 2; flex: 0 0 10px; min-height: 10px; cursor: row-resize; touch-action: none; user-select: none; display: flex; align-items: center; justify-content: center; }

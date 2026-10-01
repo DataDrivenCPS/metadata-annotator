@@ -126,7 +126,7 @@ function Composer() {
           {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
         </> : <span className="muted">{summary}</span>}
       </div>
-      {canContinue && <div className={`composer-mode ${next ? next.kind : 'new'}`}>
+      {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
         {next ? <>
           <span>↩ {CONTINUE_LABEL[next.kind]}</span>
           <button className="link" onClick={() => setNewRequest(true)}>Start a new request</button>
@@ -336,6 +336,13 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
           </table></div>
         </div>
       </details> })()}
+
+      {proposal.gate && <div className={`gate ${proposal.gate.sound ? 'sound' : 'unsound'}`}
+        title="The repair engine's soundness gate (pyshifty): re-validates the model with this change and compares violations. Sound = introduces nothing; progress = fixes something.">
+        <strong>Soundness gate:</strong> {proposal.gate.sound ? 'sound' : 'not sound'} · {proposal.gate.progress ? 'progress' : 'no progress'}
+        {proposal.gate.fixed.length > 0 && <div>fixes: {proposal.gate.fixed.join('; ')}</div>}
+        {proposal.gate.introduced.length > 0 && <div>introduces: {proposal.gate.introduced.join('; ')}</div>}
+      </div>}
 
       {dismissals.length > 0 && <details className="dismissals" open>
         <summary>Issues to dismiss · {dismissals.length}</summary>

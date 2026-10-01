@@ -81,17 +81,28 @@ def _proposal(p, raw, selection_ids=()):
                            [], [], None, rev.validation, before_issues)
 
 
-def test_stale_proposal_rejected(sample_project):
+def test_stale_proposal_can_be_replayed_on_latest_revision(sample_project):
     p = sample_project
     view = p.view(p.head())
     ct = by_label(view.points, "CT-201")
     prop = _proposal(p, [{"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"}], [ct.id])
     # someone edits first
     tt = by_label(view.points, "TT-101")
-    p.edit(p.head(), ops({"op": "update_point", "id": tt.id, "label": "TT-9"}))
+    concurrent, _ = p.edit(p.head(), ops({"op": "update_point", "id": tt.id, "label": "TT-9"}))
     assert p.proposal(prop.id).status == "stale"
-    with pytest.raises(StaleRevision):
-        p.apply_proposal(prop.id)
+    applied = p.apply_proposal(prop.id)
+    assert applied.parent_id == concurrent.id
+    assert p.proposal(prop.id).status == "applied"
+    assert p.view(applied.id).rows()[ct.id].unit.label == "Microsiemens per Centimetre"
+
+
+def test_stale_proposal_replays_its_values_over_concurrent_edit(sample_project):
+    p = sample_project
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    prop = _proposal(p, [{"op": "update_point", "id": ct.id, "label": "Proposed label"}], [ct.id])
+    p.edit(p.head(), ops({"op": "update_point", "id": ct.id, "label": "Concurrent label"}))
+    applied = p.apply_proposal(prop.id)
+    assert p.view(applied.id).rows()[ct.id].label == "Proposed label"
 
 
 def test_applied_graph_matches_displayed_proposal(sample_project):
@@ -193,3 +204,20 @@ def test_export_matches_revision(sample_project):
     csv_text = p.export_points_csv(rid)
     assert csv_text.count("\n") == 1 + len(p.view(rid).points)
     assert "FT-201" in csv_text
+
+
+def test_annotation_only_proposal_persists_field_lock(sample_project, registry):
+    p = sample_project
+    base = p.head()
+    point = by_label(p.view(base).points, "CT-201")
+    assert "label" not in point.locked
+    prop = _proposal(p, [{"op": "update_point", "id": point.id, "label": point.label}], [point.id])
+    assert not prop.diff.added and not prop.diff.removed
+    applied = p.apply_proposal(prop.id)
+    assert applied.id != base
+    reopened = Workspace(p.root.parent, registry, EventBus()).get(p.id)
+    assert "label" in reopened.view(applied.id).rows()[point.id].locked
+    assert reopened.proposal(prop.id).status == "applied"
+    # Once both the value and annotation are present, applying again is a true no-op.
+    repeat = _proposal(reopened, [{"op": "update_point", "id": point.id, "label": point.label}], [point.id])
+    assert reopened.apply_proposal(repeat.id).id == applied.id

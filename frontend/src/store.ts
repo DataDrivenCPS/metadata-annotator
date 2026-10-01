@@ -6,6 +6,7 @@ import {
 } from './types'
 
 export type Tab = 'points' | 'equipment' | 'connections' | 'graph'
+export type DrawerTab = 'issues' | 'inspector' | 'history'
 
 interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
 
@@ -17,10 +18,14 @@ interface State {
   selection: Selection
   anchor: string | null
   tab: Tab
+  drawerTab: DrawerTab
   inspectId: string | null
   runs: Record<string, AgentRun>
   activeRunId: string | null
   proposal: Proposal | null
+  assistantDraft: string
+  assistantDraftVersion: number
+  assistantReplyToId: string | null
   provider: string | null
   toast: Toast | null
   busy: boolean
@@ -37,6 +42,10 @@ interface State {
   setSelection: (sel: Selection) => void
   clearSelection: () => void
   setTab: (tab: Tab) => void
+  setDrawerTab: (tab: DrawerTab) => void
+  setAssistantDraft: (text: string) => void
+  setAssistantReplyTo: (proposalId: string | null) => void
+  appendAssistantContext: (text: string) => void
   inspect: (id: string | null) => void
   edit: (ops: Record<string, unknown>[], summary?: string) => Promise<boolean>
   undo: () => Promise<void>
@@ -70,10 +79,14 @@ export const useStore = create<State>((set, get) => ({
   selection: emptySelection(),
   anchor: null,
   tab: 'points',
+  drawerTab: 'issues',
   inspectId: null,
   runs: {},
   activeRunId: null,
   proposal: null,
+  assistantDraft: '',
+  assistantDraftVersion: 0,
+  assistantReplyToId: null,
   provider: null,
   toast: null,
   busy: false,
@@ -100,7 +113,7 @@ export const useStore = create<State>((set, get) => ({
 
   openProject: async (id) => {
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null,
-          runs: {}, activeRunId: null, inspectId: null })
+          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'issues', assistantDraft: '', assistantReplyToId: null })
     if (id) {
       localStorage.setItem('workbench.project', id)
       await get().reload()
@@ -133,6 +146,14 @@ export const useStore = create<State>((set, get) => ({
   setSelection: (selection) => set({ selection }),
   clearSelection: () => set({ selection: emptySelection(), anchor: null }),
   setTab: (tab) => set({ tab }),
+  setDrawerTab: (drawerTab) => set({ drawerTab }),
+  setAssistantDraft: (assistantDraft) => set({ assistantDraft }),
+  setAssistantReplyTo: (assistantReplyToId) => set({ assistantReplyToId }),
+  appendAssistantContext: (context) => set((s) => ({
+    assistantDraft: s.assistantDraft.trim() ? `${s.assistantDraft.trim()}\n\n${context}` : context,
+    assistantDraftVersion: s.assistantDraftVersion + 1,
+    assistantReplyToId: null,
+  })),
   inspect: (inspectId) => set({ inspectId }),
 
   edit: async (ops, summary) => {
@@ -233,6 +254,7 @@ export const useStore = create<State>((set, get) => ({
       const rev = await api.applyProposal(projectId, proposal.id)
       set({ proposal: { ...proposal, status: 'applied', applied_revision: rev.id } })
       await get().reload()
+      void api.proposal(projectId, proposal.id).then((updated) => set({ proposal: updated })).catch(() => {})
       get().notify({ kind: 'success', text: `Applied as ${rev.id}`, action: { label: 'Undo', run: () => void get().undo() } })
     } catch (e) {
       if (e instanceof ApiError && e.isStale) {
@@ -257,7 +279,7 @@ export const useStore = create<State>((set, get) => ({
     if (!projectId || !proposal) return
     try {
       const run = await api.regenerate(projectId, proposal.id, provider ?? undefined)
-      set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id, proposal: null })
+      set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id })
     } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
   },
 
@@ -273,6 +295,10 @@ export const useStore = create<State>((set, get) => ({
     } else if (ev.type === 'run' && ev.run) {
       const run = ev.run
       set({ runs: { ...s.runs, [run.id]: run } })
+      if (run.status === 'succeeded' && run.outcome.dismissed_proposal_id
+          && s.proposal?.id === run.outcome.dismissed_proposal_id) {
+        set({ proposal: null, assistantReplyToId: s.assistantReplyToId === s.proposal.id ? null : s.assistantReplyToId })
+      }
       if (run.id === s.activeRunId && run.status === 'succeeded' && run.outcome.proposal_id
           && s.proposal?.id !== run.outcome.proposal_id && s.projectId) {
         void api.proposal(s.projectId, run.outcome.proposal_id).then((proposal) => set({ proposal }))

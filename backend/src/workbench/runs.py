@@ -112,20 +112,28 @@ class RunManager:
         return run
 
     def start_revision(self, project: Project, proposal: ChangeProposal, instruction: str,
-                       provider: str | None = None) -> AgentRun:
-        """Revise a pending proposal with the person's reply before applying anything."""
-        if proposal.status != "pending":
+                       provider: str | None = None, reconsider: bool = False) -> AgentRun:
+        """Continue a pending proposal or reconsider it against the latest revision."""
+        if proposal.status != "pending" and not (reconsider and proposal.status == "stale"):
             raise ValueError(f"proposal is {proposal.status}")
-        if proposal.base_revision != project.head():
+        base = project.head()
+        if not reconsider and proposal.base_revision != base:
             raise StaleRevision(proposal.base_revision, project.head())
+        selection = proposal.selection
+        if reconsider and proposal.base_revision != base:
+            live = project.view(base).rows()
+            selection = selection.model_copy(update={
+                "entity_ids": [i for i in selection.entity_ids if i in live],
+                "relationship_ids": [i for i in selection.relationship_ids if i in live],
+            })
         cfg = self.settings.provider(provider)
         if cfg.kind == "openai":
             health = make_client(cfg).health()  # type: ignore[attr-defined]
             if not health["ok"]:
                 raise ProviderUnavailable(health["detail"])
         run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=proposal.base_revision,
-            selection=proposal.selection, instruction=instruction, provider=cfg.name, model=cfg.model,
+            id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
+            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model,
             skill_version=self.guidance.version,
         )
         token = CancelToken()
@@ -134,9 +142,9 @@ class RunManager:
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
                          lambda progress: run_correction(
-                             project, make_client(cfg), self.guidance, proposal.base_revision,
-                             proposal.selection, instruction, run.id, progress, token,
-                             prior_proposal=proposal))
+                             project, make_client(cfg), self.guidance, base,
+                             selection, instruction, run.id, progress, token,
+                             prior_proposal=proposal, reconsider=reconsider))
         return run
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:
@@ -165,6 +173,7 @@ class RunManager:
             proposal = getattr(outcome, "proposal", None)
             run.outcome = {
                 "proposal_id": proposal.id if proposal else None,
+                "dismissed_proposal_id": getattr(outcome, "dismissed_proposal_id", None),
                 "questions": getattr(outcome, "questions", []),
                 "explanation": getattr(outcome, "explanation", ""),
                 "steps": getattr(outcome, "steps", 0),

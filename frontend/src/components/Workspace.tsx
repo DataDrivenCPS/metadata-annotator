@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore, type Tab } from '../store'
 import { AssistantPanel } from './AssistantPanel'
@@ -6,6 +6,7 @@ import { Drawer } from './Drawer'
 import { GraphView } from './GraphView'
 import { ConnectionsTable, EquipmentTable, PointsTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
+import { ResizeHandle } from './ResizeHandle'
 
 const TABS: [Tab, string][] = [['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'], ['graph', 'Graph']]
 
@@ -14,6 +15,7 @@ export function Workspace() {
   const model = useStore((s) => s.model)
   const tab = useStore((s) => s.tab)
   const setTab = useStore((s) => s.setTab)
+  const setDrawerTab = useStore((s) => s.setDrawerTab)
   const handleEvent = useStore((s) => s.handleEvent)
   const openProject = useStore((s) => s.openProject)
   const undo = useStore((s) => s.undo)
@@ -24,6 +26,15 @@ export function Workspace() {
   const toggleSources = useStore((s) => s.toggleSources)
   const sourcesWide = useStore((s) => s.sourcesWide)
   const fileInput = useRef<HTMLInputElement>(null)
+  const [drawerHeight, setDrawerHeight] = useState(() => {
+    const stored = Number(localStorage.getItem('workbench.drawerHeight'))
+    return Number.isFinite(stored) && stored >= 120 ? stored : 240
+  })
+  const resizeDrawer = (delta: number) => setDrawerHeight((height) => {
+    const next = Math.max(120, Math.min(window.innerHeight - 220, height + delta))
+    localStorage.setItem('workbench.drawerHeight', String(next))
+    return next
+  })
 
   useEffect(() => {
     const es = new EventSource(api.eventsUrl(projectId))
@@ -56,10 +67,11 @@ export function Workspace() {
         <span className="rev" title={model.revision.summary}>
           {model.head} · saved
         </span>
-        {v && <span className={`health ${v.violations ? 'bad' : 'good'}`}
-          title={`Validated in ${v.duration_s}s against the loaded vocabulary`}>
-          {v.violations ? `${v.violations} problem(s)` : 'model checks pass'}
-        </span>}
+        {v && <button className={`health ${v.violations ? 'bad' : 'good'}`}
+          title={`Validated in ${v.duration_s}s: ${v.violations} violation(s). Click to open the Issues tray, which also includes warnings and source findings.`}
+          onClick={() => setDrawerTab('issues')}>
+          {v.violations ? `${v.violations} violation(s)` : 'model checks pass'}
+        </button>}
         <span className="spacer" />
         <button className={sourcesOpen ? 'active' : ''} onClick={toggleSources} title="Show or hide uploaded sources">Sources</button>
         <button onClick={() => void undo()} disabled={!model.info.can_undo} title="Undo (Ctrl+Z)">Undo</button>
@@ -77,7 +89,7 @@ export function Workspace() {
       </header>
       <main className={`panes ${sourcesOpen ? 'with-sources' : ''} ${sourcesOpen && sourcesWide ? 'wide' : ''}`}>
         {sourcesOpen && <SourcesPane />}
-        <section className="model-pane">
+        <section className="model-pane" style={{ gridTemplateRows: `auto minmax(100px, 1fr) 10px ${drawerHeight}px` }}>
           <nav className="tabs">
             {TABS.map(([id, label]) => (
               <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
@@ -91,6 +103,7 @@ export function Workspace() {
             {tab === 'connections' && <ConnectionsTable />}
             {tab === 'graph' && <GraphView />}
           </div>
+          <ResizeHandle label="Resize issues and inspector tray" onResize={resizeDrawer} />
           <Drawer />
         </section>
         <AssistantPanel />

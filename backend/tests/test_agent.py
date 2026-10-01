@@ -110,3 +110,115 @@ def test_agent_live_reassigns_points(sample_project, guidance):
     changed = {c.entity_id: c for c in out.proposal.changes}
     assert set(changed) == set(ids)
     assert all(c.fields[0].after == ro.label for c in changed.values())
+
+
+def _pending_rename(project, guidance):
+    point = by_label(project.view(project.head()).points, "CT-201")
+    selection = SelectionScope(entity_ids=[point.id])
+    llm = ScriptedLLM([{"action": "propose", "explanation": "Rename it",
+                        "operations": [{"op": "update_point", "id": point.id, "label": "Old suggestion"}]}])
+    outcome, _ = run(project, llm, guidance, selection, "rename this point")
+    return point, outcome.proposal
+
+
+def _reconsider(project, guidance, prior, response):
+    llm = ScriptedLLM([response])
+    live = project.view(project.head()).rows()
+    selection = prior.selection.model_copy(update={
+        "entity_ids": [i for i in prior.selection.entity_ids if i in live],
+    })
+    outcome = run_correction(project, llm, guidance, project.head(), selection,
+                             "Reconsider on latest revision", None, lambda *args: None,
+                             CancelToken(), prior_proposal=prior, reconsider=True)
+    return outcome, llm
+
+
+def test_reconsider_deleted_target_dismisses_resolved_proposal(sample_project, guidance):
+    from workbench.operations import OperationList
+
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    p.edit(p.head(), OperationList.validate_python([{"op": "delete_point", "id": point.id}]))
+    outcome, llm = _reconsider(p, guidance, prior, {
+        "action": "propose", "explanation": "The point has been removed; no change needed.", "operations": [],
+    })
+    assert len(llm.seen) == 1
+    assert outcome.proposal is None
+    assert outcome.dismissed_proposal_id == prior.id
+    assert p.proposal(prior.id).status == "dismissed"
+    assert "historical context only" in llm.seen[0][0]["content"]
+
+
+def test_reconsider_replaces_operations_on_current_revision(sample_project, guidance):
+    from workbench.operations import OperationList
+
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    p.edit(p.head(), OperationList.validate_python([
+        {"op": "update_point", "id": point.id, "label": "Current name"},
+    ]))
+    latest = p.head()
+    outcome, llm = _reconsider(p, guidance, prior, {
+        "action": "propose", "explanation": "Only the unit still needs correcting.",
+        "operations": [{"op": "update_point", "id": point.id, "unit": "unit:MicroS-PER-CentiM"}],
+    })
+    proposal = outcome.proposal
+    assert proposal is not None and proposal.base_revision == latest
+    assert proposal.parent_proposal_id == prior.id
+    assert len(proposal.operations) == 1
+    assert "label" not in proposal.operations[0].model_fields_set
+    assert "COMPLETE replacement operations" in llm.seen[0][0]["content"]
+    assert p.proposal(prior.id).status == "dismissed"
+    applied = p.apply_proposal(proposal.id)
+    assert p.view(applied.id).rows()[point.id].label == "Current name"
+
+
+def test_reconsider_questions_keep_original_proposal(sample_project, guidance):
+    p = sample_project
+    _, prior = _pending_rename(p, guidance)
+    outcome, _ = _reconsider(p, guidance, prior, {
+        "action": "propose", "operations": [], "questions": ["What name should it have?"],
+    })
+    assert outcome.proposal is None and outcome.dismissed_proposal_id is None
+    assert p.proposal(prior.id).status == "pending"
+
+
+def test_ordinary_reply_keeps_existing_operations(sample_project, guidance):
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    llm = ScriptedLLM([{
+        "action": "propose", "explanation": "Also correct its unit.",
+        "operations": [{"op": "update_point", "id": point.id, "unit": "unit:MicroS-PER-CentiM"}],
+    }])
+    outcome = run_correction(p, llm, guidance, p.head(), prior.selection, "also fix unit", None,
+                             lambda *args: None, CancelToken(), prior_proposal=prior)
+    assert len(outcome.proposal.operations) == 2
+    applied = p.apply_proposal(outcome.proposal.id)
+    assert p.view(applied.id).rows()[point.id].label == "Old suggestion"
+
+
+def test_refresh_run_persists_no_change_outcome(sample_project, guidance, monkeypatch):
+    from workbench.events import EventBus
+    from workbench.operations import OperationList
+    from workbench.runs import RunManager
+
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    p.edit(p.head(), OperationList.validate_python([{"op": "delete_point", "id": point.id}]))
+    llm = ScriptedLLM([{"action": "propose", "explanation": "Already resolved.", "operations": []}])
+    monkeypatch.setattr(llm, "health", lambda: {"ok": True}, raising=False)
+    monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    manager = RunManager(load_settings(), guidance, EventBus())
+    # Execute synchronously to exercise the run entry point and persisted result without polling.
+    monkeypatch.setattr(manager.pool, "submit", lambda fn, *args: fn(*args))
+    try:
+        run_result = manager.start_revision(p, p.proposal(prior.id), "Reconsider", reconsider=True)
+        stored = manager.get(p, run_result.id)
+        assert stored.status == "succeeded", stored.error
+        assert stored.input_revision == p.head()
+        assert stored.selection.entity_ids == []
+        assert stored.outcome["proposal_id"] is None
+        assert stored.outcome["dismissed_proposal_id"] == prior.id
+        assert stored.outcome["explanation"] == "Already resolved."
+    finally:
+        manager.pool.shutdown()

@@ -437,20 +437,57 @@ class Project:
     def apply_proposal(self, pid: str) -> Revision:
         with self.lock:
             prop = self.proposal(pid)
-            if prop.status == "stale":
-                raise StaleRevision(prop.base_revision, self.head())
-            if prop.status != "pending":
+            head = self.head()
+            rebasing = prop.base_revision != head
+            if prop.status not in ("pending", "stale"):
                 raise ValueError(f"proposal is {prop.status}")
             build = prop.kind == "build"
             try:
                 # A build is extraction, not a person's correction: it doesn't lock fields.
-                cand = self.build_candidate(prop.base_revision, prop.operations, prop.selection, lock=not build)
+                if rebasing:
+                    live = self.view(head).rows()
+                    selection = prop.selection.model_copy(update={
+                        "entity_ids": [i for i in prop.selection.entity_ids if i in live],
+                        "relationship_ids": [i for i in prop.selection.relationship_ids if i in live],
+                    })
+                    cand = self.build_candidate(head, prop.operations, selection, lock=not build)
+                    # Refresh the preview to describe exactly what replaying these operations
+                    # on the current revision will do.
+                    before_issues = self.issues(head)
+                    before = self.revision(head).validation
+                    if before is None:
+                        raise ProposalMismatch("the current revision has no validation summary")
+                    before_expl = {i.explanation for i in before_issues if i.severity != "suggestion"}
+                    after_expl = {i.explanation for i in cand.issues if i.severity != "suggestion"}
+                    selected = set(selection.entity_ids + selection.relationship_ids)
+                    prop.base_revision = head
+                    prop.selection = selection
+                    prop.operations = cand.ops
+                    prop.affected_ids = sorted(cand.result.changes)
+                    prop.out_of_scope_ids = sorted(
+                        {c.entity_id for c in cand.changes if selected and c.entity_id not in selected})
+                    prop.changes = cand.changes
+                    prop.diff = cand.diff
+                    prop.validation = ValidationDelta(
+                        before=before, after=cand.summary,
+                        resolved=sorted(before_expl - after_expl),
+                        introduced=sorted(after_expl - before_expl))
+                    prop.notes = cand.result.notes
+                else:
+                    cand = self.build_candidate(head, prop.operations, prop.selection, lock=not build)
             except OperationError:
-                prop.status = "failed"
-                self._put_proposal(prop)
+                if not rebasing:
+                    prop.status = "failed"
+                    self._put_proposal(prop)
                 raise
-            if cand.diff != prop.diff:
+            if not rebasing and cand.diff != prop.diff:
                 raise ProposalMismatch("applying the proposal would not produce the previewed change")
+            if (not cand.diff.added and not cand.diff.removed
+                    and set(cand.before.ann) == set(cand.after.ann)):
+                prop.status = "applied"
+                prop.applied_revision = head
+                self._put_proposal(prop)
+                return self.revision(head)
             if build:
                 summary = (prop.build_summary or {}).get("title") or "Built model from sources"
             else:

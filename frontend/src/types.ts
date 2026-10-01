@@ -99,7 +99,7 @@ export interface AgentRun {
   instruction: string; provider: string; model: string; skill_version: string
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   progress: ProgressEvent[]
-  outcome: { proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number }
+  outcome: { proposal_id?: string | null; dismissed_proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number }
   error: string | null; created_at: string; finished_at: string | null
 }
 export interface Term { iri: string; label: string; kind?: string; symbol?: string; comment?: string }

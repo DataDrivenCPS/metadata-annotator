@@ -319,6 +319,7 @@ def hint_terms(project: Project, instruction: str, per_query: int = 3) -> list[s
 @dataclass
 class CorrectionOutcome:
     proposal: ChangeProposal | None
+    dismissed_proposal_id: str | None = None
     questions: list[str] = field(default_factory=list)
     explanation: str = ""
     steps: int = 0
@@ -377,12 +378,30 @@ def _expand_build_token_updates(project: Project, prior: ChangeProposal,
 def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: str,
                    selection: SelectionScope, instruction: str, run_id: str | None,
                    progress: Callable[[str, str, dict], None], cancel: CancelToken,
-                   prior_proposal: ChangeProposal | None = None) -> CorrectionOutcome:
+                   prior_proposal: ChangeProposal | None = None,
+                   reconsider: bool = False) -> CorrectionOutcome:
     tools = AgentTools(project, rid, guidance)
     system = system_prompt(project.vocab)
     schema = step_schema()
     context, evidence = build_context(project, rid, selection, instruction)
-    if prior_proposal is not None:
+    if prior_proposal is not None and reconsider:
+        context += "\n\nPREVIOUS PROPOSAL TO RECONSIDER (historical context only):\n" + json.dumps({
+            "id": prior_proposal.id,
+            "base_revision": prior_proposal.base_revision,
+            "instruction": prior_proposal.instruction,
+            "explanation": prior_proposal.explanation,
+            "operations": [op.model_dump(exclude_unset=True) for op in prior_proposal.operations],
+            "evidence": [ref.model_dump(mode="json") for ref in prior_proposal.evidence],
+        })
+        context += (
+            "\nInspect the current model above and with tools. Old operations may no longer apply."
+            " Return the COMPLETE replacement operations against the current revision;"
+            " omit obsolete operations. Use operations, not token_updates."
+            " If already resolved, explain why and return no operations and no questions."
+            " If more information is needed, return questions and no operations."
+        )
+        evidence = [*prior_proposal.evidence, *evidence]
+    elif prior_proposal is not None:
         preview = project.build_candidate(rid, prior_proposal.operations, prior_proposal.selection,
                                           lock=prior_proposal.kind != "build")
         preview_rows = project_view(preview.after, project.vocab).rows()
@@ -463,6 +482,10 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         token_updates = data.get("token_updates") or []
         if token_updates:
             try:
+                if reconsider:
+                    raise ops_mod.OperationError([
+                        "reconsideration requires complete operations against the current model; "
+                        "token_updates revise an old draft"])
                 if not prior_proposal or prior_proposal.kind != "build":
                     raise ops_mod.OperationError(["token_updates require a pending source-build proposal"])
                 raw_ops = [*raw_ops, *_expand_build_token_updates(project, prior_proposal, token_updates)]
@@ -473,15 +496,19 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 if repairs > MAX_REPAIRS:
                     raise LLMError("the model could not revise the token mapping: " + "; ".join(exc.problems))
                 messages.append({"role": "user", "content": "Token mapping problem: " + "; ".join(exc.problems)
-                                 + "\nUse a token id from the source mapping table, then propose again."})
+                                 + ("\nReturn complete replacement operations using current model ids or create operations."
+                                    if reconsider else "\nUse a token id from the source mapping table, then propose again.")})
                 continue
         if not raw_ops:
+            if reconsider and prior_proposal and not outcome.questions:
+                project.dismiss_proposal(prior_proposal.id)
+                outcome.dismissed_proposal_id = prior_proposal.id
             progress("done", "The assistant needs more information" if outcome.questions else "No change proposed", {})
             return outcome
         try:
             parsed = ops_mod.OperationList.validate_python(raw_ops)
             progress("candidate", f"Building a candidate model with {len(parsed)} operation(s)", {})
-            combined = [*prior_proposal.operations, *parsed] if prior_proposal else parsed
+            combined = [*prior_proposal.operations, *parsed] if prior_proposal and not reconsider else parsed
             cand = project.build_candidate(rid, combined, selection,
                                            lock=prior_proposal is None or prior_proposal.kind != "build")
         except (ValidationError, ops_mod.OperationError) as exc:
@@ -511,7 +538,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         if prior_proposal:
             conversation.extend([{"role": "user", "text": instruction},
                                  {"role": "assistant", "text": outcome.explanation}])
-        build_summary = copy.deepcopy(prior_proposal.build_summary) if prior_proposal else None
+        build_summary = copy.deepcopy(prior_proposal.build_summary) if prior_proposal and not reconsider else None
         if build_summary:
             build_summary["revised"] = True
             build_summary["revision_note"] = "This draft includes your reply. Token-wide changes appear in the mapping table; open Individual changes for specific edits."
@@ -533,7 +560,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             build_summary["mapped_tokens"] = sum(bool(m["mapped"]) for m in build_summary.get("point_mappings", []))
             build_summary["unmapped_records"] = sum(m["count"] for m in build_summary.get("point_mappings", [])
                                                     if not m["mapped"])
-        followup_issues = prior_proposal.followup_issues if prior_proposal else None
+        followup_issues = prior_proposal.followup_issues if prior_proposal and not reconsider else None
         if followup_issues and token_updates:
             changed_tokens = {m["token"] for m in build_summary["point_mappings"]
                               if m["id"] in {u["id"] for u in token_updates} and m["mapped"]}

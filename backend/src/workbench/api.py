@@ -513,16 +513,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/projects/{pid}/proposals/{prop_id}/regenerate")
     def regenerate(pid: str, prop_id: str, provider: str | None = Body(None, embed=True)):
-        """Re-run the request behind a (stale) proposal against the current revision."""
+        """Ask the assistant to reconsider a proposal against the current revision."""
         p = project(pid)
-        prop = p.proposal(prop_id)
-        head = p.head()
-        live = p.view(head).rows()
-        sel = prop.selection.model_copy(update={
-            "entity_ids": [i for i in prop.selection.entity_ids if i in live],
-            "relationship_ids": [i for i in prop.selection.relationship_ids if i in live]})
-        p.dismiss_proposal(prop_id)
-        return runs.start_correction(p, head, sel, prop.instruction, provider).model_dump(mode="json")
+        try:
+            prop = p.proposal(prop_id)
+            instruction = (
+                "Reconsider the original request against the current model revision. The model may "
+                "have changed, or the issue may already be fixed. Inspect the current state and "
+                "decide whether a change is still warranted. If it is already resolved, explain "
+                "that and propose no change. Original request: " + prop.instruction
+            )
+            return runs.start_revision(p, prop, instruction, provider, reconsider=True).model_dump(mode="json")
+        except KeyError:
+            raise HTTPException(404, f"No proposal {prop_id}") from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except ProviderUnavailable as exc:
+            raise HTTPException(503, str(exc)) from None
 
     # ------------------------------------------------------------- events
 

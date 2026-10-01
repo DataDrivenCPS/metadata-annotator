@@ -179,3 +179,33 @@ def test_answering_questions_continues_the_conversation(client, monkeypatch):
     unknown = client.post(f"/api/projects/{pid}/assist", json={
         "base_revision": head, "instruction": "again", "parent_run_id": "run-missing"})
     assert unknown.status_code == 400
+
+
+def test_follow_up_without_selection_keeps_the_conversation_selection(client, monkeypatch):
+    from test_agent import ScriptedLLM
+
+    pid = client.post("/api/projects", json={"name": "Follow-up selection"}).json()["id"]
+    with open(SAMPLES / "model.ttl", "rb") as f:
+        client.post(f"/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")})
+    model = client.get(f"/api/projects/{pid}/model").json()
+    head = model["head"]
+    ro = next(e for e in model["view"]["equipment"] if e["label"].startswith("RO-1"))
+    asked = {"action": "propose", "explanation": "Is this expected?", "operations": [], "questions": ["Expected?"]}
+    llm = ScriptedLLM([asked, asked, asked])
+    llm.health = lambda: {"ok": True}
+    monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    monkeypatch.setattr(client.app.state.runs.pool, "submit", lambda fn, *args: fn(*args))
+
+    first = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ro["id"]]}, "instruction": "Check RO-1"}).json()
+    # nothing selected now: the follow-up is still about RO-1
+    second = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "instruction": "Yes, expected.", "parent_run_id": first["id"]}).json()
+    assert second["selection"]["entity_ids"] == [ro["id"]]
+    assert "(nothing selected" not in llm.seen[1][0]["content"]
+    # a new selection wins
+    p201 = next(e for e in model["view"]["equipment"] if e["label"].startswith("P-201"))
+    third = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [p201["id"]]}, "instruction": "And this one?",
+        "parent_run_id": second["id"]}).json()
+    assert third["selection"]["entity_ids"] == [p201["id"]]

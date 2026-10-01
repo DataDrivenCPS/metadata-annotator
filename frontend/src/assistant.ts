@@ -1,4 +1,4 @@
-import type { AgentRun, Proposal } from './types'
+import type { AgentRun, Proposal, Selection } from './types'
 
 export type ProposalState = Proposal['status'] | 'superseded'
 
@@ -34,4 +34,20 @@ export function proposalStates(proposals: Proposal[]): Record<string, ProposalSt
   for (const p of proposals) out[p.id] = p.status
   for (const p of proposals) if (p.parent_proposal_id && out[p.parent_proposal_id]) out[p.parent_proposal_id] = 'superseded'
   return out
+}
+
+export type SelectionSource = 'current' | 'conversation' | 'proposal'
+
+const isEmpty = (s: Selection) =>
+  !s.entity_ids.length && !s.relationship_ids.length && !s.field_ids.length && !s.source_regions.length
+
+/** The selection the next message will be about, matching what the server uses. */
+export function effectiveSelection(next: Continuation | null, current: Selection, thread: AgentRun[],
+                                   proposal: Proposal | null): { selection: Selection; source: SelectionSource } {
+  if (next?.kind === 'proposal' && proposal) return { selection: proposal.selection, source: 'proposal' }
+  const parent = next?.runId ? thread.find((r) => r.id === next.runId) : null
+  if (parent?.selection && isEmpty(current) && !isEmpty(parent.selection)) {
+    return { selection: parent.selection, source: 'conversation' }
+  }
+  return { selection: current, source: 'current' }
 }

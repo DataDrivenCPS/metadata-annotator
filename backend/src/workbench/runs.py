@@ -78,6 +78,20 @@ class RunManager:
                  {"role": "assistant", "text": run_reply_text(parent)}]
         return [{"role": t["role"], "text": t["text"][:MAX_TURN_CHARS]} for t in turns if t["text"]][-MAX_HISTORY_TURNS:]
 
+    def continued_selection(self, project: Project, parent_run_id: str | None,
+                            selection: SelectionScope) -> SelectionScope:
+        """A follow-up with nothing selected keeps talking about what the earlier run was about."""
+        empty = not (selection.entity_ids or selection.relationship_ids or selection.field_ids
+                     or selection.source_regions)
+        if not parent_run_id or not empty:
+            return selection
+        inherited = self.get(project, parent_run_id).selection or SelectionScope()
+        live = project.view(project.head()).rows()
+        return inherited.model_copy(update={
+            "entity_ids": [i for i in inherited.entity_ids if i in live],
+            "relationship_ids": [i for i in inherited.relationship_ids if i in live],
+        })
+
     def recover(self, project: Project) -> None:
         """Runs that were in flight when the process stopped cannot resume; mark them."""
         for b in project.store.list_bodies("agent_runs", "status IN ('queued','running')"):
@@ -96,6 +110,7 @@ class RunManager:
         if base != project.head():
             raise StaleRevision(base, project.head())
         history = self.history(project, parent_run_id)
+        selection = self.continued_selection(project, parent_run_id, selection)
         cfg = self.settings.provider(provider)
         if cfg.kind == "openai":  # fail fast instead of starting a run that cannot reach its model
             health = make_client(cfg).health()  # type: ignore[attr-defined]

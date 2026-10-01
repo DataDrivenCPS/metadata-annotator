@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { continuation, isActive, startsExchange, threadRuns, type ProposalState } from '../assistant'
+import { continuation, effectiveSelection, isActive, startsExchange, threadRuns, type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
@@ -99,8 +99,9 @@ function Composer() {
   const running = !!last && isActive(last)
   const next = continuation(thread, proposal, newRequest)
   const canContinue = continuation(thread, proposal, false) !== null
-  const summary = summarize(selection, rows)
-  const chosen = [...selection.entity_ids, ...selection.relationship_ids].map((id) => rows.get(id)).filter(Boolean)
+  const { selection: about, source } = effectiveSelection(next, selection, thread, proposal)
+  const summary = summarize(about, rows)
+  const chosen = [...about.entity_ids, ...about.relationship_ids].map((id) => rows.get(id)).filter(Boolean)
 
   const send = async () => {
     if (!text.trim() || running || sending) return
@@ -114,12 +115,15 @@ function Composer() {
 
   return (
     <div className="composer">
-      <div className="composer-selection">
-        <span className="muted">Selected:</span>
+      <div className="composer-selection" title={source === 'conversation'
+        ? 'Nothing is selected, so this message stays about what the conversation was about. Select something to change it.'
+        : source === 'proposal' ? 'A reply revises the proposal, so it keeps the proposal’s selection.' : undefined}>
+        <span className="muted">{source === 'current' ? 'Selected:'
+          : source === 'conversation' ? 'About (from the conversation):' : 'About (the proposal’s selection):'}</span>
         {chosen.length ? <>
           {chosen.slice(0, 6).map((r) => <span key={r!.id} className={`chip ${r!.kind}`}>{r!.label}</span>)}
           {chosen.length > 6 && <span className="muted">+{chosen.length - 6} more</span>}
-          <button className="link" onClick={clearSelection}>clear</button>
+          {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
         </> : <span className="muted">{summary}</span>}
       </div>
       {canContinue && <div className={`composer-mode ${next ? next.kind : 'new'}`}>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { continuation, proposalStates, startsExchange, threadRuns } from './assistant'
-import type { AgentRun, Proposal } from './types'
+import { continuation, effectiveSelection, proposalStates, startsExchange, threadRuns } from './assistant'
+import { emptySelection, type AgentRun, type Proposal } from './types'
 
 const run = (id: string, created_at: string, extra: Partial<AgentRun> = {}): AgentRun => ({
   id, kind: 'correction', input_revision: 'rev-1', selection: null, instruction: id, provider: 'p', model: 'm',
@@ -41,5 +41,25 @@ describe('assistant thread', () => {
       { id: 'p1', status: 'dismissed' } as Proposal,
       { id: 'p2', status: 'pending', parent_proposal_id: 'p1' } as Proposal,
     ])).toEqual({ p1: 'superseded', p2: 'pending' })
+  })
+})
+
+describe('effective selection', () => {
+  const about = (...ids: string[]) => ({ ...emptySelection(), entity_ids: ids })
+  const asked = run('a', '1', { selection: about('eq-ro1'), outcome: { questions: ['Expected?'] } })
+
+  it('keeps the conversation selection when nothing is selected now', () => {
+    const next = continuation([asked], null, false)
+    expect(effectiveSelection(next, emptySelection(), [asked], null))
+      .toEqual({ selection: about('eq-ro1'), source: 'conversation' })
+  })
+
+  it('uses a new selection, or the proposal selection for replies', () => {
+    const next = continuation([asked], null, false)
+    expect(effectiveSelection(next, about('eq-p201'), [asked], null).source).toBe('current')
+    expect(effectiveSelection(null, emptySelection(), [asked], null).source).toBe('current')
+    const proposal = { id: 'p', status: 'pending', selection: about('eq-tk') } as Proposal
+    expect(effectiveSelection(continuation([asked], proposal, false), about('eq-p201'), [asked], proposal))
+      .toEqual({ selection: about('eq-tk'), source: 'proposal' })
   })
 })

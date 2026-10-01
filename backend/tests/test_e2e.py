@@ -1,6 +1,7 @@
 """Browser smoke test: the built app, a live server and a scripted model.
 
-Walks the assistant and review flows end to end in headless Chromium: inspector and RDF tab,
+Walks the assistant and review flows end to end in headless Chromium: repair-engine detail
+on issues, inspector and RDF tab,
 asking the assistant, answering its question with nothing selected (the conversation keeps its
 selection and history), applying a proposed issue dismissal, and reopening it.
 
@@ -119,6 +120,8 @@ def test_assistant_and_review_flow(live, page):
     page.goto(base)
     health = page.locator(".topbar .health")
     expect(health).to_contain_text("violation(s)")
+    # the repair engine's summary appears under the validator message
+    expect(page.locator(".issue", has_text="TK-101").locator(".repair-line")).to_contain_text("have 0, need 1")
 
     # Inspector, and the RDF on its own tab
     page.locator("nav.tabs button", has_text="Equipment").first.click()

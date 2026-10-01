@@ -288,3 +288,16 @@ def test_legacy_dismissals_move_to_current_ids(sample_project, workspace):
     workspace._open.clear()
     reopened = workspace.get(p.id)
     assert {i.id: i for i in reopened.issues(head)}[target.id].resolution_state == "dismissed"
+
+
+def test_repairs_come_from_the_repair_engine(sample_project):
+    p = sample_project
+    issues = {i.explanation.split(" (")[0]: i for i in p.issues(p.head())}
+    repairs = p.repairs(p.head())
+    tank = repairs[issues["TK-101 Raw Water Tank"].id]
+    assert not tank["blocked"] and tank["summary"] == ["s223:hasConnectionPoint: have 0, need 1"]
+    assert "add TK-101 Raw Water Tank s223:hasConnectionPoint" in tank["repair"]
+    assert "s223:InletConnectionPoint" in tank["repair"]
+    ro1 = repairs[next(i.id for i in p.issues(p.head()) if i.explanation.startswith("RO-1"))]
+    assert ro1["blocked"] and ro1["shape"] == "s223:Filter"
+    assert p.repairs(p.head()) is repairs  # computed once per revision

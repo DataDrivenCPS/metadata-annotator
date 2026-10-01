@@ -97,7 +97,34 @@ def group_findings(pg: ProjectGraph, vocab: Vocabulary,
 
 def _detail(f) -> dict:
     return {"focus": f.focus, "shape": f.shape, "path": f.path, "value": f.value,
-            "message": f.message, "severity": f.severity}
+            "message": f.message, "severity": f.severity, "statement_id": f.statement_id}
+
+
+def render_text(pg: ProjectGraph, vocab: Vocabulary, text: str) -> str:
+    return re.sub(r"<([^<>\s]+)>", lambda m: render_iri(pg, vocab, m.group(1)), text or "")
+
+
+def render_repair(pg: ProjectGraph, vocab: Vocabulary, w: dict) -> dict:
+    """A repair witness for display: the engine's own words, IRIs shown as labels or prefixed names."""
+    show = lambda text: render_text(pg, vocab, str(text))  # noqa: E731
+    summary = []
+    for a in w["atoms"]:
+        line = show(f"{a['path']}: {a['detail']}" if a.get("path") else a["detail"])
+        if line not in summary:
+            summary.append(line)
+    missing = []
+    for o in w["missing"]:
+        line = show(f"<{o['node']}> {o['path']}: have {o['observed']}, need {o['required']}")
+        if line not in missing:
+            missing.append(line)
+    return {
+        "blocked": w["blocked"],
+        "summary": summary,
+        "missing": missing,
+        "offending": [show(v) for v in dict.fromkeys(w["offending"])],
+        "repair": show(w["repair"]),
+        "shape": vocab.curie(w["shape"]) if w.get("shape") else None,
+    }
 
 
 def summarize(issues: list[ReviewIssue], run: ValidationRun) -> ValidationSummary:

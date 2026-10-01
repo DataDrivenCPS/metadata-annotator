@@ -43,6 +43,10 @@ export interface ReviewIssue {
   details: { findings?: { focus: string; shape: string | null; path: string | null; message: string; severity: string }[] }
   dismissal?: IssueDismissalRecord | null
 }
+/** pyshifty's repair witness for an issue, rendered by the backend (the engine's own words). */
+export interface IssueRepair {
+  blocked: boolean; summary: string[]; missing: string[]; offending: string[]; repair: string; shape: string | null
+}
 export interface IssueDismissalRecord {
   dismissed_by: 'person' | 'assistant'; reason: string | null; proposal_id: string | null
   revision: string | null; created_at: string

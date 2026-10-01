@@ -109,6 +109,14 @@ names from the loaded ontologies); nothing is paraphrased. An issue's id is a ha
 entity, shape, path and raw message, so it is independent of labels and display wording.
 Issues are rebuilt from each revision's stored findings when read.
 
+Repair detail comes from pyshifty's algebraic repair engine, the same `RepairSession` that
+BuildingMOTIF's `AlgebraicValidationContext` wraps, called directly (about 2 s per revision,
+cached in memory; BuildingMOTIF's wrapper takes 30 s+ here). `Vocabulary.repair_witnesses`
+returns each failing (focus, statement)'s failing leaves (`have 0, need 1`), missing edges,
+offending values, whether it is blocked (opaque SPARQL), and the repair tree's edits.
+`Project.repairs` joins witnesses to issues on (focus, statement id) and renders IRIs like issue
+text; `GET /api/projects/{pid}/repairs` serves it and the agent's issue context includes it.
+
 Dismissals live in `issue_dismissals` (who, reason, proposal). A dismissal that came with a
 published change records that revision and applies only while it is in the head's history,
 so undoing the change reopens the issue; other dismissals hold until reopened.

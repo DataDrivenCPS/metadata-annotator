@@ -288,6 +288,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         project(pid).save_layout(body.positions)
         return {"ok": True}
 
+    @app.get("/api/projects/{pid}/repairs")
+    async def repairs(pid: str, revision: str | None = None):
+        """Per-issue repair information from pyshifty's repair witnesses (computed on first use)."""
+        p = project(pid)
+        return await asyncio.to_thread(p.repairs, rev_or_head(p, revision))
+
     @app.put("/api/projects/{pid}/issues/{issue_id}")
     def set_issue(pid: str, issue_id: str, body: IssueStateRequest):
         project(pid).set_issue_state(issue_id, body.state)

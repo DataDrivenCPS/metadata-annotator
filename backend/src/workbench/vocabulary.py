@@ -88,6 +88,7 @@ class Finding:
     value: str | None
     message: str
     constraint_kind: str
+    statement_id: int | None = None  # pyshifty's stable statement id; joins findings to repair witnesses
 
 
 @dataclass
@@ -116,6 +117,7 @@ class Vocabulary:
         self._graph: Graph | None = None
         self._graph_lock = threading.Lock()
         self._validate_lock = threading.Lock()
+        self._repair_lock = threading.Lock()
         self._load_lock = threading.Lock()
         self.ready = threading.Event()
         self.loading = False
@@ -534,8 +536,42 @@ class Vocabulary:
                     value=_strip_iri(r.value) if r and r.value else None,
                     message=(r.author_message or r.message) if r else "",
                     constraint_kind=str(r.constraint_kind) if r else "",
+                    statement_id=v.statement_id,
                 ))
         return ValidationRun(bool(result.conforms), findings, time.perf_counter() - t0)
+
+    def repair_witnesses(self, data: Graph) -> list[dict]:
+        """pyshifty's algebraic repair witnesses for a model: per failing (focus, statement), the
+        failing leaves, the missing edges, the offending values and the repair tree's edits.
+
+        The same engine BuildingMOTIF's ``AlgebraicValidationContext`` wraps, called directly.
+        Everything returned is the engine's own output; IRIs are left for the caller to render.
+        """
+        if self._shapes_bytes is None:
+            raise RuntimeError("vocabulary not loaded")
+        import shifty
+
+        payload = data.serialize(format="turtle", encoding="utf-8")
+        with self._repair_lock:
+            session = shifty.RepairSession(self._shapes_bytes, payload)
+            out = []
+            for w in session.witnesses():
+                tree = w.repair_tree()
+                blocked = tree.is_blocked() if callable(tree.is_blocked) else tree.is_blocked
+                out.append({
+                    "focus": _strip_iri(str(w.focus)),
+                    "statement_id": w.statement_id,
+                    "shape": _strip_iri(w.shape_name) if w.shape_name else None,
+                    "blocked": bool(blocked),
+                    "atoms": [{"kind": getattr(a.kind, "name", str(a.kind)), "path": a.path, "value": a.value,
+                               "detail": a.detail} for a in w.summary()],
+                    "missing": [{"node": _strip_iri(o.node), "path": o.path, "missing": o.missing,
+                                 "observed": o.observed_count, "required": o.required_count}
+                                for o in w.missing_obligations()],
+                    "offending": [str(v) for v in w.offending_values()],
+                    "repair": tree.explain(),
+                })
+        return out
 
 
 def _tokens(text: str) -> list[str]:

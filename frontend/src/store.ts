@@ -3,7 +3,7 @@ import { api, ApiError } from './api'
 import { continuation, proposalStates, threadRuns, type ProposalState } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
-  emptySelection, type AgentRun, type ModelResponse, type Proposal, type Row, type Selection, type Status,
+  emptySelection, type AgentRun, type IssueRepair, type ModelResponse, type Proposal, type Row, type Selection, type Status,
 } from './types'
 
 export type Tab = 'points' | 'equipment' | 'connections' | 'graph'
@@ -25,6 +25,8 @@ interface State {
   activeRunId: string | null
   proposal: Proposal | null
   proposalStates: Record<string, ProposalState>
+  /** Repair-engine detail per issue id, for the revision named (loaded in the background). */
+  repairs: { revision: string; byIssue: Record<string, IssueRepair> } | null
   assistantDraft: string
   assistantDraftVersion: number
   /** The next message starts a new request instead of continuing the conversation. */
@@ -90,6 +92,7 @@ export const useStore = create<State>((set, get) => ({
   activeRunId: null,
   proposal: null,
   proposalStates: {},
+  repairs: null,
   assistantDraft: '',
   assistantDraftVersion: 0,
   assistantNewRequest: false,
@@ -118,7 +121,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   openProject: async (id) => {
-    set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {},
+    set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
           runs: {}, activeRunId: null, inspectId: null, drawerTab: 'issues', assistantDraft: '', assistantNewRequest: false })
     if (id) {
       localStorage.setItem('workbench.project', id)
@@ -149,6 +152,12 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ model, rows, selection: pruneSelection(get().selection, live), proposal,
           inspectId: get().inspectId && live.has(get().inspectId!) ? get().inspectId : null })
+    if (get().repairs?.revision !== model.head) {
+      const revision = model.head
+      void api.repairs(pid, revision).then((byIssue) => {
+        if (get().projectId === pid && get().model?.head === revision) set({ repairs: { revision, byIssue } })
+      }).catch(() => {})
+    }
   },
 
   click: (target, mods, order) => {

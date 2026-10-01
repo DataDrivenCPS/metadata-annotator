@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore, type Tab } from '../store'
 import {
-  emptySelection, type EntityDetail, type IssueDismissalRecord, type Revision, type ReviewIssue, type Row, type ValidationSummary,
+  emptySelection, type EntityDetail, type IssueDismissalRecord, type IssueRepair, type Revision, type ReviewIssue, type Row,
+  type ValidationSummary,
 } from '../types'
 import { shortIri } from './TermPicker'
 
@@ -51,6 +52,7 @@ function IssuesList({ issues, validation }: { issues: ReviewIssue[]; validation:
   const notify = useStore((s) => s.notify)
   const projectId = useStore((s) => s.projectId)!
   const reload = useStore((s) => s.reload)
+  const repairs = useStore((s) => s.repairs?.byIssue)
   const [showAll, setShowAll] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const visible = issues.filter((i) => showAll || (i.resolution_state === 'open' && i.severity !== 'suggestion'))
@@ -81,10 +83,14 @@ function IssuesList({ issues, validation }: { issues: ReviewIssue[]; validation:
   if (!issues.length) return <p className="muted pad">No issues: the model passes validation against the loaded vocabulary.</p>
   return (
     <div>
-      {validation && <p className="issue-summary muted small">
-        Validation: {validation.violations} violations, {validation.warnings} warnings, {validation.suggestions} suggestions.
-        The Issues list also includes source extraction and association findings.
-      </p>}
+      {validation && (() => {
+        const fromValidation = issues.filter((i) => i.origin === 'validation')
+        const count = (severity: string) => fromValidation.filter((i) => i.severity === severity).length
+        return <p className="issue-summary muted small">
+          Validation: {count('violation')} violations, {count('warning')} warnings, {count('suggestion')} suggestions.
+          The Issues list also includes source extraction and association findings.
+        </p>
+      })()}
       <div className="issue-selection-bar">
         <span>{selectedIssues.length} selected</span>
         <button className="primary" disabled={!selectedIssues.length} onClick={addSelectedToPrompt}>
@@ -103,8 +109,9 @@ function IssuesList({ issues, validation }: { issues: ReviewIssue[]; validation:
                 return next
               })} />
             <span className={`sev ${i.severity}`}>{i.severity}</span>
-            <span className="issue-text" onClick={() => focus(i)} title="Select the affected objects">
-              {i.explanation}
+            <span className="issue-text" onClick={() => focus(i)}>
+              <span className="issue-message" title={i.explanation}>{i.explanation}</span>
+              {repairs?.[i.id] && <RepairLine repair={repairs[i.id]} />}
               {i.dismissal && <DismissalNote dismissal={i.dismissal} />}
             </span>
             <button className="link" onClick={() => void api.setIssueState(projectId, i.id,
@@ -143,6 +150,7 @@ function Inspector() {
   const appendAssistantContext = useStore((s) => s.appendAssistantContext)
   const notify = useStore((s) => s.notify)
   const reload = useStore((s) => s.reload)
+  const repairs = useStore((s) => s.repairs?.byIssue)
   const { inspectId, detail, error, refresh } = useEntityDetail()
 
   if (!inspectId) return <p className="muted pad">Select an object to inspect its ontology terms, evidence, and history.</p>
@@ -187,6 +195,7 @@ function Inspector() {
               </div>
               <p>{issue.explanation}</p>
               {issue.dismissal && <DismissalNote dismissal={issue.dismissal} />}
+              {repairs?.[issue.id] && <RepairDetail repair={repairs[issue.id]} />}
               {issue.details.findings?.map((finding, index) => (
                 <div className="finding-detail" key={`${finding.focus}-${index}`}>
                   {finding.message && <p>{finding.message}</p>}
@@ -227,6 +236,24 @@ function RdfView() {
       <pre className="code turtle">{detail.turtle}</pre>
     </div>
   )
+}
+
+/** One line of pyshifty's repair witness: its failing leaves, in the engine's words. */
+function RepairLine({ repair }: { repair: IssueRepair }) {
+  return <span className="repair-line" title="From the repair engine (pyshifty, via BuildingMOTIF's algebraic validation)">
+    {repair.blocked && <span className="repair-tag">blocked</span>}
+    {repair.summary.join('; ')}
+  </span>
+}
+
+function RepairDetail({ repair }: { repair: IssueRepair }) {
+  return <details className="repair-detail" open>
+    <summary>Repair engine (pyshifty){repair.shape ? ` · shape ${repair.shape}` : ''}{repair.blocked ? ' · blocked' : ''}</summary>
+    <ul>{repair.summary.map((s) => <li key={s}>{s}</li>)}</ul>
+    {repair.missing.length > 0 && <><h6>Missing</h6><ul>{repair.missing.map((m) => <li key={m}>{m}</li>)}</ul></>}
+    {repair.offending.length > 0 && <><h6>Offending values</h6><ul>{repair.offending.map((o) => <li key={o}>{o}</li>)}</ul></>}
+    {repair.repair && <><h6>{repair.blocked ? 'Repair tree' : 'Edits that would satisfy it'}</h6><pre className="code">{repair.repair}</pre></>}
+  </details>
 }
 
 function DismissalNote({ dismissal }: { dismissal: IssueDismissalRecord }) {

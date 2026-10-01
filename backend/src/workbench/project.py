@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import secrets
 import threading
@@ -24,7 +25,7 @@ from rdflib.namespace import OWL, RDF
 from . import operations as ops_mod
 from .events import EventBus
 from .graph import ProjectGraph, model_shell
-from .issues import group_findings, issues_from_validation, summarize
+from .issues import group_findings, issues_from_validation, render_repair, summarize
 from .operations import ApplyResult, OperationError, OperationList
 from .projection import ModelView, ensure_ids, project
 from .schemas import (
@@ -45,6 +46,8 @@ from .schemas import (
 from . import sources as src_mod
 from .store import ProjectStore
 from .vocabulary import ValidationRun, Vocabulary, VocabularyRegistry
+
+log = logging.getLogger(__name__)
 
 
 class StaleRevision(Exception):
@@ -164,6 +167,7 @@ class Project:
         self.namespace: str = self.store.get_meta("namespace")
         self._graph_cache: dict[str, ProjectGraph] = {}
         self._view_cache: dict[str, ModelView] = {}
+        self._repair_cache: dict[str, dict[str, dict]] = {}
         self._migrate_issue_states()
 
     # ------------------------------------------------------------- creation
@@ -268,6 +272,33 @@ class Project:
             if issue.origin != "validation" and issue.affected_ids and not any(a in live for a in issue.affected_ids):
                 continue
             out.append(issue)
+        return out
+
+    def repairs(self, rid: str) -> dict[str, dict]:
+        """Repair information for each validation issue in a revision, from pyshifty's algebraic
+        repair witnesses (joined on focus and statement id). Computed once per revision."""
+        cached = self._repair_cache.get(rid)
+        if cached is not None:
+            return cached
+        pg = self.graph(rid)
+        try:
+            witnesses = self.vocab.repair_witnesses(pg.model)
+        except Exception:  # noqa: BLE001 - optional detail; issues still show the validator message
+            log.exception("repair witnesses failed for %s %s", self.id, rid)
+            return {}
+        by_statement = {(w["focus"], w["statement_id"]): w for w in witnesses}
+        by_shape = {(w["focus"], w["shape"]): w for w in witnesses}
+        out: dict[str, dict] = {}
+        for issue in self.issues(rid):
+            for d in issue.details.get("findings", []):
+                w = (by_statement.get((d["focus"], d["statement_id"])) if d.get("statement_id") is not None
+                     else by_shape.get((d["focus"], d.get("shape"))))  # findings stored before statement ids
+                if w is not None:
+                    out[issue.id] = render_repair(pg, self.vocab, w)
+                    break
+        if len(self._repair_cache) > 8:
+            self._repair_cache.pop(next(iter(self._repair_cache)))
+        self._repair_cache[rid] = out
         return out
 
     def set_issue_state(self, issue_id: str, state: str, dismissed_by: str = "person", reason: str | None = None,

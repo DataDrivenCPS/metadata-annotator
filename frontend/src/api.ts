@@ -1,5 +1,5 @@
 import type {
-  AgentRun, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, ModelResponse, ProjectInfo, Proposal, Revision, Selection, Status, Term,
+  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, ModelResponse, ProjectInfo, Proposal, Revision, Selection, Status, Term,
 } from './types'
 
 export class ApiError extends Error {
@@ -55,6 +55,8 @@ export const api = {
   redo: (pid: string) => req<{ head: string }>('POST', `${P(pid)}/redo`),
   saveLayout: (pid: string, positions: Record<string, [number, number]>) =>
     req('PUT', `${P(pid)}/layout`, { positions }),
+  repairs: (pid: string, revision: string) =>
+    req<Record<string, IssueRepair>>('GET', `${P(pid)}/repairs?revision=${encodeURIComponent(revision)}`),
   setIssueState: (pid: string, id: string, state: 'open' | 'dismissed') =>
     req('PUT', `${P(pid)}/issues/${encodeURIComponent(id)}`, { state }),
   entity: (pid: string, eid: string, revision?: string) =>

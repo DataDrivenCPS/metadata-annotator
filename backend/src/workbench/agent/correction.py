@@ -291,7 +291,8 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
               if i.resolution_state == "open" and i.severity != "suggestion"
               and (not sel_ids or set(i.affected_ids) & (sel_ids | set(related)))]
     if issues:
-        lines += ["", "Open issues on these objects:"] + [issue_line(i) for i in issues[:20]]
+        repairs = project.repairs(rid)
+        lines += ["", "Open issues on these objects:"] + [issue_line(i, repairs.get(i.id)) for i in issues[:20]]
     hints = hint_terms(project, instruction)
     if hints:
         lines += ["", "Vocabulary terms that may be relevant (verify with tools if unsure):"] + [f"  {h}" for h in hints]
@@ -329,8 +330,16 @@ def hint_terms(project: Project, instruction: str, per_query: int = 3) -> list[s
     return out[:20]
 
 
-def issue_line(issue) -> str:
-    return f"  - [{issue.id}] ({issue.severity}, {issue.category.replace('_', ' ')}) {issue.explanation}"
+def issue_line(issue, repair: dict | None = None) -> str:
+    line = f"  - [{issue.id}] ({issue.severity}, {issue.category.replace('_', ' ')}) {issue.explanation}"
+    if repair:
+        line += "\n      repair engine: " + "; ".join(repair["summary"])
+        if repair["blocked"]:
+            line += " (no data repair can be computed)"
+        elif repair["repair"]:
+            line += "\n      repair edits:\n" + "\n".join(
+                "        " + row for row in repair["repair"][:800].splitlines())
+    return line
 
 
 def resolve_dismissals(open_issues: dict, prior: list[IssueDismissal], requested: list,

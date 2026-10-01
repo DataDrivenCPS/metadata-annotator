@@ -94,6 +94,12 @@ Configure providers in `workbench.toml` (`workbench.example.toml` has all three)
 
 The provider can also be chosen per request in the assistant panel.
 
+Speed: a source build maps its point tokens and equipment groups in batches that run in
+parallel, up to the provider's `concurrency` (default 4; set it to a local llama-server's `-np`).
+Reasoning models spend thousands of hidden tokens on each structured call: on OpenRouter,
+`request_options = { reasoning = { enabled = false } }` made a 789-point 223P build several times
+faster (and stopped empty replies). A reply that is not a JSON object is retried once.
+
 ## Tests
 
 ```bash

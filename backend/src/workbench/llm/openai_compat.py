@@ -16,7 +16,7 @@ import httpx
 from urllib.parse import urlparse
 
 from ..config import ProviderConfig
-from .base import CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, parse_json_text
+from .base import CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, parse_reply, retry_malformed
 
 
 def unreachable_message(provider: str, base_url: str, exc: object) -> str:
@@ -47,6 +47,10 @@ class OpenAICompatClient:
     def complete_json(self, system, messages, schema, *, images: list[ImageInput] | None = None,
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int = 8000) -> LLMResult:
+        return retry_malformed(lambda: self._complete_once(system, messages, schema, images, cancel,
+                                                           on_progress, max_tokens))
+
+    def _complete_once(self, system, messages, schema, images, cancel, on_progress, max_tokens) -> LLMResult:
         if images and not self.supports_images:
             raise LLMError(f"the configured model ({self.provider}) does not accept images")
         msgs: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -115,11 +119,9 @@ class OpenAICompatClient:
         text = "".join(text_parts)
         if finish == "length":
             raise LLMError("the model ran out of output tokens before finishing its answer")
-        return LLMResult(
-            data=parse_json_text(text), raw_text=text,
-            input_tokens=int(usage.get("prompt_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or 0),
-        )
+        tokens_in, tokens_out = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+        return LLMResult(data=parse_reply(text, tokens_in, tokens_out), raw_text=text,
+                         input_tokens=tokens_in, output_tokens=tokens_out)
 
     def health(self) -> dict[str, Any]:
         try:

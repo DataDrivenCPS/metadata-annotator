@@ -26,7 +26,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from collections import Counter, defaultdict
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -197,18 +199,41 @@ class Session:
                  progress: Progress, cancel: CancelToken):
         self.project, self.llm, self.guidance, self.rid = project, llm, guidance, rid
         self.vocab = project.vocab
-        self.progress, self.cancel = progress, cancel
+        self._progress, self.cancel = progress, cancel
         self.tools = AgentTools(project, rid, guidance)
         self.outcome = BuildOutcome()
+        self._lock = threading.Lock()  # batches run concurrently
+        # Requests the provider can serve at once (a local llama-server matches its -np).
+        self.workers = max(1, int(getattr(getattr(llm, "cfg", None), "concurrency", 1)))
+
+    def progress(self, stage: str, message: str, data: dict) -> None:
+        with self._lock:
+            self._progress(stage, message, data)
 
     def ask(self, system: str, messages: list[dict], schema: dict) -> dict:
         self.cancel.check()
-        self.outcome.steps += 1
         res = self.llm.complete_json(system, messages, schema, cancel=self.cancel)
-        self.outcome.input_tokens += res.input_tokens
-        self.outcome.output_tokens += res.output_tokens
+        with self._lock:
+            self.outcome.steps += 1
+            self.outcome.input_tokens += res.input_tokens
+            self.outcome.output_tokens += res.output_tokens
         messages.append({"role": "assistant", "content": json.dumps(res.data)})
         return res.data
+
+    def run_batches(self, jobs: list[Callable[[], None]]) -> None:
+        """Independent mapping batches, up to ``workers`` at a time; the first failure stops the rest."""
+        if self.workers == 1 or len(jobs) < 2:
+            for job in jobs:
+                job()
+            return
+        with ThreadPoolExecutor(max_workers=min(self.workers, len(jobs)), thread_name_prefix="build") as pool:
+            futures = [pool.submit(job) for job in jobs]
+            done, pending = wait(futures, return_when=FIRST_EXCEPTION)
+            for future in pending:
+                future.cancel()
+            for future in futures:
+                if future.done() and not future.cancelled() and future.exception():
+                    raise future.exception()  # type: ignore[misc]
 
     def ask_with_tools(self, system: str, messages: list[dict], schema: dict, final: str) -> dict:
         for step in range(MAX_TOOL_STEPS + 1):
@@ -360,9 +385,8 @@ def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: st
             medium_eg="watr:Water-Brackish, s223:Fluid-Water" if watr else "s223:Fluid-Water, s223:Fluid-Air",
         ) + MAP_COMMON + AgentTools.catalog("s223")
         starter = guidance.topic("points", 2500)
-    for b in range(0, len(tgroups), BATCH):
-        batch = tgroups[b:b + BATCH]
-        progress("mapping", f"Mapping point tokens {b + 1}-{b + len(batch)} of {len(tgroups)}", {})
+    def map_points(b: int, batch: list[TokenGroup]) -> None:
+        s.progress("mapping", f"Mapping point tokens {b + 1}-{b + len(batch)} of {len(tgroups)}", {})
         lines = []
         for g in batch:
             ex = "; ".join(r.name for r in g.recs[:3])
@@ -376,6 +400,8 @@ def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: st
                  f"Skill guidance (starter mappings):\n{starter}\n\nTokens:\n" + "\n".join(lines)
                  + (f"\n\nThe person says: {instruction}" if instruction else "")}]
         _map_batch(s, point_system, msgs, {g.id: g for g in batch}, POINT_FIELDS[family], "point")
+
+    s.run_batches([lambda b=b: map_points(b, tgroups[b:b + BATCH]) for b in range(0, len(tgroups), BATCH)])
 
     # ---- equipment groups (by the points each piece of equipment carries)
     equip_tokens: dict[str, set[str]] = defaultdict(set)
@@ -409,15 +435,16 @@ def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: st
             process=", and for treatment equipment its process (watr:Process-*)" if watr else "",
             process_field=', "process": "watr:Process-..." or null' if watr else "",
         ) + MAP_COMMON + AgentTools.catalog(family)
-        for b in range(0, len(egroups), BATCH):
-            batch = egroups[b:b + BATCH]
-            progress("mapping", f"Classifying equipment groups {b + 1}-{b + len(batch)} of {len(egroups)}", {})
+        def map_equipment(b: int, batch: list[EquipGroup]) -> None:
+            s.progress("mapping", f"Classifying equipment groups {b + 1}-{b + len(batch)} of {len(egroups)}", {})
             lines = [f"{g.id} | {len(g.equipment)} equipment, e.g. {', '.join(g.equipment[:4])} | "
                      f"points: {describe_points(g.tokens)}" for g in batch]
             msgs = [{"role": "user", "content": "Equipment groups:\n" + "\n".join(lines)
                      + (f"\n\nThe person says: {instruction}" if instruction else "")}]
             _map_batch(s, eq_system, msgs, {g.id: g for g in batch}, EQUIP_FIELDS[family] if watr or family == "brick"
                        else ["type"], "equipment")
+
+        s.run_batches([lambda b=b: map_equipment(b, egroups[b:b + BATCH]) for b in range(0, len(egroups), BATCH)])
 
     # ---- 3. build, validate, one pattern-level refinement round
     before = project.revision(rid)

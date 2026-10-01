@@ -14,7 +14,7 @@ from typing import Any
 import anthropic
 
 from ..config import ProviderConfig
-from .base import CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, parse_json_text
+from .base import CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, parse_reply, retry_malformed
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -39,6 +39,10 @@ class AnthropicClient:
     def complete_json(self, system, messages, schema, *, images: list[ImageInput] | None = None,
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int = 16000) -> LLMResult:
+        return retry_malformed(lambda: self._complete_once(system, messages, schema, images, cancel,
+                                                           on_progress, max_tokens))
+
+    def _complete_once(self, system, messages, schema, images, cancel, on_progress, max_tokens) -> LLMResult:
         msgs: list[dict[str, Any]] = []
         first_user = True
         for m in messages:
@@ -96,7 +100,7 @@ class AnthropicClient:
             raise LLMError("the model ran out of output tokens before finishing its answer")
         text = next((b.text for b in message.content if b.type == "text"), "")
         return LLMResult(
-            data=parse_json_text(text), raw_text=text,
+            data=parse_reply(text, message.usage.input_tokens, message.usage.output_tokens), raw_text=text,
             input_tokens=message.usage.input_tokens, output_tokens=message.usage.output_tokens,
             extra={"model": message.model, "request_id": getattr(message, "_request_id", None)},
         )

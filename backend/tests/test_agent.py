@@ -285,3 +285,31 @@ def test_sound_changes_are_not_questioned(sample_project, guidance):
     out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "fix the CT-201 unit")
     assert out.steps == 1 and not any(stage == "gated" for stage, _, _ in events)
     assert out.proposal.gate["sound"] and out.proposal.gate["progress"]
+
+
+def test_json_wrapped_in_a_list_is_accepted():
+    from workbench.llm import LLMError
+    from workbench.llm.base import parse_json_text
+
+    assert parse_json_text('[{"action": "propose"}]') == {"action": "propose"}
+    with pytest.raises(LLMError):
+        parse_json_text('[{"a": 1}, {"b": 2}]')
+
+
+def test_malformed_replies_are_retried_once_and_counted():
+    from workbench.llm import LLMResult
+    from workbench.llm.base import MalformedOutput, retry_malformed
+
+    replies = [MalformedOutput("not an object", 7, 3), LLMResult(data={"ok": 1}, raw_text="", input_tokens=5, output_tokens=2)]
+
+    def call():
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    result = retry_malformed(call)
+    assert result.data == {"ok": 1} and (result.input_tokens, result.output_tokens) == (12, 5)
+    always_bad = lambda: (_ for _ in ()).throw(MalformedOutput("[]"))  # noqa: E731
+    with pytest.raises(MalformedOutput):
+        retry_malformed(always_bad)

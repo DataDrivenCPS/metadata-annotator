@@ -88,3 +88,51 @@ def test_brick_build_preview_apply_and_skip_modeled_records(workspace):
     with pytest.raises(LLMError, match="already in the model"):
         run_build(p, ScriptedLLM([]), guidance, rev.id, [source.id], "", None,
                   lambda *_: None, CancelToken())
+
+
+def test_mapping_batches_run_concurrently_up_to_the_provider_limit(workspace):
+    import re
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from workbench.llm import LLMResult
+
+    p = workspace.create("Many points", "brick")
+    names = [f"A{e}:P{t}" for e in range(1, 5) for t in range(1, 71)]  # 70 tokens -> 3 point batches
+    source = p.add_source("points.csv", ("Name\n" + "\n".join(names) + "\n").encode())
+    p.confirm_csv_mapping(source.id, CsvImportConfig(layout="row_points", delimiter=",", header_row=0,
+                                                      first_data_row=1, name_column=0))
+
+    class Concurrent:
+        provider = model = "scripted"
+        supports_images = False
+        cfg = SimpleNamespace(concurrency=3)
+
+        def __init__(self):
+            self.lock, self.active, self.peak = threading.Lock(), 0, 0
+
+        def complete_json(self, system, messages, schema, **kw):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            time.sleep(0.2)
+            with self.lock:
+                self.active -= 1
+            if "pattern" in schema["properties"]:
+                data = {"pattern": r"(?P<equipment>A\d+):(?P<point>.+)", "equipment_from": "group:equipment",
+                        "token_from": "group:point", "units_from": "none", "explanation": "equipment:point"}
+            else:
+                ids = re.findall(r"^([TG]\d+) \|", messages[-1]["content"], re.M)
+                field = "point_type" if ids[0].startswith("T") else "type"
+                term = "brick:Zone_Air_Temperature_Sensor" if field == "point_type" else "brick:AHU"
+                data = {"action": "map", "mappings": [{"id": i, field: term} for i in ids]}
+            return LLMResult(data=data, raw_text="", input_tokens=10, output_tokens=5)
+
+    llm = Concurrent()
+    outcome = run_build(p, llm, SkillGuidance(load_settings().skill_dir), p.head(), [source.id], "", None,
+                        lambda *_: None, CancelToken())
+    summary = outcome.proposal.build_summary
+    assert llm.peak == 3  # three point batches at once, never more than the limit
+    assert summary["mapped_tokens"] == 70 and summary["equipment_created"] == 4
+    assert outcome.steps == 1 + 3 + 1 and outcome.input_tokens == 50

@@ -28,6 +28,9 @@ class ProviderConfig:
     timeout_s: float = 300.0
     # Extra fields merged into every request body (e.g. temperature, top_p).
     request_options: dict = field(default_factory=dict)
+    # Requests sent at once by work that can run in parallel (a source build's mapping batches).
+    # Match a local llama-server's -np; remote providers handle several.
+    concurrency: int = 4
 
     @property
     def api_key(self) -> str | None:

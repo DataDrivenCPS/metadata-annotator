@@ -2,22 +2,23 @@
 
 A finding's focus node is often a sub-node the user never sees (a connection point, a
 sensor). Issues are attached to the top-level entity the user works with: a port's
-equipment, a sensor's point. The raw SHACL detail stays in ``details`` for the
-inspector.
+equipment, a sensor's point. The text is the validator's own message; only IRIs are shown
+as labels or prefixed names. The raw SHACL detail stays in ``details`` for the inspector.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 from rdflib import URIRef
-from rdflib.namespace import RDF, RDFS
+from rdflib.namespace import RDFS
 
 from .graph import ProjectGraph
 from .projection import owner_of_port
 from .schemas import ReviewIssue, ValidationSummary
-from .vocabulary import S223, ValidationRun, Vocabulary, local_name
+from .vocabulary import S223, ValidationRun, Vocabulary
 
 SEVERITY = {"Violation": "violation", "Warning": "warning", "Info": "suggestion"}
 
@@ -43,71 +44,52 @@ def owning_entity(pg: ProjectGraph, focus: str) -> str | None:
     return None
 
 
-def _label(pg: ProjectGraph, vocab: Vocabulary, eid: str | None, focus: str) -> str:
-    node = pg.iri(eid) if eid else URIRef(focus)
-    lbl = next(iter(pg.model.objects(node, RDFS.label)), None)
-    return str(lbl) if lbl is not None else local_name(focus)
+def _label(pg: ProjectGraph, node: str) -> str | None:
+    lbl = next(iter(pg.model.objects(URIRef(node), RDFS.label)), None)
+    return str(lbl) if lbl is not None else None
 
 
-def _explain(pg: ProjectGraph, vocab: Vocabulary, f, eid: str | None) -> tuple[str, str]:
-    """(category, explanation) for one finding."""
-    who = _label(pg, vocab, eid, f.focus)
-    path = local_name(f.path) if f.path else ""
-    msg = f.message or ""
-
-    m = re.match(r"Instances of (\w+) must have the ([\w ]+) process", msg)
-    if m:
-        return "missing_information", (
-            f"{who} is typed as {vocab.label(f.shape) if f.shape else humanize_camel(m.group(1))}, "
-            f"which requires the {humanize_camel(m.group(2))} treatment process.")
-    if re.search(r"probably needs an association with a `?Connection", msg):
-        types = {local_name(t) for t in pg.model.objects(URIRef(f.focus), RDF.type)}
-        port_kind = ("inlet" if "InletConnectionPoint" in types
-                     else "outlet" if "OutletConnectionPoint" in types else "connection point")
-        return "topology", f"{who} has an unconnected {port_kind}."
-    if path == "hasConnectionPoint":
-        side = ("an inlet" if "InletConnectionPoint" in msg
-                else "an outlet" if "OutletConnectionPoint" in msg else "a connection")
-        needs = " carrying a fluid" if "Fluid" in msg else ""
-        return "topology", f"{who} needs {side}{needs} — connect it to upstream/downstream equipment."
-    if path == "hasObservationLocation" or (f.shape or "").endswith("SensorObservationLocationShape"):
-        return "unassigned", f"{who} isn't associated with any equipment, so its sensor has no location."
-    if path == "hasEnumerationKind":
-        return "missing_information", f"{who} needs a value set (for example on/off or run status)."
-    if path in ("hasUnit", "unit"):
-        return "missing_information", f"{who} has no unit."
-    if path == "hasQuantityKind":
-        return "missing_information", f"{who} doesn't say what it measures (quantity kind)."
-    if path == "hasMedium":
-        return "missing_information", f"{who} doesn't say what medium it carries."
-    if path == "observes":
-        return "missing_information", f"{who} has a sensor that doesn't observe exactly one point."
-    compact = re.sub(r"<([^>]+)>", lambda mm: vocab.label(mm.group(1)), msg)
-    compact = re.sub(r"\s+", " ", compact)[:240]
-    return "other", f"{who}: {compact}"
+def render_iri(pg: ProjectGraph, vocab: Vocabulary, iri: str) -> str:
+    """A model node by its own label, a vocabulary term as a prefixed name, otherwise the IRI."""
+    return _label(pg, iri) or vocab.curie(iri)
 
 
-def humanize_camel(s: str) -> str:
-    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)
+def _render(pg: ProjectGraph, vocab: Vocabulary, eid: str | None, d: dict) -> str:
+    """The validator's message, with IRIs shown as labels or prefixed names; nothing added."""
+    msg = re.sub(r"<([^<>\s]+)>", lambda m: render_iri(pg, vocab, m.group(1)), d.get("message") or "")
+    msg = re.sub(r"\s+", " ", msg).strip()
+    who = (_label(pg, str(pg.iri(eid))) if eid else None) or render_iri(pg, vocab, d["focus"])
+    path = f" ({vocab.curie(d['path'])})" if d.get("path") else ""
+    return f"{who}{path}: {msg}"
+
+
+def finding_key(eid: str | None, d: dict) -> str:
+    """Identity of a validation issue, from the validator's output only (not our rendering)."""
+    raw = json.dumps([eid, d.get("shape"), d.get("path"), d.get("message")])
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
 def issues_from_validation(pg: ProjectGraph, vocab: Vocabulary, run: ValidationRun) -> list[ReviewIssue]:
+    return group_findings(pg, vocab, [(owning_entity(pg, f.focus), _detail(f)) for f in run.findings])
+
+
+def group_findings(pg: ProjectGraph, vocab: Vocabulary,
+                   findings: list[tuple[str | None, dict]]) -> list[ReviewIssue]:
+    """One issue per entity and distinct validator message; repeated findings are listed under it."""
     seen: dict[str, ReviewIssue] = {}
-    for f in run.findings:
-        eid = owning_entity(pg, f.focus)
-        category, explanation = _explain(pg, vocab, f, eid)
-        key = hashlib.sha1(f"{eid}|{explanation}".encode()).hexdigest()[:12]
+    for eid, d in findings:
+        key = finding_key(eid, d)
         if key in seen:
-            seen[key].details.setdefault("findings", []).append(_detail(f))
+            seen[key].details["findings"].append(d)
             continue
         seen[key] = ReviewIssue(
             id=f"val-{key}",
             affected_ids=[eid] if eid else [],
-            category=category,  # type: ignore[arg-type]
-            severity=SEVERITY.get(f.severity, "warning"),  # type: ignore[arg-type]
-            explanation=explanation,
+            category="validation",
+            severity=SEVERITY.get(d.get("severity") or "", "warning"),  # type: ignore[arg-type]
+            explanation=_render(pg, vocab, eid, d),
             origin="validation",
-            details={"findings": [_detail(f)]},
+            details={"findings": [d]},
         )
     order = {"violation": 0, "warning": 1, "suggestion": 2}
     return sorted(seen.values(), key=lambda i: (order[i.severity], i.explanation))

@@ -90,3 +90,92 @@ def test_source_upload_preview_confirm(client):
     assert client.get(f"/api/projects/{pid}/sources/{img['id']}/file").headers["content-type"] == "image/png"
     bad = client.post(f"/api/projects/{pid}/sources", files={"file": ("x.exe", b"MZ", "application/octet-stream")})
     assert bad.status_code == 400
+
+
+def test_pdf_preview_build_and_review_flow(client, monkeypatch):
+    from test_agent import ScriptedLLM
+    from test_documents import text_pdf
+
+    pid = client.post('/api/projects', json={'name': 'Document model'}).json()['id']
+    response = client.post(f'/api/projects/{pid}/sources', files={
+        'file': ('plant.pdf', text_pdf('Page one: P-1', 'Page two: TK-2'), 'application/pdf'),
+    })
+    assert response.status_code == 200, response.text
+    source = response.json()
+    sid = source['id']
+    assert source['kind'] == 'pdf' and source['page_count'] == 2
+    preview = client.get(f'/api/projects/{pid}/sources/{sid}/document-preview?page=2')
+    assert 'TK-2' in preview.json()['text']
+    rendered = client.get(f'/api/projects/{pid}/sources/{sid}/pages/2.png')
+    assert rendered.status_code == 200 and rendered.headers['content-type'] == 'image/png'
+    assert client.get(f'/api/projects/{pid}/sources/{sid}/pages/0.png').status_code == 400
+    assert client.get(f'/api/projects/{pid}/sources/{sid}/file').headers['content-type'] == 'application/pdf'
+    llm = ScriptedLLM([{'action': 'propose', 'explanation': 'The source identifies TK-2 as a tank.',
+                        'operations': [{'op': 'create_equipment', 'label': 'DOC-TK-2', 'type': 'watr:Tank'}]}])
+    llm.supports_images = True
+    llm.health = lambda: {'ok': True}
+    monkeypatch.setattr('workbench.runs.make_client', lambda cfg: llm)
+    manager = client.app.state.runs
+    monkeypatch.setattr(manager.pool, 'submit', lambda fn, *args: fn(*args))
+    base = client.get(f'/api/projects/{pid}/model').json()['head']
+    body = {'base_revision': base, 'source_ids': [sid], 'source_pages': {sid: [2]}}
+    invalid = client.post(f'/api/projects/{pid}/build', json={**body, 'source_pages': {sid: [3]}})
+    assert invalid.status_code == 400
+    response = client.post(f'/api/projects/{pid}/build', json=body)
+    assert response.status_code == 200, response.text
+    run = client.get(f'/api/projects/{pid}/runs/{response.json()["id"]}').json()
+    assert run['status'] == 'succeeded', run['error']
+    proposal_id = run['outcome']['proposal_id']
+    proposal = client.get(f'/api/projects/{pid}/proposals/{proposal_id}').json()
+    assert proposal['kind'] == 'build'
+    assert proposal['selection']['source_regions'][0]['pages'] == [2]
+    assert 'Page two: TK-2' in llm.seen[0][0]['content']
+    assert 'Page one: P-1' not in llm.seen[0][0]['content']
+    assert client.get(f'/api/projects/{pid}/model').json()['head'] == base
+    applied = client.post(f'/api/projects/{pid}/proposals/{proposal_id}/apply')
+    assert applied.status_code == 200, applied.text
+    rows = client.get(f'/api/projects/{pid}/model').json()['view']['equipment']
+    assert any(row['label'] == 'DOC-TK-2' and row['evidence'] for row in rows)
+
+
+def test_answering_questions_continues_the_conversation(client, monkeypatch):
+    from test_agent import ScriptedLLM
+
+    pid = client.post("/api/projects", json={"name": "Follow-up"}).json()["id"]
+    with open(SAMPLES / "model.ttl", "rb") as f:
+        client.post(f"/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")})
+    model = client.get(f"/api/projects/{pid}/model").json()
+    head = model["head"]
+    ct = next(p for p in model["view"]["points"] if p["label"].startswith("CT-201"))
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "CT-201 could be permeate or feed conductivity.", "operations": [],
+         "questions": ["Which stream does CT-201 measure?"]},
+        {"action": "propose", "explanation": "Permeate conductivity is reported in uS/cm.",
+         "operations": [{"op": "update_point", "id": ct["id"], "unit": "unit:MicroS-PER-CentiM"}]},
+    ])
+    llm.health = lambda: {"ok": True}
+    monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    monkeypatch.setattr(client.app.state.runs.pool, "submit", lambda fn, *args: fn(*args))
+
+    first = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ct["id"]]}, "instruction": "Fix the CT-201 unit"}).json()
+    first = client.get(f"/api/projects/{pid}/runs/{first['id']}").json()
+    assert first["outcome"]["questions"] and not first["outcome"]["proposal_id"]
+
+    r = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ct["id"]]}, "instruction": "It is permeate.",
+        "parent_run_id": first["id"]})
+    assert r.status_code == 200, r.text
+    second = client.get(f"/api/projects/{pid}/runs/{r.json()['id']}").json()
+    assert second["status"] == "succeeded", second["error"]
+    assert second["parent_run_id"] == first["id"]
+    assert [t["role"] for t in second["conversation"]] == ["user", "assistant"]
+    context = llm.seen[1][0]["content"]
+    assert "EARLIER CONVERSATION" in context and "Which stream does CT-201 measure?" in context
+    proposal = client.get(f"/api/projects/{pid}/proposals/{second['outcome']['proposal_id']}").json()
+    assert [t["text"] for t in proposal["conversation"]][0] == "Fix the CT-201 unit"
+    assert proposal["conversation"][-2]["text"] == "It is permeate."
+
+    unknown = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "instruction": "again", "parent_run_id": "run-missing"})
+    assert unknown.status_code == 400

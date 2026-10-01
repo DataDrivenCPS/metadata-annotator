@@ -63,7 +63,17 @@ CREATE TABLE IF NOT EXISTS issues (
     state TEXT NOT NULL,
     body TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS issue_states (issue_id TEXT PRIMARY KEY, state TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS issue_states (issue_id TEXT PRIMARY KEY, state TEXT NOT NULL);  -- legacy, migrated
+-- revision: set when the dismissal came with a published change; it applies only while that
+-- revision is in the head's history, so undoing the change reopens the issue.
+CREATE TABLE IF NOT EXISTS issue_dismissals (
+    issue_id TEXT PRIMARY KEY,
+    dismissed_by TEXT NOT NULL,
+    reason TEXT,
+    proposal_id TEXT,
+    revision TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS layout (entity_id TEXT PRIMARY KEY, x REAL NOT NULL, y REAL NOT NULL);
 """

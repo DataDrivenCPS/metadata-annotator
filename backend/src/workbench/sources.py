@@ -28,7 +28,8 @@ from typing import Any
 from .schemas import CsvImportConfig, Observation, Source, SourceLocation, now
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-CSV_TYPES = {".csv", ".tsv", ".txt"}
+CSV_TYPES = {".csv", ".tsv"}
+DOCUMENT_TYPES = {".txt", ".md", ".json", ".yaml", ".yml", ".log", ".docx"}
 MAX_UPLOAD = 50 * 1024 * 1024
 
 
@@ -47,7 +48,11 @@ def source_kind(filename: str) -> str:
         return "image"
     if ext in CSV_TYPES:
         return "csv"
-    raise SourceError(f"Unsupported file type {ext or '(none)'}: upload a CSV point list or a PNG/JPEG diagram.")
+    if ext == ".pdf":
+        return "pdf"
+    if ext in DOCUMENT_TYPES:
+        return "document"
+    raise SourceError(f"Unsupported file type {ext or '(none)'}: upload CSV/TSV, an image, PDF, Word (.docx), or a text document.")
 
 
 def store_source(root: Path, filename: str, data: bytes) -> Source:
@@ -59,21 +64,28 @@ def store_source(root: Path, filename: str, data: bytes) -> Source:
     sid = f"src-{secrets.token_hex(4)}"
     fname = safe_filename(filename)
     folder = root / "sources" / sid
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / fname).write_bytes(data)
     width = height = None
+    page_count = None
     if kind == "image":
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         try:
             with Image.open(io.BytesIO(data)) as im:
-                width, height = im.size
+                width, height = ImageOps.exif_transpose(im).size
         except Exception as exc:
             raise SourceError(f"Could not read the image: {exc}") from None
+    elif kind == "pdf":
+        from .documents import pdf_page_count
+        page_count = pdf_page_count(data)
+    elif kind == "document":
+        from .documents import document_text
+        document_text(data, fname)
     else:
         decode_text(data)  # fail early on binary files
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / fname).write_bytes(data)
     return Source(id=sid, kind=kind, filename=fname, sha256=hashlib.sha256(data).hexdigest(),  # type: ignore[arg-type]
-                  created_at=now(), width=width, height=height)
+                  created_at=now(), width=width, height=height, page_count=page_count)
 
 
 def source_path(root: Path, src: Source) -> Path:

@@ -315,6 +315,7 @@ class BrickCompiler:
         s, o = self.node(op.from_equipment), self.node(op.to_equipment)
         self.g.add((s, BRICK.feeds, o))
         register_edge(self.pg, op.id, s, BRICK.feeds, o, op.label)
+        self.pg.add_evidence(self.pg.iri(op.id), op.evidence or [])
         self.r.touch(op.id, "created", *op.provided())
 
     def update_connection(self, op) -> None:

@@ -104,7 +104,14 @@ once; the two must persist together (see branch-report.md). The merged closure i
 `skos:broader` lineage, deprecation/superseded flags) is cached alongside. Validation uses a
 `shifty.PreparedValidator` over the cached shapes in `union` graph mode: ~0.5–0.7 s per run.
 `issues.py` maps each finding's focus node to the owning entity (port → equipment, sensor →
-point) and phrases it in plant terms, keeping the raw SHACL detail for the inspector.
+point). The issue text is the validator's own message (IRIs shown as model labels or prefixed
+names from the loaded ontologies); nothing is paraphrased. An issue's id is a hash of the
+entity, shape, path and raw message, so it is independent of labels and display wording.
+Issues are rebuilt from each revision's stored findings when read.
+
+Dismissals live in `issue_dismissals` (who, reason, proposal). A dismissal that came with a
+published change records that revision and applies only while it is in the head's history,
+so undoing the change reopens the issue; other dismissals hold until reopened.
 
 ## The correction agent (`agent/correction.py`)
 
@@ -147,7 +154,7 @@ workbench-data/
   cache/                         per-profile closure/catalog/meta caches; shared OntoEnv store
   projects/<project-id>/
     project.sqlite               meta, revisions, proposals, corrections, sources, observations,
-                                 issues, issue_states, agent_runs, layout
+                                 issues, issue_dismissals, agent_runs, layout
     revisions/rev-N.trig
     sources/<source-id>/…
 ```

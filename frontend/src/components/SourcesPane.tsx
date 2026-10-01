@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
 import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source } from '../types'
+import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
   ['row_points', 'Rows describe points', 'One point per row: a name column plus optional metadata columns.'],
@@ -50,32 +51,34 @@ export function SourcesPane() {
         <button className="primary" disabled={uploading} onClick={() => input.current?.click()}>
           {uploading ? 'Uploading…' : 'Upload…'}
         </button>
-        <input ref={input} type="file" multiple hidden accept=".csv,.tsv,.txt,.png,.jpg,.jpeg,.webp"
+        <input ref={input} type="file" multiple hidden accept=".csv,.tsv,.txt,.md,.json,.yaml,.yml,.log,.docx,.pdf,.png,.jpg,.jpeg,.webp"
           onChange={(e) => { void upload(e.target.files); e.target.value = '' }} />
       </div>
       {sources.length === 0 ? (
         <div className="drop-hint">
-          Upload a point list (CSV) or a diagram (PNG/JPEG), or drop files here.
+          Upload CSV/TSV, images, PDFs, Word (.docx), or text documents, or drop files here.
           <br /><span className="muted">To start from an existing Turtle model, use “Import model…” above.</span>
         </div>
       ) : (
         <ul className="source-list">
           {sources.map((s) => (
             <li key={s.id} className={s.id === active ? 'active' : ''} onClick={() => setActive(s.id === active ? null : s.id)}>
-              <span className={`src-kind ${s.kind}`}>{s.kind === 'csv' ? 'CSV' : 'IMG'}</span>
+              <span className={`src-kind ${s.kind}`}>{s.kind === 'csv' ? 'CSV' : s.kind === 'image' ? 'IMG' : s.kind === 'pdf' ? 'PDF' : 'DOC'}</span>
               <span className="src-name" title={s.filename}>{s.filename}</span>
               <span className="muted">{s.kind === 'csv'
                 ? (s.status === 'configured'
                   ? (s.modeled_count ? `${s.modeled_count}/${s.observation_count} in model` : `${s.observation_count} records`)
                   : 'needs mapping')
-                : `${s.width}×${s.height}`}</span>
+                : s.kind === 'image' ? `${s.width}×${s.height}` : s.kind === 'pdf' ? `${s.page_count} pages` : 'text'}</span>
             </li>
           ))}
         </ul>
       )}
       {current && (
         <div className="source-view">
-          {current.kind === 'csv' ? <CsvSource source={current} onConfirmed={load} /> : <ImageView source={current} />}
+          {current.kind === 'csv' ? <CsvSource source={current} onConfirmed={load} />
+            : current.kind === 'image' ? <ImageView key={current.id} source={current} />
+            : <DocumentView key={current.id} source={current} />}
         </div>
       )}
     </aside>
@@ -372,6 +375,7 @@ function ImageView({ source }: { source: Source }) {
 
   return (
     <div className="image-view">
+      <DocumentBuild source={source} />
       <div className="image-tools">
         <button className={mode === 'pan' ? 'active' : ''} onClick={() => setMode('pan')}>Pan</button>
         <button className={mode === 'select' ? 'active' : ''} onClick={() => setMode('select')}>Select region</button>
@@ -419,8 +423,81 @@ function ImageView({ source }: { source: Source }) {
       </div>
       <p className="muted small">
         {region ? `Region ${region[2]}×${region[3]} px selected as evidence for the assistant.` : 'Scroll to zoom. Use “Select region” to mark part of the diagram as evidence.'}
-        {' '}Reading equipment and connections from diagrams is coming next.
+        {' '}Build from the full image using the button above, or ask the assistant about the selected region.
       </p>
     </div>
   )
+}
+
+// --------------------------------------------------------- document extraction
+
+function DocumentBuild({ source }: { source: Source }) {
+  const startBuild = useStore((s) => s.startBuild)
+  const runs = useStore((s) => s.runs)
+  const providers = useStore((s) => s.status?.providers)
+  const provider = useStore((s) => s.provider)
+  const notify = useStore((s) => s.notify)
+  const [hint, setHint] = useState('')
+  const [pages, setPages] = useState(() => `1${(source.page_count ?? 1) > 1 ? `-${Math.min(MAX_BUILD_PAGES, source.page_count!)}` : ''}`)
+  const [starting, setStarting] = useState(false)
+  const selectedProvider = providers?.find((p) => provider ? p.name === provider : p.default)
+  const vision = selectedProvider?.supports_images ?? false
+  const running = Object.values(runs).some((r) => r.status === 'queued' || r.status === 'running')
+  const canBuild = source.kind !== 'image' || vision
+
+  const build = async () => {
+    try {
+      const sourcePages = source.kind === 'pdf' ? { [source.id]: parsePageSelection(pages, source.page_count ?? 0) } : undefined
+      setStarting(true)
+      await startBuild([source.id], hint.trim(), sourcePages)
+    } catch (e) { notify({ kind: 'error', text: (e as Error).message }) }
+    finally { setStarting(false) }
+  }
+  return <div className="build-box document-build">
+    <strong>Build model from {source.kind === 'image' ? 'image' : source.kind === 'pdf' ? 'PDF' : 'document'}</strong>
+    <p className="muted small">The assistant extracts equipment, points, and supported connections. Review the proposed changes before applying.</p>
+    {source.kind === 'pdf' && <label className="document-pages">Pages to read
+      <input value={pages} onChange={(e) => setPages(e.target.value)} placeholder="1-3, 5" />
+      <span className="muted small">Up to {MAX_BUILD_PAGES} pages per build; you can build more pages afterwards.</span>
+    </label>}
+    <textarea rows={2} value={hint} onChange={(e) => setHint(e.target.value)}
+      placeholder="What should it extract? Include any naming conventions or relevant context." />
+    {source.filename.toLowerCase().endsWith('.docx') && <p className="muted small">Reads Word text and tables. Export embedded diagrams as images or PDF to include them.</p>}
+    {!vision && source.kind === 'image' && <p className="warn-text small">Choose a model that supports images in the assistant panel.</p>}
+    {!vision && source.kind === 'pdf' && <p className="muted small">This model reads PDF text only. Choose a model that supports images to read scans or diagrams.</p>}
+    <button className="primary" disabled={!canBuild || starting || running} onClick={() => void build()}>
+      {starting ? 'Starting…' : running ? 'Assistant is working…' : source.kind === 'pdf' ? 'Build from selected pages' : 'Build model'}
+    </button>
+  </div>
+}
+
+function DocumentView({ source }: { source: Source }) {
+  const projectId = useStore((s) => s.projectId)!
+  const [page, setPage] = useState(1)
+  const [result, setResult] = useState<{ page: number; preview?: { text: string; truncated: boolean }; error?: string } | null>(null)
+  const preview = result?.page === page ? result.preview : null
+  const error = result?.page === page ? result.error : null
+  useEffect(() => {
+    let active = true
+    api.documentPreview(projectId, source.id, page).then((preview) => { if (active) setResult({ page, preview }) })
+      .catch((e) => { if (active) setResult({ page, error: (e as Error).message }) })
+    return () => { active = false }
+  }, [projectId, source.id, page])
+  return <div className="document-view">
+    <DocumentBuild source={source} />
+    {source.kind === 'pdf' && <>
+      <div className="document-navigation">
+        <button disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
+        <span>Page {page} of {source.page_count}</span>
+        <button disabled={page >= (source.page_count ?? 1)} onClick={() => setPage(page + 1)}>Next</button>
+        <a className="button" href={api.sourceFileUrl(projectId, source.id)} target="_blank" rel="noreferrer">Open PDF</a>
+      </div>
+      <div className="document-page"><img src={api.sourcePageUrl(projectId, source.id, page)} alt={`${source.filename}, page ${page}`} /></div>
+    </>}
+    {error && <p className="error-text">{error}</p>}
+    {preview && <details open={source.kind !== 'pdf'}>
+      <summary>Readable text{preview.truncated ? ' (preview truncated)' : ''}</summary>
+      <pre className="document-text">{preview.text || 'No text layer. A model that supports images can read this page visually.'}</pre>
+    </details>}
+  </div>
 }

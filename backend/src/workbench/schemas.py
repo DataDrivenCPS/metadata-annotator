@@ -37,7 +37,7 @@ class CsvImportConfig(BaseModel):
 
 class Source(BaseModel):
     id: str
-    kind: Literal["csv", "image", "rdf"]
+    kind: Literal["csv", "image", "pdf", "document", "rdf"]
     filename: str
     sha256: str
     created_at: str
@@ -45,6 +45,7 @@ class Source(BaseModel):
     status: Literal["uploaded", "configured", "extracting", "extracted", "failed"] = "uploaded"
     width: int | None = None
     height: int | None = None
+    page_count: int | None = None
 
 
 class SourceLocation(BaseModel):
@@ -54,6 +55,7 @@ class SourceLocation(BaseModel):
     column: int | None = None
     # image regions: x, y, width, height in source pixels
     bbox: list[float] | None = None
+    page: int | None = None
 
 
 class Observation(BaseModel):
@@ -98,6 +100,7 @@ class SourceRegion(BaseModel):
     source_id: str
     bbox: list[float] | None = None
     rows: list[int] | None = None
+    pages: list[int] | None = None  # PDF page numbers, starting at 1
 
 
 class SelectionScope(BaseModel):
@@ -149,6 +152,14 @@ class ValidationDelta(BaseModel):
     introduced: list[str] = Field(default_factory=list)
 
 
+class IssueDismissal(BaseModel):
+    """A review issue the assistant proposes to dismiss; applied with the proposal."""
+    id: str
+    explanation: str
+    severity: str
+    reason: str
+
+
 class ChangeProposal(BaseModel):
     id: str
     base_revision: str
@@ -175,6 +186,7 @@ class ChangeProposal(BaseModel):
     followup_issues: list[dict[str, Any]] = Field(default_factory=list)
     parent_proposal_id: str | None = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
+    issue_dismissals: list[IssueDismissal] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------- issues
@@ -184,13 +196,15 @@ class ReviewIssue(BaseModel):
     affected_ids: list[str]
     category: Literal[
         "missing_information", "invalid_value", "topology", "unassigned",
-        "unresolved_extraction", "ambiguous_association", "conflict", "other",
+        "unresolved_extraction", "ambiguous_association", "conflict", "validation", "other",
     ]
     severity: Literal["violation", "warning", "suggestion"]
     explanation: str
     resolution_state: Literal["open", "resolved", "dismissed"] = "open"
     origin: Literal["validation", "extraction", "association", "correction"]
     details: dict[str, Any] = Field(default_factory=dict)
+    # Who dismissed it and why, while the dismissal applies to this revision.
+    dismissal: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------- agent runs
@@ -209,6 +223,10 @@ class AgentRun(BaseModel):
     selection: SelectionScope | None = None
     source_ids: list[str] = Field(default_factory=list)
     instruction: str = ""
+    # How the run was requested, and the earlier exchange it continues (oldest first).
+    mode: Literal["assist", "reply", "reconsider", "build"] = "assist"
+    parent_run_id: str | None = None
+    conversation: list[dict[str, str]] = Field(default_factory=list)
     provider: str
     model: str
     skill_version: str

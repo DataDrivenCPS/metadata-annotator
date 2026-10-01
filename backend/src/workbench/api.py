@@ -49,6 +49,7 @@ class AssistRequest(BaseModel):
     selection: SelectionScope = Field(default_factory=SelectionScope)
     instruction: str = Field(min_length=1, max_length=4000)
     provider: str | None = None
+    parent_run_id: str | None = None  # continue this run's conversation, e.g. answer its questions
 
 
 class BuildRequest(BaseModel):
@@ -56,11 +57,13 @@ class BuildRequest(BaseModel):
     source_ids: list[str] = Field(min_length=1)
     instruction: str = Field("", max_length=4000)
     provider: str | None = None
+    source_pages: dict[str, list[int]] = Field(default_factory=dict)
 
 
 class ProposalReplyRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=4000)
     provider: str | None = None
+    parent_run_id: str | None = None
 
 
 class LayoutRequest(BaseModel):
@@ -144,7 +147,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         providers = []
         for name, cfg in settings.providers.items():
             providers.append({"name": name, "kind": cfg.kind, "model": cfg.model, "base_url": cfg.base_url,
-                              "supports_images": cfg.supports_images, "default": name == settings.default_provider,
+                              "supports_images": cfg.supports_images or cfg.kind == "anthropic", "default": name == settings.default_provider,
                               "has_key": bool(cfg.api_key) if cfg.api_key_env else None})
         vocabularies = registry.status()
         default = next(v for v in vocabularies if v["name"] == settings.default_profile)
@@ -357,8 +360,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def source_file(pid: str, sid: str):
         p = project(pid)
         src = source_or_404(p, sid)
-        media = IMAGE_TYPES.get(Path(src.filename).suffix.lower(), "text/csv" if src.kind == "csv" else None)
-        return FileResponse(p.source_file(sid), media_type=media, filename=src.filename)
+        media = IMAGE_TYPES.get(Path(src.filename).suffix.lower(), "application/pdf" if src.kind == "pdf" else "text/csv" if src.kind == "csv" else None)
+        return FileResponse(p.source_file(sid), media_type=media, filename=src.filename,
+                            content_disposition_type="inline" if src.kind == "pdf" else "attachment")
+
+    @app.get("/api/projects/{pid}/sources/{sid}/document-preview")
+    def document_preview(pid: str, sid: str, page: int = 1):
+        from .documents import document_text, pdf_page
+        p = project(pid)
+        src = source_or_404(p, sid)
+        try:
+            data = p.source_file(sid).read_bytes()
+            if src.kind == "pdf":
+                text, _ = pdf_page(data, page, render=False)
+            elif src.kind == "document":
+                text = document_text(data, src.filename)
+            else:
+                raise SourceError("This source is not a PDF or text document.")
+            return {"text": text[:50000], "truncated": len(text) > 50000}
+        except SourceError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/projects/{pid}/sources/{sid}/pages/{page}.png")
+    def document_page_image(pid: str, sid: str, page: int):
+        from .documents import pdf_page
+        p = project(pid)
+        src = source_or_404(p, sid)
+        if src.kind != "pdf":
+            raise HTTPException(400, "This source is not a PDF.")
+        try:
+            _, pixels = pdf_page(p.source_file(sid).read_bytes(), page)
+            return Response(content=pixels, media_type="image/png")
+        except SourceError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.get("/api/projects/{pid}/sources/{sid}/grid")
     def source_grid(pid: str, sid: str, limit: int = 60, delimiter: str | None = None):
@@ -427,8 +461,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def assist(pid: str, body: AssistRequest):
         p = project(pid)
         try:
-            run = runs.start_correction(p, body.base_revision, body.selection, body.instruction, body.provider)
-        except KeyError as exc:
+            run = runs.start_correction(p, body.base_revision, body.selection, body.instruction, body.provider,
+                                        body.parent_run_id)
+        except (KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except ProviderUnavailable as exc:
             raise HTTPException(503, str(exc)) from None
@@ -440,7 +475,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for sid in body.source_ids:
             source_or_404(p, sid)
         try:
-            run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider)
+            run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider, body.source_pages)
+        except SourceError as exc:
+            raise HTTPException(400, str(exc)) from None
         except KeyError as exc:
             raise HTTPException(400, str(exc)) from None
         except ProviderUnavailable as exc:
@@ -484,7 +521,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p = project(pid)
         try:
             prop = p.proposal(prop_id)
-            run = runs.start_revision(p, prop, instruction, body.provider)
+            run = runs.start_revision(p, prop, instruction, body.provider, parent_run_id=body.parent_run_id)
         except KeyError:
             raise HTTPException(404, f"No proposal {prop_id}") from None
         except ValueError as exc:

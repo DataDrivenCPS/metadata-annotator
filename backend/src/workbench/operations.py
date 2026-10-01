@@ -126,6 +126,7 @@ class CreateConnection(_Op):
     to_equipment: str
     medium: str | None = Field(None, description="Medium IRI, e.g. s223:Fluid-Water (223P/WaTr: required)")
     type: str | None = Field(None, description="Connection class IRI; default s223:Pipe")
+    evidence: list[str] | None = None
 
 
 class UpdateConnection(_Op):
@@ -178,13 +179,13 @@ FAMILY_FIELDS = {
     "brick": {
         "equipment": {"label", "type", "contained_in", "evidence"},
         "point": {"label", "point_kind", "point_type", "unit", "equipment", "evidence"},
-        "connection": {"label", "from_equipment", "to_equipment"},
+        "connection": {"label", "from_equipment", "to_equipment", "evidence"},
     },
     "s223": {
         "equipment": {"label", "type", "process", "contained_in", "evidence"},
         "point": {"label", "point_kind", "quantity_kind", "unit", "equipment", "medium", "substance",
                   "sensor_type", "enumeration_kind", "evidence"},
-        "connection": {"label", "from_equipment", "to_equipment", "medium", "type"},
+        "connection": {"label", "from_equipment", "to_equipment", "medium", "type", "evidence"},
     },
 }
 FAMILY_NAMES = {"brick": "Brick", "s223": "223P/WaTr"}
@@ -521,6 +522,7 @@ class _Compiler:
     def create_connection(self, op: CreateConnection) -> None:
         cid = op.id
         n = self.pg.register(cid)  # type: ignore[arg-type]
+        self.pg.add_evidence(n, op.evidence or [])
         g = self.g
         g.add((n, RDF.type, URIRef(op.type) if op.type else S223.Pipe))
         a, b = self.node(op.from_equipment), self.node(op.to_equipment)

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore, type Tab } from '../store'
-import { emptySelection, type EntityDetail, type Revision, type ReviewIssue, type Row, type ValidationSummary } from '../types'
+import {
+  emptySelection, type EntityDetail, type IssueDismissalRecord, type Revision, type ReviewIssue, type Row, type ValidationSummary,
+} from '../types'
 import { shortIri } from './TermPicker'
 
 export function Drawer() {
@@ -12,7 +14,10 @@ export function Drawer() {
   const open = model.issues.filter((i) => i.resolution_state === 'open')
   const problems = open.filter((i) => i.severity !== 'suggestion').length
 
-  useEffect(() => { if (inspectId) setDrawerTab('inspector') }, [inspectId, setDrawerTab])
+  // Inspecting an object shows its details, unless its RDF is already open.
+  useEffect(() => {
+    if (inspectId && useStore.getState().drawerTab !== 'rdf') setDrawerTab('inspector')
+  }, [inspectId, setDrawerTab])
 
   return (
     <section className="drawer">
@@ -23,11 +28,14 @@ export function Drawer() {
           Issues {problems > 0 && <span className="badge warn">{problems}</span>}
         </button>
         <button className={tab === 'inspector' ? 'active' : ''} onClick={() => setDrawerTab('inspector')}>Inspector</button>
+        <button className={tab === 'rdf' ? 'active' : ''} title="The inspected object's RDF, as Turtle"
+          onClick={() => setDrawerTab('rdf')}>RDF</button>
         <button className={tab === 'history' ? 'active' : ''} onClick={() => setDrawerTab('history')}>History</button>
       </nav>
       <div className="drawer-body">
         {tab === 'issues' && <IssuesList issues={model.issues} validation={model.revision.validation} />}
         {tab === 'inspector' && <Inspector />}
+        {tab === 'rdf' && <RdfView />}
         {tab === 'history' && <History />}
       </div>
     </section>
@@ -95,7 +103,10 @@ function IssuesList({ issues, validation }: { issues: ReviewIssue[]; validation:
                 return next
               })} />
             <span className={`sev ${i.severity}`}>{i.severity}</span>
-            <span className="issue-text" onClick={() => focus(i)} title="Select the affected objects">{i.explanation}</span>
+            <span className="issue-text" onClick={() => focus(i)} title="Select the affected objects">
+              {i.explanation}
+              {i.dismissal && <DismissalNote dismissal={i.dismissal} />}
+            </span>
             <button className="link" onClick={() => void api.setIssueState(projectId, i.id,
               i.resolution_state === 'dismissed' ? 'open' : 'dismissed').then(reload)}>
               {i.resolution_state === 'dismissed' ? 'reopen' : 'dismiss'}
@@ -109,87 +120,121 @@ function IssuesList({ issues, validation }: { issues: ReviewIssue[]; validation:
   )
 }
 
-function Inspector() {
+function useEntityDetail() {
   const projectId = useStore((s) => s.projectId)!
   const head = useStore((s) => s.model?.head)
   const inspectId = useStore((s) => s.inspectId)
-  const setSelection = useStore((s) => s.setSelection)
-  const appendAssistantContext = useStore((s) => s.appendAssistantContext)
-  const notify = useStore((s) => s.notify)
   const [detail, setDetail] = useState<EntityDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [version, setVersion] = useState(0)
 
   useEffect(() => {
     if (!inspectId) { setDetail(null); return }
     setError(null)
     api.entity(projectId, inspectId).then(setDetail).catch((e) => { setDetail(null); setError(String(e.message ?? e)) })
-  }, [projectId, inspectId, head])
+  }, [projectId, inspectId, head, version])
 
-  if (!inspectId) return <p className="muted pad">Select an object to inspect its ontology terms, RDF, evidence, and history.</p>
+  return { inspectId, detail, error, refresh: () => setVersion((v) => v + 1) }
+}
+
+function Inspector() {
+  const projectId = useStore((s) => s.projectId)!
+  const setSelection = useStore((s) => s.setSelection)
+  const appendAssistantContext = useStore((s) => s.appendAssistantContext)
+  const notify = useStore((s) => s.notify)
+  const reload = useStore((s) => s.reload)
+  const { inspectId, detail, error, refresh } = useEntityDetail()
+
+  if (!inspectId) return <p className="muted pad">Select an object to inspect its ontology terms, evidence, and history.</p>
   if (error) return <p className="error-text pad">{error}</p>
   if (!detail) return <p className="muted pad">Loading…</p>
   return (
     <div className="inspector">
-      <div className="inspector-cols">
-        <div>
-          <h4>{detail.row?.label ?? detail.id}</h4>
-          <dl>
-            <dt>Id</dt><dd><code>{detail.id}</code></dd>
-            <dt>IRI</dt><dd><code>{detail.iri}</code></dd>
-            <dt>Types</dt><dd>{detail.types.map((t) => <div key={t.iri} title={t.iri}>{t.label} <code>{shortIri(t.iri)}</code></div>)}</dd>
-            <dt>Set or confirmed by a person</dt><dd>{detail.locked.length ? detail.locked.join(', ') : <span className="muted">—</span>}</dd>
-          </dl>
-          <h5>Issues on this object</h5>
-          {detail.issues.length ? (
-            <ul className="inspector-issues">
-              {detail.issues.map((issue) => (
-                <li key={issue.id} className={`inspector-issue sev-${issue.severity}`}>
-                  <div className="inspector-issue-heading">
-                    <span className={`sev ${issue.severity}`}>{issue.severity}</span>
-                    <span>{issue.category.replaceAll('_', ' ')}</span>
-                    <span className={`muted issue-state ${issue.resolution_state}`}>{issue.resolution_state}</span>
-                    <button className="link" onClick={() => {
-                      const isConnection = detail.row?.kind === 'connection'
-                      setSelection({ ...emptySelection(),
-                        entity_ids: isConnection ? [] : [detail.id],
-                        relationship_ids: isConnection ? [detail.id] : [] })
-                      appendAssistantContext(issuePrompt(detail, issue))
-                      notify({ kind: 'info', text: 'Issue context is in the assistant prompt. Review before sending.' })
-                    }}>Use in chat</button>
-                  </div>
-                  <p>{issue.explanation}</p>
-                  {issue.details.findings?.map((finding, index) => (
-                    <div className="finding-detail" key={`${finding.focus}-${index}`}>
-                      {finding.message && <p>{finding.message}</p>}
-                      <dl>
-                        {finding.focus && <><dt>Focus</dt><dd><code>{finding.focus}</code></dd></>}
-                        {finding.path && <><dt>Path</dt><dd><code>{finding.path}</code></dd></>}
-                        {finding.shape && <><dt>Shape</dt><dd><code>{finding.shape}</code></dd></>}
-                      </dl>
-                    </div>
-                  ))}
-                </li>
+      <h4>{detail.row?.label ?? detail.id}</h4>
+      <dl>
+        <dt>Id</dt><dd><code>{detail.id}</code></dd>
+        <dt>IRI</dt><dd><code>{detail.iri}</code></dd>
+        <dt>Types</dt><dd>{detail.types.map((t) => <div key={t.iri} title={t.iri}>{t.label} <code>{shortIri(t.iri)}</code></div>)}</dd>
+        <dt>Set or confirmed by a person</dt><dd>{detail.locked.length ? detail.locked.join(', ') : <span className="muted">—</span>}</dd>
+      </dl>
+      <h5>Issues on this object</h5>
+      {detail.issues.length ? (
+        <ul className="inspector-issues">
+          {detail.issues.map((issue) => (
+            <li key={issue.id} className={`inspector-issue sev-${issue.severity}`}>
+              <div className="inspector-issue-heading">
+                <span className={`sev ${issue.severity}`}>{issue.severity}</span>
+                <span>{issue.category.replaceAll('_', ' ')}</span>
+                <span className="issue-actions">
+                  {issue.resolution_state === 'dismissed' && <span className="muted">dismissed</span>}
+                  <button className="link"
+                    title={issue.resolution_state === 'dismissed' ? 'Show this issue as open again' : 'Hide this issue from the open list'}
+                    onClick={() => void api.setIssueState(projectId, issue.id,
+                      issue.resolution_state === 'dismissed' ? 'open' : 'dismissed')
+                      .then(() => Promise.all([reload(), refresh()]))
+                      .catch((e) => notify({ kind: 'error', text: String(e.message ?? e) }))}>
+                    {issue.resolution_state === 'dismissed' ? 'Reopen' : 'Dismiss'}
+                  </button>
+                  <button className="link" onClick={() => {
+                    const isConnection = detail.row?.kind === 'connection'
+                    setSelection({ ...emptySelection(),
+                      entity_ids: isConnection ? [] : [detail.id],
+                      relationship_ids: isConnection ? [detail.id] : [] })
+                    appendAssistantContext(issuePrompt(detail, issue))
+                    notify({ kind: 'info', text: 'Issue context is in the assistant prompt. Review before sending.' })
+                  }}>Use in chat</button>
+                </span>
+              </div>
+              <p>{issue.explanation}</p>
+              {issue.dismissal && <DismissalNote dismissal={issue.dismissal} />}
+              {issue.details.findings?.map((finding, index) => (
+                <div className="finding-detail" key={`${finding.focus}-${index}`}>
+                  {finding.message && <p>{finding.message}</p>}
+                  <dl>
+                    {finding.focus && <><dt>Focus</dt><dd><code>{finding.focus}</code></dd></>}
+                    {finding.path && <><dt>Path</dt><dd><code>{finding.path}</code></dd></>}
+                    {finding.shape && <><dt>Shape</dt><dd><code>{finding.shape}</code></dd></>}
+                  </dl>
+                </div>
               ))}
-            </ul>
-          ) : <p className="muted">No issues recorded for this object.</p>}
-          <h5>Evidence</h5>
-          {detail.evidence.length ? detail.evidence.map((e) => (
-            <div key={e.id} className="evidence-item"><code>{e.id}</code> {JSON.stringify(e.content)}</div>
-          )) : <p className="muted">No linked source observations.</p>}
-          <h5>Correction history</h5>
-          {detail.history.length ? (
-            <ul className="history">{detail.history.map((h, i) => (
-              <li key={i}><code>{h.revision_id}</code> {h.origin}: {h.field} {fmtJson(h.before)} → {fmtJson(h.after)}</li>
-            ))}</ul>
-          ) : <p className="muted">No changes recorded.</p>}
-        </div>
-        <div>
-          <h5>RDF (Turtle)</h5>
-          <pre className="code turtle">{detail.turtle}</pre>
-        </div>
-      </div>
+            </li>
+          ))}
+        </ul>
+      ) : <p className="muted">No issues recorded for this object.</p>}
+      <h5>Evidence</h5>
+      {detail.evidence.length ? detail.evidence.map((e) => (
+        <div key={e.id} className="evidence-item"><code>{e.id}</code> {JSON.stringify(e.content)}</div>
+      )) : <p className="muted">No linked source observations.</p>}
+      <h5>Correction history</h5>
+      {detail.history.length ? (
+        <ul className="history">{detail.history.map((h, i) => (
+          <li key={i}><code>{h.revision_id}</code> {h.origin}: {h.field} {fmtJson(h.before)} → {fmtJson(h.after)}</li>
+        ))}</ul>
+      ) : <p className="muted">No changes recorded.</p>}
     </div>
   )
+}
+
+function RdfView() {
+  const { inspectId, detail, error } = useEntityDetail()
+
+  if (!inspectId) return <p className="muted pad">Select an object to see its RDF.</p>
+  if (error) return <p className="error-text pad">{error}</p>
+  if (!detail) return <p className="muted pad">Loading…</p>
+  return (
+    <div className="inspector">
+      <h4>{detail.row?.label ?? detail.id} <span className="muted small">Turtle</span></h4>
+      <pre className="code turtle">{detail.turtle}</pre>
+    </div>
+  )
+}
+
+function DismissalNote({ dismissal }: { dismissal: IssueDismissalRecord }) {
+  return <span className="dismissal-note">
+    Dismissed by {dismissal.dismissed_by === 'assistant' ? 'the assistant (applied by you)' : 'you'}
+    {dismissal.revision ? ` with ${dismissal.revision}; undoing that change reopens it` : ''}
+    {dismissal.reason ? ` — ${dismissal.reason}` : ''}
+  </span>
 }
 
 function issuesPrompt(issues: ReviewIssue[], rows: Map<string, Row>): string {
@@ -205,7 +250,7 @@ function issuesPrompt(issues: ReviewIssue[], rows: Map<string, Row>): string {
       finding.shape ? `shape ${finding.shape}` : '',
     ].filter(Boolean).join('; ')) ?? []
     return [
-      `${index + 1}. ${issue.severity}, ${issue.category.replaceAll('_', ' ')}: ${issue.explanation}`,
+      `${index + 1}. [${issue.id}] ${issue.severity}, ${issue.category.replaceAll('_', ' ')}: ${issue.explanation}`,
       objects.length ? `Affected objects: ${objects.join('; ')}` : '',
       findings.length ? `Validation details: ${findings.join(' | ')}` : '',
     ].filter(Boolean).join('\n')
@@ -227,7 +272,7 @@ function issuePrompt(detail: EntityDetail, issue: ReviewIssue): string {
   ].filter(Boolean).join('\n')) ?? []
   return [
     'Please review this issue in the current model and propose a correction if it still applies. Check the related context and explain your reasoning.',
-    `Issue (${issue.severity}, ${issue.category.replaceAll('_', ' ')}): ${issue.explanation}`,
+    `Issue [${issue.id}] (${issue.severity}, ${issue.category.replaceAll('_', ' ')}): ${issue.explanation}`,
     `Affected object: ${label} (${detail.row?.kind ?? 'entity'})`,
     `Object ID: ${detail.id}`,
     `Object IRI: ${detail.iri}`,

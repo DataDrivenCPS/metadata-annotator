@@ -74,8 +74,8 @@ edit after an undo clears the redo history.
 
 Ask for another change, and before applying it make a direct edit (double-click any cell, e.g.
 rename `LT-101`). The pending proposal turns orange: *"The model is now at rev-N; this proposal
-was made against rev-M"*, with **Regenerate** (re-runs the same request on the current model)
-and **Dismiss**. Applying a stale proposal is refused by the server (HTTP 409).
+was made against rev-M"*, with **Refresh on latest** (re-runs the same request on the current model)
+and **Discard**. Applying a stale proposal is refused by the server (HTTP 409).
 
 ## 7. Reopen and export
 

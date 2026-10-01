@@ -16,23 +16,22 @@ describe('refresh completion', () => {
   beforeEach(() => {
     useStore.setState({
       proposal: { id: 'old' } as Proposal, activeRunId: 'refresh', runs: {},
-      assistantReplyToId: 'old', assistantDraft: 'My next request',
+      proposalStates: {}, assistantDraft: 'My next request',
     })
   })
 
-  it('removes the resolved proposal and reply target while preserving the draft and explanation', () => {
+  it('removes the resolved proposal while preserving the draft and explanation', () => {
     useStore.getState().handleEvent({ type: 'run', run: completed('old') })
     const state = useStore.getState()
     expect(state.proposal).toBeNull()
-    expect(state.assistantReplyToId).toBeNull()
+    expect(state.proposalStates.old).toBe('dismissed')
     expect(state.assistantDraft).toBe('My next request')
     expect(state.runs.refresh.outcome.explanation).toBe('Already resolved.')
   })
 
   it('preserves a different proposal when an earlier refresh finishes', () => {
-    useStore.setState({ proposal: { id: 'new' } as Proposal, assistantReplyToId: 'new' })
+    useStore.setState({ proposal: { id: 'new' } as Proposal })
     useStore.getState().handleEvent({ type: 'run', run: completed('old') })
     expect(useStore.getState().proposal?.id).toBe('new')
-    expect(useStore.getState().assistantReplyToId).toBe('new')
   })
 })

@@ -54,6 +54,8 @@ export function Workspace() {
 
   if (!model) return <div className="loading">Loading project…</div>
   const v = model.revision.validation
+  const openViolations = model.issues.filter((i) => i.resolution_state === 'open' && i.severity === 'violation').length
+  const dismissedCount = model.issues.filter((i) => i.resolution_state === 'dismissed').length
   const counts = { points: model.view.points.length, equipment: model.view.equipment.length,
                    connections: model.view.connections.length, graph: model.view.equipment.length }
 
@@ -67,10 +69,11 @@ export function Workspace() {
         <span className="rev" title={model.revision.summary}>
           {model.head} · saved
         </span>
-        {v && <button className={`health ${v.violations ? 'bad' : 'good'}`}
-          title={`Validated in ${v.duration_s}s: ${v.violations} violation(s). Click to open the Issues tray, which also includes warnings and source findings.`}
+        {v && <button className={`health ${openViolations ? 'bad' : 'good'}`}
+          title={`Validated in ${v.duration_s}s: ${openViolations} open violation(s)${dismissedCount ? `, ${dismissedCount} dismissed issue(s)` : ''}. Click to open the Issues tray, which also includes warnings and source findings.`}
           onClick={() => setDrawerTab('issues')}>
-          {v.violations ? `${v.violations} violation(s)` : 'model checks pass'}
+          {openViolations ? `${openViolations} violation(s)` : dismissedCount ? 'no open violations' : 'model checks pass'}
+          {dismissedCount > 0 && <span className="muted"> · {dismissedCount} dismissed</span>}
         </button>}
         <span className="spacer" />
         <button className={sourcesOpen ? 'active' : ''} onClick={toggleSources} title="Show or hide uploaded sources">Sources</button>

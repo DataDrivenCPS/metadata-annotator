@@ -15,13 +15,30 @@ from .config import Settings
 from .events import EventBus
 from .llm import Cancelled, CancelToken, LLMError, make_client
 from .project import Project, StaleRevision
-from .schemas import AgentRun, ChangeProposal, ProgressEvent, SelectionScope, now
+from .schemas import AgentRun, ChangeProposal, ProgressEvent, SelectionScope, SourceRegion, now
+from .sources import SourceError
 
 log = logging.getLogger(__name__)
 
 
 class ProviderUnavailable(Exception):
     pass
+
+
+MAX_HISTORY_TURNS = 12
+MAX_TURN_CHARS = 2000
+
+
+def run_reply_text(run: AgentRun) -> str:
+    """What the assistant said in a finished run, as one conversation turn."""
+    if run.status != "succeeded":
+        return f"(The run {run.status}{': ' + run.error if run.error else ''}.)"
+    parts = [run.outcome.get("explanation") or ""]
+    if questions := run.outcome.get("questions"):
+        parts.append("Questions for you:\n" + "\n".join(f"- {q}" for q in questions))
+    if run.outcome.get("proposal_id"):
+        parts.append(f"(Proposed change {run.outcome['proposal_id']}.)")
+    return "\n\n".join(p for p in parts if p).strip()
 
 
 class RunManager:
@@ -50,6 +67,17 @@ class RunManager:
         return [AgentRun.model_validate(b) for b in
                 project.store.list_bodies("agent_runs", order="created_at DESC")[:limit]]
 
+    def history(self, project: Project, parent_run_id: str | None) -> list[dict[str, str]]:
+        """The conversation up to and including the parent run's exchange, newest turns kept."""
+        if not parent_run_id:
+            return []
+        parent = self.get(project, parent_run_id)
+        if parent.status in ("queued", "running"):
+            raise ValueError(f"run {parent_run_id} has not finished")
+        turns = [*parent.conversation, {"role": "user", "text": parent.instruction},
+                 {"role": "assistant", "text": run_reply_text(parent)}]
+        return [{"role": t["role"], "text": t["text"][:MAX_TURN_CHARS]} for t in turns if t["text"]][-MAX_HISTORY_TURNS:]
+
     def recover(self, project: Project) -> None:
         """Runs that were in flight when the process stopped cannot resume; mark them."""
         for b in project.store.list_bodies("agent_runs", "status IN ('queued','running')"):
@@ -63,9 +91,11 @@ class RunManager:
     # ------------------------------------------------------------------ runs
 
     def start_correction(self, project: Project, base: str, selection: SelectionScope,
-                         instruction: str, provider: str | None = None) -> AgentRun:
+                         instruction: str, provider: str | None = None,
+                         parent_run_id: str | None = None) -> AgentRun:
         if base != project.head():
             raise StaleRevision(base, project.head())
+        history = self.history(project, parent_run_id)
         cfg = self.settings.provider(provider)
         if cfg.kind == "openai":  # fail fast instead of starting a run that cannot reach its model
             health = make_client(cfg).health()  # type: ignore[attr-defined]
@@ -73,7 +103,8 @@ class RunManager:
                 raise ProviderUnavailable(health["detail"])
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
-            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model,
+            selection=selection, instruction=instruction, parent_run_id=parent_run_id,
+            conversation=history, provider=cfg.name, model=cfg.model,
             skill_version=self.guidance.version,
         )
         token = CancelToken()
@@ -83,39 +114,65 @@ class RunManager:
         self.pool.submit(self._execute, project, run, token,
                          lambda progress: run_correction(
                              project, make_client(cfg), self.guidance, base, selection,
-                             instruction, run.id, progress, token))
+                             instruction, run.id, progress, token, history=history))
         return run
 
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
-                    provider: str | None = None) -> AgentRun:
-        """Build model entities from confirmed source records (agent/build.py)."""
+                    provider: str | None = None, source_pages: dict[str, list[int]] | None = None) -> AgentRun:
+        """Build from confirmed CSV records or selected image/document evidence."""
         from .agent.build import run_build
 
         if base != project.head():
             raise StaleRevision(base, project.head())
+        sources = [project.source(sid) for sid in source_ids]
+        documents = any(source.kind != "csv" for source in sources)
+        if documents and any(source.kind == "csv" for source in sources):
+            raise SourceError("Build CSV records separately from images and documents.")
+        if source_pages and (set(source_pages) - set(source_ids) or any(
+            source.kind != "pdf" and source.id in source_pages for source in sources
+        )):
+            raise SourceError("Page selections must refer to PDF sources in this build.")
+        selection = SelectionScope(source_regions=[SourceRegion(
+            source_id=sid, pages=(source_pages or {}).get(sid)) for sid in source_ids]) if documents else None
+        if selection:
+            from .documents import validate_regions
+            validate_regions(project, selection.source_regions)
         cfg = self.settings.provider(provider)
+        if documents and any(source.kind == "image" for source in sources) and not (
+            cfg.supports_images or cfg.kind == "anthropic"
+        ):
+            raise SourceError("Choose a vision-capable model in the assistant panel to read images.")
         if cfg.kind == "openai":
             health = make_client(cfg).health()  # type: ignore[attr-defined]
             if not health["ok"]:
                 raise ProviderUnavailable(health["detail"])
         run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="build", input_revision=base, source_ids=source_ids,
-            instruction=instruction, provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
+            id=f"run-{secrets.token_hex(4)}", kind="build", mode="build", input_revision=base, source_ids=source_ids,
+            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
         )
         token = CancelToken()
         with self._lock:
             self.tokens[run.id] = token
         self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_build(project, make_client(cfg), self.guidance, base, source_ids,
-                                                    instruction, run.id, progress, token))
+        if documents:
+            request = "Build a model from the attached sources. Extract equipment, points, and supported connections. " + instruction
+            self.pool.submit(self._execute, project, run, token,
+                             lambda progress: run_correction(project, make_client(cfg), self.guidance, base,
+                                                             selection, request, run.id, progress, token,
+                                                             build_from_sources=True))
+        else:
+            self.pool.submit(self._execute, project, run, token,
+                             lambda progress: run_build(project, make_client(cfg), self.guidance, base, source_ids,
+                                                        instruction, run.id, progress, token))
         return run
 
     def start_revision(self, project: Project, proposal: ChangeProposal, instruction: str,
-                       provider: str | None = None, reconsider: bool = False) -> AgentRun:
+                       provider: str | None = None, reconsider: bool = False,
+                       parent_run_id: str | None = None) -> AgentRun:
         """Continue a pending proposal or reconsider it against the latest revision."""
         if proposal.status != "pending" and not (reconsider and proposal.status == "stale"):
             raise ValueError(f"proposal is {proposal.status}")
+        history = self.history(project, parent_run_id or proposal.agent_run_id) if not reconsider else []
         base = project.head()
         if not reconsider and proposal.base_revision != base:
             raise StaleRevision(proposal.base_revision, project.head())
@@ -133,8 +190,10 @@ class RunManager:
                 raise ProviderUnavailable(health["detail"])
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
-            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model,
-            skill_version=self.guidance.version,
+            mode="reconsider" if reconsider else "reply",
+            parent_run_id=None if reconsider else (parent_run_id or proposal.agent_run_id),
+            selection=selection, instruction=instruction, conversation=history,
+            provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
         )
         token = CancelToken()
         with self._lock:
@@ -144,7 +203,7 @@ class RunManager:
                          lambda progress: run_correction(
                              project, make_client(cfg), self.guidance, base,
                              selection, instruction, run.id, progress, token,
-                             prior_proposal=proposal, reconsider=reconsider))
+                             prior_proposal=proposal, reconsider=reconsider, history=history))
         return run
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:
@@ -184,7 +243,7 @@ class RunManager:
         except Cancelled:
             run.status = "cancelled"
             run.error = "Cancelled"
-        except LLMError as exc:
+        except (LLMError, SourceError) as exc:
             run.status = "failed"
             run.error = str(exc)
         except StaleRevision as exc:

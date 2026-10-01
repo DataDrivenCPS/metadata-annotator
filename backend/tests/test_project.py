@@ -27,7 +27,7 @@ def test_import_projects_sample(sample_project):
     # sensors are not equipment rows
     assert not any("sensor" in e.label.lower() for e in view.equipment)
     issues = sample_project.issues(sample_project.head())
-    assert any("TK-301" in i.explanation and "inlet" in i.explanation for i in issues)
+    assert any("TK-301" in i.explanation and "InletConnectionPoint" in i.explanation for i in issues)
 
 
 def test_edit_then_undo_restores_graph_exactly(sample_project):
@@ -221,3 +221,70 @@ def test_annotation_only_proposal_persists_field_lock(sample_project, registry):
     # Once both the value and annotation are present, applying again is a true no-op.
     repeat = _proposal(reopened, [{"op": "update_point", "id": point.id, "label": point.label}], [point.id])
     assert reopened.apply_proposal(repeat.id).id == applied.id
+
+
+def test_issue_text_is_the_validator_message(sample_project):
+    p = sample_project
+    for issue in p.issues(p.head()):
+        if issue.origin != "validation":
+            continue
+        message = issue.details["findings"][0]["message"]
+        # the validator's words, with IRIs shown as labels or prefixed names; nothing else added
+        words = [w for w in message.replace("<", " ").replace(">", " ").split() if "://" not in w and ":" not in w]
+        assert all(w in issue.explanation for w in words), (issue.explanation, message)
+
+
+def _ro1(p, rid=None):
+    return [i for i in p.issues(rid or p.head()) if i.explanation.startswith("RO-1")]
+
+
+def test_dismissal_survives_rename_and_reports_who(sample_project):
+    p = sample_project
+    issue = _ro1(p)[0]
+    p.set_issue_state(issue.id, "dismissed")
+    ro = by_label(p.view(p.head()).equipment, "RO-1")
+    p.edit(p.head(), ops({"op": "update_equipment", "id": ro.id, "label": "RO-1 Train A"}))
+    after = {i.id: i for i in _ro1(p)}
+    assert after[issue.id].resolution_state == "dismissed"
+    assert after[issue.id].dismissal["dismissed_by"] == "person"
+    assert "RO-1 Train A" in after[issue.id].explanation
+    p.set_issue_state(issue.id, "open")
+    assert {i.id: i for i in _ro1(p)}[issue.id].resolution_state == "open"
+
+
+def test_dismissal_with_a_change_follows_undo_and_redo(sample_project):
+    from workbench.schemas import IssueDismissal
+
+    p = sample_project
+    base = p.head()
+    issue = _ro1(p)[0]
+    ct = by_label(p.view(base).points, "CT-201")
+    cand = p.build_candidate(base, ops({"op": "update_point", "id": ct.id, "label": "CT-201 permeate"}))
+    prop = p.save_proposal(cand, SelectionScope(), "rename and dismiss", "", [], [], None,
+                           p.revision(base).validation, p.issues(base),
+                           issue_dismissals=[IssueDismissal(id=issue.id, explanation=issue.explanation,
+                                                            severity=issue.severity, reason="expected")])
+    rev = p.apply_proposal(prop.id)
+    state = lambda: {i.id: i for i in p.issues(p.head())}[issue.id]
+    assert state().resolution_state == "dismissed" and state().dismissal["revision"] == rev.id
+    p.undo()
+    assert state().resolution_state == "open"
+    p.redo()
+    assert state().resolution_state == "dismissed"
+
+
+def test_legacy_dismissals_move_to_current_ids(sample_project, workspace):
+    import json
+
+    p = sample_project
+    head = p.head()
+    target = _ro1(p)[0]
+    with p.store.tx() as db:
+        stored = json.loads(db.execute("SELECT issues FROM revisions WHERE id=?", (head,)).fetchone()["issues"])
+        legacy = next(i for i in stored if i["id"] == target.id)
+        legacy["id"] = "val-oldwording1"
+        db.execute("UPDATE revisions SET issues=? WHERE id=?", (json.dumps(stored), head))
+        db.execute("INSERT INTO issue_states(issue_id, state) VALUES('val-oldwording1', 'dismissed')")
+    workspace._open.clear()
+    reopened = workspace.get(p.id)
+    assert {i.id: i for i in reopened.issues(head)}[target.id].resolution_state == "dismissed"

@@ -24,7 +24,7 @@ from rdflib.namespace import OWL, RDF
 from . import operations as ops_mod
 from .events import EventBus
 from .graph import ProjectGraph, model_shell
-from .issues import issues_from_validation, summarize
+from .issues import group_findings, issues_from_validation, summarize
 from .operations import ApplyResult, OperationError, OperationList
 from .projection import ModelView, ensure_ids, project
 from .schemas import (
@@ -164,6 +164,7 @@ class Project:
         self.namespace: str = self.store.get_meta("namespace")
         self._graph_cache: dict[str, ProjectGraph] = {}
         self._view_cache: dict[str, ModelView] = {}
+        self._migrate_issue_states()
 
     # ------------------------------------------------------------- creation
 
@@ -238,27 +239,75 @@ class Project:
             self._view_cache[rid] = v
         return v
 
+    def _stored_issues(self, db, rid: str) -> list[ReviewIssue]:
+        """A revision's validation issues, rebuilt from its stored findings so every revision
+        uses the current issue ids and wording."""
+        row = db.execute("SELECT issues FROM revisions WHERE id=?", (rid,)).fetchone()
+        stored = [ReviewIssue.model_validate(i) for i in json.loads(row["issues"] or "[]")]
+        findings = [(i.affected_ids[0] if i.affected_ids else None, d)
+                    for i in stored for d in i.details.get("findings", [])]
+        return group_findings(self.graph(rid), self.vocab, findings)
+
     def issues(self, rid: str) -> list[ReviewIssue]:
         with self.store.tx() as db:
-            row = db.execute("SELECT issues FROM revisions WHERE id=?", (rid,)).fetchone()
-            states = {r["issue_id"]: r["state"] for r in db.execute("SELECT * FROM issue_states")}
-        validation = [ReviewIssue.model_validate(i) for i in json.loads(row["issues"] or "[]")]
+            validation = self._stored_issues(db, rid)
+            parents = {r["id"]: r["parent_id"] for r in db.execute("SELECT id, parent_id FROM revisions")}
+            dismissals = {r["issue_id"]: dict(r) for r in db.execute("SELECT * FROM issue_dismissals")}
+        history, node = set(), rid
+        while node and node not in history:
+            history.add(node)
+            node = parents.get(node)
         persistent = [ReviewIssue.model_validate(b) for b in self.store.list_bodies("issues")]
         live = self.view(rid).rows()
         out = []
         for issue in validation + persistent:
-            if issue.id in states:
-                issue.resolution_state = states[issue.id]  # type: ignore[assignment]
+            d = dismissals.get(issue.id)
+            if d and (d["revision"] is None or d["revision"] in history):
+                issue.resolution_state = "dismissed"
+                issue.dismissal = {k: d[k] for k in ("dismissed_by", "reason", "proposal_id", "revision", "created_at")}
             if issue.origin != "validation" and issue.affected_ids and not any(a in live for a in issue.affected_ids):
                 continue
             out.append(issue)
         return out
 
-    def set_issue_state(self, issue_id: str, state: str) -> None:
+    def set_issue_state(self, issue_id: str, state: str, dismissed_by: str = "person", reason: str | None = None,
+                        proposal_id: str | None = None, revision: str | None = None, publish: bool = True) -> None:
         with self.store.tx() as db:
-            db.execute("INSERT INTO issue_states(issue_id, state) VALUES(?, ?) "
-                       "ON CONFLICT(issue_id) DO UPDATE SET state=excluded.state", (issue_id, state))
-        self.bus.publish(self.id, {"type": "issues", "head": self.head()})
+            if state == "dismissed":
+                db.execute("INSERT INTO issue_dismissals(issue_id, dismissed_by, reason, proposal_id, revision, created_at)"
+                           " VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET"
+                           " dismissed_by=excluded.dismissed_by, reason=excluded.reason, proposal_id=excluded.proposal_id,"
+                           " revision=excluded.revision, created_at=excluded.created_at",
+                           (issue_id, dismissed_by, reason, proposal_id, revision, now()))
+            else:
+                db.execute("DELETE FROM issue_dismissals WHERE issue_id=?", (issue_id,))
+        if publish:
+            self.bus.publish(self.id, {"type": "issues", "head": self.head()})
+
+    def _migrate_issue_states(self) -> None:
+        """Carry dismissals from the old per-id state table to the current issue ids."""
+        with self.store.tx() as db:
+            legacy = [r["issue_id"] for r in db.execute("SELECT issue_id FROM issue_states WHERE state='dismissed'")]
+            if not legacy:
+                return
+            revisions = [r["id"] for r in db.execute("SELECT id FROM revisions ORDER BY created_at DESC")]
+            stored = {}
+            for rid in revisions:
+                row = db.execute("SELECT issues FROM revisions WHERE id=?", (rid,)).fetchone()
+                for i in json.loads(row["issues"] or "[]"):
+                    stored.setdefault(i["id"], (rid, i))
+            for old_id in legacy:
+                if old_id in stored:
+                    rid, issue = stored[old_id]
+                    eid = issue["affected_ids"][0] if issue["affected_ids"] else None
+                    new_ids = [i.id for i in group_findings(self.graph(rid), self.vocab,
+                                                            [(eid, d) for d in issue["details"].get("findings", [])])]
+                else:
+                    new_ids = [old_id]
+                for new_id in new_ids:
+                    db.execute("INSERT OR IGNORE INTO issue_dismissals(issue_id, dismissed_by, created_at)"
+                               " VALUES(?, 'person', ?)", (new_id, now()))
+            db.execute("DELETE FROM issue_states")
 
     # -------------------------------------------------------- candidates
 
@@ -378,6 +427,7 @@ class Project:
                       build_summary: dict | None = None, followup_issues: list[dict] | None = None,
                       parent_proposal_id: str | None = None,
                       conversation: list[dict[str, str]] | None = None,
+                      issue_dismissals: list | None = None,
                       ) -> ChangeProposal:
         before_expl = {i.explanation for i in before_issues if i.severity != "suggestion"}
         after_expl = {i.explanation for i in cand.issues if i.severity != "suggestion"}
@@ -407,6 +457,7 @@ class Project:
             followup_issues=followup_issues or [],
             parent_proposal_id=parent_proposal_id,
             conversation=conversation or [],
+            issue_dismissals=issue_dismissals or [],
         )
         self._put_proposal(prop)
         return prop
@@ -484,6 +535,7 @@ class Project:
                 raise ProposalMismatch("applying the proposal would not produce the previewed change")
             if (not cand.diff.added and not cand.diff.removed
                     and set(cand.before.ann) == set(cand.after.ann)):
+                self._dismiss_issues(prop, None)
                 prop.status = "applied"
                 prop.applied_revision = head
                 self._put_proposal(prop)
@@ -498,10 +550,18 @@ class Project:
                 body = {**issue, "id": f"{issue['id']}-{rev.id}"}
                 self.store.put_body("issues", body["id"], body, origin=body.get("origin", "extraction"),
                                     state=body.get("resolution_state", "open"))
+            self._dismiss_issues(prop, rev.id)
             prop.status = "applied"
             prop.applied_revision = rev.id
             self._put_proposal(prop)
             return rev
+
+    def _dismiss_issues(self, prop: ChangeProposal, revision: str | None) -> None:
+        for d in prop.issue_dismissals:
+            self.set_issue_state(d.id, "dismissed", dismissed_by="assistant", reason=d.reason,
+                                 proposal_id=prop.id, revision=revision, publish=False)
+        if prop.issue_dismissals:
+            self.bus.publish(self.id, {"type": "issues", "head": self.head()})
 
     def dismiss_proposal(self, pid: str) -> ChangeProposal:
         prop = self.proposal(pid)

@@ -383,6 +383,12 @@ class Vocabulary:
         t = self.terms.get(str(iri))
         return t.label if t else humanize(local_name(iri))
 
+    def curie(self, iri: str) -> str:
+        """A prefixed name using the namespaces declared by the loaded ontologies, else the IRI."""
+        best = max(((p, ns) for p, ns in self.namespaces.items() if p and iri.startswith(ns) and len(iri) > len(ns)),
+                   key=lambda pn: len(pn[1]), default=None)
+        return f"{best[0]}:{iri[len(best[1]):]}" if best else iri
+
     def is_a(self, cls: str, ancestor: str) -> bool:
         return cls == ancestor or ancestor in self.ancestors.get(cls, ())
 

@@ -41,6 +41,11 @@ export interface ReviewIssue {
   severity: 'violation' | 'warning' | 'suggestion'; explanation: string
   resolution_state: 'open' | 'resolved' | 'dismissed'; origin: string
   details: { findings?: { focus: string; shape: string | null; path: string | null; message: string; severity: string }[] }
+  dismissal?: IssueDismissalRecord | null
+}
+export interface IssueDismissalRecord {
+  dismissed_by: 'person' | 'assistant'; reason: string | null; proposal_id: string | null
+  revision: string | null; created_at: string
 }
 export type Family = 's223' | 'brick'
 export interface ProjectInfo {
@@ -53,7 +58,7 @@ export interface ModelResponse {
   issues: ReviewIssue[]; layout: Record<string, [number, number]>
 }
 
-export interface SourceRegion { source_id: string; bbox?: number[] | null; rows?: number[] | null }
+export interface SourceRegion { source_id: string; bbox?: number[] | null; rows?: number[] | null; pages?: number[] | null }
 export interface Selection {
   entity_ids: string[]; relationship_ids: string[]; field_ids: string[]; source_regions: SourceRegion[]
 }
@@ -79,7 +84,9 @@ export interface Proposal {
   build_summary: BuildSummary | null
   parent_proposal_id?: string | null
   conversation?: { role: 'user' | 'assistant'; text: string }[]
+  issue_dismissals?: IssueDismissal[]
 }
+export interface IssueDismissal { id: string; explanation: string; severity: string; reason: string }
 export interface BuildMapping {
   id: string; token?: string; units?: string | null; count: number; examples: string[]; mapped: boolean
   term: string | null; term_label: string | null; point_kind?: string | null; unit?: string | null
@@ -97,6 +104,10 @@ export interface ProgressEvent { at: string; stage: string; message: string; dat
 export interface AgentRun {
   id: string; kind: string; input_revision: string; selection: Selection | null
   instruction: string; provider: string; model: string; skill_version: string
+  source_ids?: string[]
+  mode?: 'assist' | 'reply' | 'reconsider' | 'build'
+  parent_run_id?: string | null
+  conversation?: { role: 'user' | 'assistant'; text: string }[]
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   progress: ProgressEvent[]
   outcome: { proposal_id?: string | null; dismissed_proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number }
@@ -138,8 +149,9 @@ export interface CsvImportConfig {
   first_data_column: number
 }
 export interface Source {
-  id: string; kind: 'csv' | 'image' | 'rdf'; filename: string; sha256: string; created_at: string
+  id: string; kind: 'csv' | 'image' | 'pdf' | 'document' | 'rdf'; filename: string; sha256: string; created_at: string
   import_config: CsvImportConfig | null; status: string; width: number | null; height: number | null
+  page_count?: number | null
   observation_count?: number
   modeled_count?: number
 }

@@ -12,10 +12,15 @@ pinned at `78b304aa`), loading each vocabulary from the sources its agent skill 
 OpenAI-compatible endpoint, or the Anthropic API.
 
 **Status: local alpha.** The correction loop and source-backed point-list build are implemented.
-The Sources pane uploads CSV point lists and diagrams, confirms one of three CSV layouts,
-and lets you build a reviewable model proposal from confirmed records. Diagrams support
-zoom, pan and region selection. Diagram interpretation, cross-source association and pilot
-hardening remain. See `docs/branch-report.md` for
+The Sources pane uploads CSV/TSV point lists, images, PDFs, Word (.docx), and text documents
+(.txt, .md, .json, .yaml, .yml, .log). Confirm a CSV layout to build from records, or use
+**Build model** on an image/document to extract equipment, points, and supported connections
+into a reviewable proposal. PDF builds accept page ranges (up to 8 pages per build). Images
+and scans need a vision-capable provider; text PDFs and documents can use a text model.
+Word extraction reads text and tables; export embedded diagrams as images or PDF.
+Source/page evidence is retained for review, replies, and refreshing on the latest revision.
+Diagrams support zoom, pan and region selection; selected image regions can also be sent
+to the assistant. Cross-source association and pilot hardening remain. See `docs/branch-report.md` for
 what the BuildingMOTIF branch provides and how the plan changed.
 
 ## Layout
@@ -78,7 +83,7 @@ Configure providers in `workbench.toml` (`workbench.example.toml` has all three)
 - **Local (default)** — run llama.cpp's server yourself. With [llama](https://llama.app)
   (packages llama.cpp for macOS, Windows and Linux):
   `llama serve -hf <user>/<model-GGUF>:<quant> --port 8081 -c 32768`
-  (or `-m model.gguf`; add `--mmproj` / use a vision GGUF for diagram extraction later).
+  (or `-m model.gguf`; add `--mmproj` / use a vision GGUF for image and scanned-PDF extraction).
   A plain `llama-server` binary from <https://github.com/ggml-org/llama.cpp/releases> works the
   same (`--jinja` must be on; it is the default in current builds). The app expects port 8081
   so it doesn't collide with anything on llama.cpp's default 8080. Use a capable instruction model —
@@ -121,10 +126,19 @@ Records for later modeling. Applying the proposal populates the tables and graph
 each point to its source record. **Undo** returns to the previous revision; **Build the rest**
 can process records still outside the model.
 
-While a proposal is pending, type a reply in the Assistant box above it and choose **Reply to
-proposal** (or Ctrl/Cmd+Enter). The assistant uses the pending draft as context and proposes
-an updated version. The draft remains available if the reply run fails; nothing changes in the
-model until **Apply**. The conversation is shown with the revised proposal.
+The Assistant panel is a conversation: your messages and the assistant's replies, explanations,
+questions (**Needs your input**) and proposed changes appear in order, with the message box at
+the bottom (Enter sends, Shift+Enter adds a line). By default a message continues the
+conversation: while a proposal is pending it is a reply to that proposal, and after the
+assistant asks questions it is your answer, with the earlier exchange given to the assistant as
+context. Choose **Start a new request** to begin without it. A reply to a pending proposal
+produces an updated version; the draft remains available if the reply run fails, and nothing
+changes in the model until **Apply**.
+
+When a review issue is not a real problem (for example a validator finding about behaviour you
+confirm is expected), the assistant can propose dismissing it. The proposal lists each issue
+with the reason; applying it marks them dismissed without changing the model, and **Reopen**
+(or the Issues list) restores them.
 For a source-build draft, a reply about a repeated point token can revise all points carrying
 that token in one proposal.
 

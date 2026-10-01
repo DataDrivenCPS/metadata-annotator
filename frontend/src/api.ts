@@ -61,17 +61,18 @@ export const api = {
     req<EntityDetail>('GET', `${P(pid)}/entities/${eid}${revision ? `?revision=${revision}` : ''}`),
   describeSelection: (pid: string, sel: Selection) =>
     req<{ summary: string }>('POST', `${P(pid)}/selection/describe`, sel),
-  assist: (pid: string, base_revision: string, selection: Selection, instruction: string, provider?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider }),
-  build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider }),
+  assist: (pid: string, base_revision: string, selection: Selection, instruction: string, provider?: string,
+    parent_run_id?: string) =>
+    req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id }),
+  build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>) =>
+    req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages }),
   run: (pid: string, id: string) => req<AgentRun>('GET', `${P(pid)}/runs/${id}`),
   runs: (pid: string) => req<AgentRun[]>('GET', `${P(pid)}/runs`),
   cancelRun: (pid: string, id: string) => req<AgentRun>('POST', `${P(pid)}/runs/${id}/cancel`),
   proposal: (pid: string, id: string) => req<Proposal>('GET', `${P(pid)}/proposals/${id}`),
   proposals: (pid: string) => req<Proposal[]>('GET', `${P(pid)}/proposals`),
-  replyToProposal: (pid: string, id: string, instruction: string, provider?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider }),
+  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string) =>
+    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id }),
   applyProposal: (pid: string, id: string) => req<Revision>('POST', `${P(pid)}/proposals/${id}/apply`),
   dismissProposal: (pid: string, id: string) => req<Proposal>('POST', `${P(pid)}/proposals/${id}/dismiss`),
   regenerate: (pid: string, id: string, provider?: string) =>
@@ -86,6 +87,8 @@ export const api = {
     fd.append('file', file)
     return req<Source>('POST', `${P(pid)}/sources`, fd)
   },
+  documentPreview: (pid: string, sid: string, page = 1) => req<{ text: string; truncated: boolean }>('GET', `${P(pid)}/sources/${sid}/document-preview?page=${page}`),
+  sourcePageUrl: (pid: string, sid: string, page: number) => `${P(pid)}/sources/${sid}/pages/${page}.png`,
   sourceFileUrl: (pid: string, sid: string) => `${P(pid)}/sources/${sid}/file`,
   sourceGrid: (pid: string, sid: string) => req<CsvGrid>('GET', `${P(pid)}/sources/${sid}/grid?limit=80`),
   sourcePreview: (pid: string, sid: string, cfg: CsvImportConfig) => req<CsvPreview>('POST', `${P(pid)}/sources/${sid}/preview`, cfg),

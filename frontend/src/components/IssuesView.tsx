@@ -23,14 +23,14 @@ export function IssuesView() {
 
   useEffect(() => { setSelectedIds(new Set()) }, [projectId])
 
-  const addSelectedToPrompt = () => {
-    if (!selectedIssues.length) return
-    const ids = [...new Set(selectedIssues.flatMap((issue) => issue.affected_ids))]
+  const addToPrompt = (chosen: ReviewIssue[]) => {
+    if (!chosen.length) return
+    const ids = [...new Set(chosen.flatMap((issue) => issue.affected_ids))]
     const rel = ids.filter((id) => rows.get(id)?.kind === 'connection')
     setSelection({ ...emptySelection(), entity_ids: ids.filter((id) => rows.has(id) && !rel.includes(id)),
       relationship_ids: rel })
-    appendAssistantContext(issuesPrompt(selectedIssues, rows))
-    notify({ kind: 'info', text: `${selectedIssues.length} issue(s) added to the assistant prompt. Review before sending.` })
+    appendAssistantContext(issuesPrompt(chosen, rows))
+    notify({ kind: 'info', text: `${chosen.length} issue(s) added to the assistant prompt. Review before sending.` })
   }
 
   // Select and inspect the affected objects, staying on this list to work through it.
@@ -59,7 +59,7 @@ export function IssuesView() {
       })()}
       <div className="issue-selection-bar">
         <span>{selectedIssues.length} selected</span>
-        <button className="primary" disabled={!selectedIssues.length} onClick={addSelectedToPrompt}>
+        <button className="primary" disabled={!selectedIssues.length} onClick={() => addToPrompt(selectedIssues)}>
           Add selected to prompt
         </button>
         {selectedIssues.length > 0 && <button className="link" onClick={() => setSelectedIds(new Set())}>Clear</button>}
@@ -81,6 +81,8 @@ export function IssuesView() {
               {i.dismissal && <DismissalNote dismissal={i.dismissal} />}
             </span>
             <span className="issue-actions">
+              <button className="link" onClick={() => addToPrompt([i])}
+                title="Add this issue to the assistant prompt and select its objects">add to chat</button>
               {i.affected_ids.some((id) => rows.has(id)) && <button className="link" onClick={() => showInTable(i)}>show in table</button>}
               <button className="link" onClick={() => void api.setIssueState(projectId, i.id,
                 i.resolution_state === 'dismissed' ? 'open' : 'dismissed').then(reload)}>
@@ -135,11 +137,15 @@ function issuesPrompt(issues: ReviewIssue[], rows: Map<string, Row>): string {
       finding.shape ? `shape ${finding.shape}` : '',
     ].filter(Boolean).join('; ')) ?? []
     return [
-      `${index + 1}. [${issue.id}] ${issue.severity}, ${issue.category.replaceAll('_', ' ')}: ${issue.explanation}`,
+      `${issues.length > 1 ? `${index + 1}. ` : ''}[${issue.id}] ${issue.severity}, ${issue.category.replaceAll('_', ' ')}: ${issue.explanation}`,
       objects.length ? `Affected objects: ${objects.join('; ')}` : '',
       findings.length ? `Validation details: ${findings.join(' | ')}` : '',
     ].filter(Boolean).join('\n')
   })
+  if (issues.length === 1) return [
+    'Please review this issue. Check it against the current model and fix it, or explain why it no longer applies.',
+    descriptions[0],
+  ].join('\n\n')
   return [
     'Please review these selected issues together. Check each against the current model, fix them together when they share an underlying cause, and explain any that should be handled separately or no longer apply.',
     `Selected issues (${issues.length}):`,

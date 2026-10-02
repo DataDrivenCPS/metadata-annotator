@@ -9,6 +9,23 @@ import { ConnectionsTable, EquipmentTable, PointsTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
 
+const MIN_MODEL_WIDTH = 360
+const HANDLE = 6
+
+/** A pane size the user drags, remembered across sessions. */
+function usePaneSize(key: string, fallback: number, min: number, max: () => number) {
+  const [size, setSize] = useState(() => {
+    const stored = Number(localStorage.getItem(key))
+    return Number.isFinite(stored) && stored >= min ? stored : fallback
+  })
+  const update = (next: (size: number) => number) => setSize((current) => {
+    const value = Math.round(Math.max(min, Math.min(Math.max(min, max()), next(current))))
+    localStorage.setItem(key, String(value))
+    return value
+  })
+  return [size, (delta: number) => update((current) => current + delta), () => update(() => fallback)] as const
+}
+
 const TABS: [Tab, string][] = [
   ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'], ['graph', 'Graph'], ['issues', 'Issues'],
 ]
@@ -26,17 +43,14 @@ export function Workspace() {
   const notify = useStore((s) => s.notify)
   const sourcesOpen = useStore((s) => s.sourcesOpen)
   const toggleSources = useStore((s) => s.toggleSources)
-  const sourcesWide = useStore((s) => s.sourcesWide)
   const fileInput = useRef<HTMLInputElement>(null)
-  const [drawerHeight, setDrawerHeight] = useState(() => {
-    const stored = Number(localStorage.getItem('workbench.drawerHeight'))
-    return Number.isFinite(stored) && stored >= 120 ? stored : 240
-  })
-  const resizeDrawer = (delta: number) => setDrawerHeight((height) => {
-    const next = Math.max(120, Math.min(window.innerHeight - 220, height + delta))
-    localStorage.setItem('workbench.drawerHeight', String(next))
-    return next
-  })
+  const [drawerHeight, resizeDrawer, resetDrawer] = usePaneSize('workbench.drawerHeight', 240, 120,
+    () => window.innerHeight - 220)
+  // Each side tray may grow until the model pane would drop below its minimum width.
+  const [sourcesWidth, resizeSources, resetSources] = usePaneSize('workbench.sourcesWidth', 380, 260,
+    () => window.innerWidth - assistantWidth - MIN_MODEL_WIDTH - 2 * HANDLE)
+  const [assistantWidth, resizeAssistant, resetAssistant] = usePaneSize('workbench.assistantWidth', 400, 300,
+    () => window.innerWidth - (sourcesOpen ? sourcesWidth + HANDLE : 0) - MIN_MODEL_WIDTH - HANDLE)
 
   useEffect(() => {
     const es = new EventSource(api.eventsUrl(projectId))
@@ -79,7 +93,6 @@ export function Workspace() {
           {dismissedCount > 0 && <span className="muted"> · {dismissedCount} dismissed</span>}
         </button>}
         <span className="spacer" />
-        <button className={sourcesOpen ? 'active' : ''} onClick={toggleSources} title="Show or hide uploaded sources">Sources</button>
         <button onClick={() => void undo()} disabled={!model.info.can_undo} title="Undo (Ctrl+Z)">Undo</button>
         <button onClick={() => void redo()} disabled={!model.info.can_redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
         <button onClick={() => fileInput.current?.click()} title="Merge an existing Turtle model into this project">Import model…</button>
@@ -93,10 +106,19 @@ export function Workspace() {
         <a className="button" href={api.exportUrl(projectId, model.head, 'ttl')} download>Export Turtle</a>
         <a className="button" href={api.exportUrl(projectId, model.head, 'csv')} download>Export point table</a>
       </header>
-      <main className={`panes ${sourcesOpen ? 'with-sources' : ''} ${sourcesOpen && sourcesWide ? 'wide' : ''}`}>
-        {sourcesOpen && <SourcesPane />}
+      <main className="panes" style={{ gridTemplateColumns: [
+        ...(sourcesOpen ? [`${sourcesWidth}px`, `${HANDLE}px`] : []), 'minmax(0, 1fr)', `${HANDLE}px`, `${assistantWidth}px`,
+      ].join(' ') }}>
+        {sourcesOpen && <>
+          <SourcesPane />
+          <ResizeHandle direction="columns" label="Resize sources tray" onResize={resizeSources} onReset={resetSources} />
+        </>}
         <section className="model-pane" style={{ gridTemplateRows: `auto minmax(100px, 1fr) 10px ${drawerHeight}px` }}>
           <nav className="tabs">
+            <button className={`sources-toggle ${sourcesOpen ? 'open' : ''}`} onClick={toggleSources}
+              aria-pressed={sourcesOpen} title={sourcesOpen ? 'Hide the sources tray' : 'Show the sources tray'}>
+              {sourcesOpen ? '◂' : '▸'} Sources
+            </button>
             {TABS.map(([id, label]) => (
               <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}
                 title={id === 'issues' ? 'Validation findings plus source extraction and association issues' : undefined}>
@@ -111,9 +133,11 @@ export function Workspace() {
             {tab === 'graph' && <GraphView />}
             {tab === 'issues' && <IssuesView />}
           </div>
-          <ResizeHandle label="Resize inspector tray" onResize={resizeDrawer} />
+          <ResizeHandle label="Resize inspector tray" onResize={resizeDrawer} onReset={resetDrawer} />
           <Drawer />
         </section>
+        <ResizeHandle direction="columns" label="Resize assistant tray" onResize={(delta) => resizeAssistant(-delta)}
+          onReset={resetAssistant} />
         <AssistantPanel />
       </main>
     </div>

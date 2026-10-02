@@ -36,10 +36,8 @@ interface State {
   busy: boolean
   sourcesVersion: number
   sourcesOpen: boolean
-  sourcesWide: boolean
 
   toggleSources: () => void
-  toggleSourcesWide: () => void
   loadStatus: () => Promise<void>
   openProject: (id: string | null) => Promise<void>
   reload: () => Promise<void>
@@ -102,12 +100,6 @@ export const useStore = create<State>((set, get) => ({
   sourcesVersion: 0,
   sourcesOpen: localStorage.getItem('workbench.sourcesOpen') !== 'false',
 
-  sourcesWide: localStorage.getItem('workbench.sourcesWide') === 'true',
-  toggleSourcesWide: () => {
-    const sourcesWide = !get().sourcesWide
-    localStorage.setItem('workbench.sourcesWide', String(sourcesWide))
-    set({ sourcesWide })
-  },
   toggleSources: () => {
     const sourcesOpen = !get().sourcesOpen
     localStorage.setItem('workbench.sourcesOpen', String(sourcesOpen))

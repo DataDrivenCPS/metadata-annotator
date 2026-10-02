@@ -14,8 +14,6 @@ export function SourcesPane() {
   const projectId = useStore((s) => s.projectId)!
   const notify = useStore((s) => s.notify)
   const sourcesVersion = useStore((s) => s.sourcesVersion)
-  const wide = useStore((s) => s.sourcesWide)
-  const toggleWide = useStore((s) => s.toggleSourcesWide)
   const [sources, setSources] = useState<Source[]>([])
   const [active, setActive] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -47,7 +45,6 @@ export function SourcesPane() {
       <div className="pane-head">
         <h2>Sources</h2>
         <span className="spacer" />
-        <button onClick={toggleWide} title={wide ? 'Narrow the sources pane' : 'Widen the sources pane'}>{wide ? '⇤ Narrower' : 'Wider ⇥'}</button>
         <button className="primary" disabled={uploading} onClick={() => input.current?.click()}>
           {uploading ? 'Uploading…' : 'Upload…'}
         </button>

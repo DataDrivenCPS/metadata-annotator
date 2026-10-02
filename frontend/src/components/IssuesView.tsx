@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
-import { emptySelection, type IssueDismissalRecord, type IssueRepair, type ReviewIssue, type Row } from '../types'
+import { emptySelection, type IssueDismissalRecord, type IssueRepair, type ReviewIssue } from '../types'
 
 export function IssuesView() {
   const issues = useStore((s) => s.model!.issues)
@@ -10,7 +10,7 @@ export function IssuesView() {
   const setSelection = useStore((s) => s.setSelection)
   const setTab = useStore((s) => s.setTab)
   const inspect = useStore((s) => s.inspect)
-  const appendAssistantContext = useStore((s) => s.appendAssistantContext)
+  const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
   const notify = useStore((s) => s.notify)
   const projectId = useStore((s) => s.projectId)!
   const reload = useStore((s) => s.reload)
@@ -25,11 +25,7 @@ export function IssuesView() {
 
   const addToPrompt = (chosen: ReviewIssue[]) => {
     if (!chosen.length) return
-    const ids = [...new Set(chosen.flatMap((issue) => issue.affected_ids))]
-    const rel = ids.filter((id) => rows.get(id)?.kind === 'connection')
-    setSelection({ ...emptySelection(), entity_ids: ids.filter((id) => rows.has(id) && !rel.includes(id)),
-      relationship_ids: rel })
-    appendAssistantContext(issuesPrompt(chosen, rows))
+    addIssuesToPrompt(chosen)
     notify({ kind: 'info', text: `${chosen.length} issue(s) added to the assistant prompt. Review before sending.` })
   }
 
@@ -122,33 +118,4 @@ export function DismissalNote({ dismissal }: { dismissal: IssueDismissalRecord }
     {dismissal.revision ? ` with ${dismissal.revision}; undoing that change reopens it` : ''}
     {dismissal.reason ? ` — ${dismissal.reason}` : ''}
   </span>
-}
-
-function issuesPrompt(issues: ReviewIssue[], rows: Map<string, Row>): string {
-  const descriptions = issues.map((issue, index) => {
-    const objects = issue.affected_ids.map((id) => {
-      const row = rows.get(id)
-      return row ? `${row.label} (${row.kind}, ${id})` : id
-    })
-    const findings = issue.details.findings?.map((finding) => [
-      finding.message,
-      finding.focus ? `focus ${finding.focus}` : '',
-      finding.path ? `path ${finding.path}` : '',
-      finding.shape ? `shape ${finding.shape}` : '',
-    ].filter(Boolean).join('; ')) ?? []
-    return [
-      `${issues.length > 1 ? `${index + 1}. ` : ''}[${issue.id}] ${issue.severity}, ${issue.category.replaceAll('_', ' ')}: ${issue.explanation}`,
-      objects.length ? `Affected objects: ${objects.join('; ')}` : '',
-      findings.length ? `Validation details: ${findings.join(' | ')}` : '',
-    ].filter(Boolean).join('\n')
-  })
-  if (issues.length === 1) return [
-    'Please review this issue. Check it against the current model and fix it, or explain why it no longer applies.',
-    descriptions[0],
-  ].join('\n\n')
-  return [
-    'Please review these selected issues together. Check each against the current model, fix them together when they share an underlying cause, and explain any that should be handled separately or no longer apply.',
-    `Selected issues (${issues.length}):`,
-    descriptions.join('\n\n'),
-  ].join('\n\n')
 }

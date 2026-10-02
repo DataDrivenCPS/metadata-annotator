@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { continuation, effectiveSelection, proposalStates, startsExchange, threadRuns } from './assistant'
-import { emptySelection, type AgentRun, type Proposal } from './types'
+import { continuation, describeStep, effectiveSelection, formatDuration, issueSelection, proposalStates, startsExchange, threadRuns } from './assistant'
+import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
 
 const run = (id: string, created_at: string, extra: Partial<AgentRun> = {}): AgentRun => ({
   id, kind: 'correction', input_revision: 'rev-1', selection: null, instruction: id, provider: 'p', model: 'm',
@@ -61,5 +61,37 @@ describe('effective selection', () => {
     const proposal = { id: 'p', status: 'pending', selection: about('eq-tk') } as Proposal
     expect(effectiveSelection(continuation([asked], proposal, false), about('eq-p201'), [asked], proposal))
       .toEqual({ selection: about('eq-tk'), source: 'proposal' })
+  })
+})
+
+describe('run steps', () => {
+  const step = (stage: string, message: string, data: Record<string, unknown> = {}) => ({ at: '', stage, message, data })
+
+  it('describes tool calls in plain words', () => {
+    expect(describeStep(step('tool', "search_terms(query='pressure', kind='quantity_kind')")))
+      .toBe('Looked up vocabulary terms for “pressure”')
+    expect(describeStep(step('tool', "describe_class(term='watr:Pump')"))).toBe('Read the definition of “watr:Pump”')
+    expect(describeStep(step('tool', 'find_entities(query="it\'s RO-1")'))).toBe('Searched the model for “it\'s RO-1”')
+    expect(describeStep(step('tool', 'mystery_tool(x=1)'))).toBe('mystery_tool(x=1)')
+    expect(describeStep(step('context', 'Read the selection'))).toBe('Read the selection')
+  })
+
+  it('numbers repeated model calls', () => {
+    expect(describeStep(step('model', 'Asking morgan (Qwen)', { step: 1 }))).toBe('Asking morgan (Qwen)')
+    expect(describeStep(step('model', 'Asking morgan (Qwen)', { step: 3 }))).toBe('Asking morgan (Qwen) again (step 3)')
+  })
+
+  it('formats durations', () => {
+    expect(formatDuration(0)).toBe('0:00')
+    expect(formatDuration(65_400)).toBe('1:05')
+    expect(formatDuration(-500)).toBe('0:00')
+  })
+
+  it('selects what issues affect, splitting connections from entities', () => {
+    const rows = new Map([['eq-1', { id: 'eq-1', kind: 'equipment' }], ['cx-1', { id: 'cx-1', kind: 'connection' }]]) as unknown as Map<string, Row>
+    const issue = (affected_ids: string[]) => ({ affected_ids }) as ReviewIssue
+    const sel = issueSelection([issue(['eq-1', 'cx-1']), issue(['eq-1', 'gone'])], rows)
+    expect(sel.entity_ids).toEqual(['eq-1'])
+    expect(sel.relationship_ids).toEqual(['cx-1'])
   })
 })

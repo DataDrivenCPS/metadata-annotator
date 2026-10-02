@@ -1,9 +1,9 @@
 import { create } from 'zustand'
 import { api, ApiError } from './api'
-import { continuation, proposalStates, threadRuns, type ProposalState } from './assistant'
+import { continuation, issueSelection, issuesPrompt, proposalStates, threadRuns, type ProposalState } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
-  emptySelection, type AgentRun, type IssueRepair, type ModelResponse, type Proposal, type Row, type Selection, type Status,
+  emptySelection, type AgentRun, type IssueRepair, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type Status,
 } from './types'
 
 export type Tab = 'points' | 'equipment' | 'connections' | 'graph' | 'issues'
@@ -50,6 +50,8 @@ interface State {
   setAssistantNewRequest: (newRequest: boolean) => void
   focusAssistant: () => void
   appendAssistantContext: (text: string) => void
+  /** Select what the issues affect and add them to the assistant prompt for review. */
+  addIssuesToPrompt: (issues: ReviewIssue[]) => void
   inspect: (id: string | null) => void
   edit: (ops: Record<string, unknown>[], summary?: string) => Promise<boolean>
   undo: () => Promise<void>
@@ -168,6 +170,12 @@ export const useStore = create<State>((set, get) => ({
     assistantDraftVersion: s.assistantDraftVersion + 1,
     assistantNewRequest: true,
   })),
+  addIssuesToPrompt: (issues) => {
+    if (!issues.length) return
+    const { rows } = get()
+    set({ selection: issueSelection(issues, rows) })
+    get().appendAssistantContext(issuesPrompt(issues, rows))
+  },
   inspect: (inspectId) => set({ inspectId }),
 
   edit: async (ops, summary) => {

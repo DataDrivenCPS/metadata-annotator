@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { continuation, effectiveSelection, isActive, startsExchange, threadRuns, type ProposalState } from '../assistant'
+import { continuation, describeStep, effectiveSelection, formatDuration, isActive, startsExchange, threadRuns,
+  type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
@@ -35,15 +36,12 @@ export function AssistantPanel() {
 
   return (
     <aside className="assistant">
-      <div className="assistant-head"><h2>Assistant</h2></div>
+      <div className="assistant-head"><h2>Assistant</h2><ModelStatus /></div>
       <div className="thread" ref={threadRef} onScroll={(e) => {
         const el = e.currentTarget
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
       }}>
-        {!thread.length && !orphan && <div className="thread-empty muted">
-          Select rows in a table or the graph, then describe what is wrong or what to add. The assistant
-          replies here with an explanation, questions, or a proposed change you can review and apply.
-        </div>}
+        {!thread.length && !orphan && <Starters />}
         {thread.map((run, i) => <div key={run.id} className="exchange">
           {i > 0 && startsExchange(run) && <div className="thread-divider"><span>New request</span></div>}
           <UserMessage run={run} />
@@ -68,11 +66,7 @@ function Composer() {
   const draftVersion = useStore((s) => s.assistantDraftVersion)
   const newRequest = useStore((s) => s.assistantNewRequest)
   const setNewRequest = useStore((s) => s.setAssistantNewRequest)
-  const status = useStore((s) => s.status)
-  const provider = useStore((s) => s.provider)
-  const setProvider = useStore((s) => s.setProvider)
   const [sending, setSending] = useState(false)
-  const [health, setHealth] = useState<ProviderHealth | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -83,16 +77,6 @@ function Composer() {
       textarea.setSelectionRange(textarea.value.length, textarea.value.length)
     }
   }, [draftVersion])
-
-  useEffect(() => {
-    if (!provider) return
-    let alive = true
-    const check = () => api.providerHealth(provider).then((h) => alive && setHealth(h)).catch(() => alive && setHealth(null))
-    setHealth(null)
-    void check()
-    const t = setInterval(check, 15000)
-    return () => { alive = false; clearInterval(t) }
-  }, [provider])
 
   const thread = threadRuns(runs)
   const last = thread[thread.length - 1]
@@ -147,26 +131,144 @@ function Composer() {
         }}
       />
       <div className="assist-actions">
-        <select value={provider ?? ''} onChange={(e) => setProvider(e.target.value)} title="Model endpoint">
-          {status?.providers.map((p) => (
-            <option key={p.name} value={p.name} disabled={p.has_key === false}>
-              {p.name} · {p.model}{p.has_key === false ? ' (no key)' : ''}
-            </option>
-          ))}
-        </select>
-        {health && <span className={`provider-health ${health.ok ? 'ok' : 'bad'}`}
-          title={health.ok ? `Connected · ${shortModel(health.model ?? '')}` : health.detail}>●</span>}
+        <span className="muted small">Enter to send · Shift+Enter for a new line</span>
         <button className="primary" disabled={!text.trim() || running || sending} onClick={() => void send()}
           title="Enter to send · Shift+Enter for a new line">
           {next?.kind === 'proposal' ? 'Send reply' : 'Send'}
         </button>
       </div>
-      {health && !health.ok && <div className="provider-health bad">{health.detail}</div>}
     </div>
   )
 }
 
 const shortModel = (m: string) => m.split(/[\\/]/).pop() ?? m
+
+/** The model endpoint the assistant uses, and whether it can be reached right now. */
+function ModelStatus() {
+  const status = useStore((s) => s.status)
+  const provider = useStore((s) => s.provider)
+  const setProvider = useStore((s) => s.setProvider)
+  const [health, setHealth] = useState<ProviderHealth | null>(null)
+  const [checkVersion, setCheckVersion] = useState(0)
+
+  useEffect(() => {
+    if (!provider) return
+    let alive = true
+    const check = () => api.providerHealth(provider).then((h) => alive && setHealth(h))
+      .catch((e) => alive && setHealth({ ok: false, detail: `Could not check the model endpoint: ${(e as Error).message}` }))
+    void check()
+    const t = setInterval(check, 15000)
+    return () => { alive = false; clearInterval(t) }
+  }, [provider, checkVersion])
+
+  const state = !health ? 'checking' : health.ok ? 'ok' : 'bad'
+  const current = status?.providers.find((p) => p.name === provider)
+  return <>
+    <div className="model-status">
+      <span className={`status-pill ${state}`} title={health?.ok
+        ? `Connected to ${current?.base_url ?? provider} · ${shortModel(health.model ?? current?.model ?? '')}`
+        : health?.detail ?? 'Checking the model endpoint…'}>
+        <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? 'Connected' : 'Unavailable'}
+      </span>
+      <select value={provider ?? ''} title="Model endpoint" onChange={(e) => {
+        setHealth(null)
+        setProvider(e.target.value)
+      }}>
+        {status?.providers.map((p) => (
+          <option key={p.name} value={p.name} disabled={p.has_key === false}>
+            {p.name} · {shortModel(p.model)}{p.has_key === false ? ' (no key)' : ''}
+          </option>
+        ))}
+      </select>
+    </div>
+    {state === 'bad' && <div className="model-status-detail">
+      <span>{health!.detail} Requests can’t run until it is reachable.</span>
+      <button className="link" onClick={() => { setHealth(null); setCheckVersion((v) => v + 1) }}>Check again</button>
+    </div>}
+  </>
+}
+
+const STARTER_ISSUES = 10
+
+/** One-click ways to start a conversation; each fills the message box for review first. */
+function Starters() {
+  const issues = useStore((s) => s.model?.issues)
+  const selection = useStore((s) => s.selection)
+  const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
+  const appendAssistantContext = useStore((s) => s.appendAssistantContext)
+  const violations = (issues ?? []).filter((i) => i.resolution_state === 'open' && i.severity === 'violation')
+  const selected = selection.entity_ids.length + selection.relationship_ids.length > 0
+  const starters = [
+    violations.length > 0 && {
+      label: violations.length > STARTER_ISSUES ? `Fix the first ${STARTER_ISSUES} of ${violations.length} open violations`
+        : `Fix the ${violations.length} open violation${violations.length === 1 ? '' : 's'}`,
+      hint: 'Selects the affected objects and lists the validator findings',
+      run: () => addIssuesToPrompt(violations.slice(0, STARTER_ISSUES)),
+    },
+    selected && {
+      label: 'Explain the selection',
+      hint: 'What these objects are, how they are modeled, and what looks off',
+      run: () => appendAssistantContext('Explain what the selected objects are and how they are modeled, and point out anything that looks wrong or incomplete.'),
+    },
+    {
+      label: 'What is missing from this model?',
+      hint: 'Equipment, points, or connections that should probably exist',
+      run: () => appendAssistantContext('Review the model for missing equipment, points, or connections. Summarize what should be added, and ask me about anything you cannot tell from the model.'),
+    },
+  ].filter((x) => !!x)
+  return <div className="thread-empty">
+    <p className="muted">Select rows in a table or the graph, then describe what is wrong or what to add. The assistant
+      replies with an explanation, questions, or a proposed change you review before it is applied.</p>
+    <div className="starters">
+      <span className="muted small">Or start with</span>
+      {starters.map((st) => <button key={st.label} onClick={st.run} title={st.hint}>{st.label}</button>)}
+    </div>
+  </div>
+}
+
+/** Ticks once a second while ``active``, for live elapsed times. */
+function useNow(active: boolean) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [active])
+  return active ? now : 0
+}
+
+/** The run's steps in plain words with how long each took; the last one is live while running. */
+function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
+  const now = useNow(live)
+  const [showAll, setShowAll] = useState(false)
+  const steps = run.progress
+  const end = live ? now : Date.parse(run.finished_at ?? run.created_at)
+  const durations = steps.map((p, i) => (i + 1 < steps.length ? Date.parse(steps[i + 1].at) : end) - Date.parse(p.at))
+  const hidden = live && !showAll ? Math.max(0, steps.length - 5) : 0
+  const current = live ? steps[steps.length - 1] : undefined
+  const slowModel = current?.stage === 'model' && durations[durations.length - 1] > 20000
+  return <>
+    <ol className="steps run-steps">
+      {hidden > 0 && <li className="muted"><button className="link small" onClick={() => setShowAll(true)}>
+        {hidden} earlier step{hidden === 1 ? '' : 's'}</button></li>}
+      {steps.slice(hidden).map((p, i) => {
+        const index = i + hidden
+        const isCurrent = live && index === steps.length - 1
+        return <li key={index} className={isCurrent ? 'current' : p.stage === 'rejected' ? 'rejected' : 'done'}>
+          <span className="step-mark">{isCurrent ? <span className="spinner small" /> : p.stage === 'rejected' ? '↻' : '✓'}</span>
+          <span className="step-text">{describeStep(p)}</span>
+          <span className="step-time">{formatDuration(durations[index])}</span>
+        </li>
+      })}
+      {live && !steps.length && <li className="current"><span className="step-mark"><span className="spinner small" /></span>
+        <span className="step-text">{run.status === 'queued' ? 'Waiting to start…' : 'Starting…'}</span></li>}
+      {!live && <li className="run-meta muted">{run.provider} · {run.model} · skill {run.skill_version}
+        {run.outcome.input_tokens ? ` · ${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens` : ''}</li>}
+    </ol>
+    {slowModel && <div className="muted small step-note">The model is still working. Self-hosted models can take a
+      minute or more per step; you can keep browsing while you wait.</div>}
+  </>
+}
 
 function UserMessage({ run }: { run: AgentRun }) {
   const rows = useStore((s) => s.rows)
@@ -201,7 +303,8 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
   const focusAssistant = useStore((s) => s.focusAssistant)
   const [open, setOpen] = useState(false)
   const active = isActive(run)
-  const lastStep = run.progress[run.progress.length - 1]
+  const now = useNow(active)
+  const elapsed = (active ? now : Date.parse(run.finished_at ?? run.created_at)) - Date.parse(run.created_at)
   const proposalId = run.status === 'succeeded' ? run.outcome.proposal_id : null
   const current = proposalId && proposal?.id === proposalId ? proposal : null
   const questions = !proposalId ? run.outcome.questions ?? [] : current?.questions ?? []
@@ -210,10 +313,11 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
     <div className={`msg agent run-${run.status}`}>
       <div className="msg-author">Assistant
         {active && <span className="spinner" />}
+        {active && <span className="run-elapsed" title="Time since the request started">{formatDuration(elapsed)}</span>}
         <span className="spacer" />
         {active && <button onClick={() => void cancelRun()}>Cancel</button>}
       </div>
-      {active && <div className="muted">{lastStep?.message ?? 'Starting…'}</div>}
+      {active && <RunSteps run={run} live />}
       {run.status === 'failed' && <div className="error-text">{run.error ?? 'The run failed.'}</div>}
       {run.status === 'cancelled' && <div className="muted">Cancelled.</div>}
       {run.status === 'succeeded' && <>
@@ -229,16 +333,13 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
       {current
         ? <ProposalPreview proposal={current} running={false} />
         : proposalId && <div className="proposal-ref">Proposed change · {proposalStateText(states[proposalId])}</div>}
-      <div className="msg-foot">
-        <button className="link" onClick={() => setOpen(!open)}>{open ? 'hide steps' : 'steps'}</button>
-      </div>
-      {open && (
-        <ol className="steps">
-          {run.progress.map((p, i) => <li key={i}><span className="stage">{p.stage}</span> {p.message}</li>)}
-          <li className="muted">{run.provider} · {run.model} · skill {run.skill_version}
-            {run.outcome.input_tokens ? ` · ${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens` : ''}</li>
-        </ol>
-      )}
+      {!active && <>
+        <div className="msg-foot">
+          <button className="link" onClick={() => setOpen(!open)}>{open ? 'hide steps' : `${run.progress.length} steps`}</button>
+          <span className="muted"> · took {formatDuration(elapsed)}</span>
+        </div>
+        {open && <RunSteps run={run} live={false} />}
+      </>}
     </div>
   )
 }

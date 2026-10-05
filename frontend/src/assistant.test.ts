@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, nextAutofixIssue, proposalStates,
+  autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, nextAutofixIssue,
+  proposalStates,
   startsExchange, summarizeChanges, threadRuns,
 } from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
@@ -113,6 +114,11 @@ describe('auto-fix helpers', () => {
 
   it('takes exactly the ticked open issues when some are ticked', () => {
     expect(autofixCandidates(issues, new Set(['w', 'd'])).map((i) => i.id)).toEqual(['w'])
+  })
+
+  it('finds the open issues on the selected objects', () => {
+    const sel = { ...emptySelection(), entity_ids: ['eq-2', 'eq-3'] }
+    expect(issuesOnSelection(issues, sel).map((i) => i.id)).toEqual(['w', 'b'])
   })
 
   it('skips queued issues that are no longer open', () => {

@@ -149,6 +149,14 @@ export function autofixCandidates(issues: ReviewIssue[], ticked: Set<string>): R
     .map((x) => x.issue)
 }
 
+/** Open issues (not suggestions) on the selected objects, in auto-fix order. */
+export function issuesOnSelection(issues: ReviewIssue[], sel: Selection): ReviewIssue[] {
+  const chosen = new Set([...sel.entity_ids, ...sel.relationship_ids])
+  const ids = issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion'
+    && i.affected_ids.some((a) => chosen.has(a))).map((i) => i.id)
+  return autofixCandidates(issues, new Set(ids))
+}
+
 /** The next queued issue still open; the ones skipped over were resolved by earlier fixes. */
 export function nextAutofixIssue(queue: AutofixItem[], issues: ReviewIssue[]):
     { next: ReviewIssue | null; rest: AutofixItem[]; resolved: AutofixItem[] } {

@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { isActive, issuesOnSelection } from '../assistant'
 import { filterRows, isSelected, sortRows, type Column, type SortState } from '../selection'
 import { useStore } from '../store'
 
@@ -16,6 +17,10 @@ interface Props<R extends { id: string; locked: string[] }> {
 export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R>) {
   const selection = useStore((s) => s.selection)
   const click = useStore((s) => s.click)
+  const issues = useStore((s) => s.model?.issues)
+  const startAutofix = useStore((s) => s.startAutofix)
+  const autofixing = useStore((s) => !!s.autofix)
+  const running = useStore((s) => Object.values(s.runs).some(isActive))
   const [filter, setFilter] = useState('')
   const [sort, setSort] = useState<SortState>(null)
   const [editing, setEditing] = useState<{ id: string; key: string } | null>(null)
@@ -37,6 +42,13 @@ export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R
           {shown.length} of {p.rows.length}{selectedHere ? ` · ${selectedHere} selected` : ''}
           {filter && selectedHere > shown.filter((r) => isSelected(selection, r.id)).length ? ' (some hidden by filter)' : ''}
         </span>
+        {(() => {
+          const fixable = selectedHere && !autofixing ? issuesOnSelection(issues ?? [], selection) : []
+          return fixable.length > 0 && <button className="link" disabled={running}
+            title={running ? 'Wait for the assistant to finish'
+              : 'The assistant works through the selection’s issues one at a time; you approve, skip or answer each proposal'}
+            onClick={() => void startAutofix(fixable)}>Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>
+        })()}
         <span className="spacer" />
         {p.toolbar}
       </div>

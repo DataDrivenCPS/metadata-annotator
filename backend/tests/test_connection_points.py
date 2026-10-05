@@ -155,3 +155,17 @@ def test_an_equipments_connection_points_count_as_its_selection(plant):
         {"op": "update_connection_point", "id": port(v, "HX", "inlet", "Boiler").id,
          "paired_with": port(v, "HX", "outlet", "Boiler").id}), SelectionScope(entity_ids=[hx.id]))
     assert cand.changes and all(c.in_selection for c in cand.changes)
+
+
+def test_a_port_named_later_in_the_proposal_survives_moving_its_connection(plant):
+    v = plant.view(plant.head())
+    ahu = by_label(v.equipment, "AHU")
+    to_coil = next(c for c in v.connections if c.to_equipment.label == "Coil")
+    coil_in = port(v, "Coil", "inlet", "HX")
+    rev, _ = plant.edit(plant.head(), ops(
+        {"op": "create_connection_point", "id": "new:in", "equipment": ahu.id, "direction": "inlet", "medium": "s223:Fluid-Water"},
+        {"op": "update_connection", "id": to_coil.id, "to_point": "new:in"},  # moves the pipe off the coil's port first
+        {"op": "update_connection_point", "id": coil_in.id, "maps_to": "new:in"},
+    ))
+    kept = plant.view(rev.id).rows()[coil_in.id]
+    assert kept.maps_to is not None and kept.connection is None

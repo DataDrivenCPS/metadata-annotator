@@ -401,6 +401,7 @@ class _Compiler:
         watr = vocab.namespaces.get("watr")
         self.has_process = URIRef(watr + "hasProcess") if watr else None
         self.touched_ports: set[URIRef] = set()  # checked against 223P's port rules after all ops
+        self.named_ports: set[str] = set()  # connection point ids the operations refer to; kept
         self.problems: list[str] = []
 
     def node(self, eid: str) -> URIRef:
@@ -593,6 +594,7 @@ class _Compiler:
         own (id, pairing, mapsTo) goes with the connection; any other port is an equipment fact."""
         g = self.g
         return (str(port).startswith(str(cx) + ".") and self.pg.id_of(port) is None
+                and port_id(self.pg, port) not in self.named_ports
                 and not any((port, p, None) in g or (None, p, port) in g
                             for p in (S223.pairedConnectionPoint, S223.mapsTo)))
 
@@ -698,7 +700,9 @@ class _Compiler:
     def port(self, cp_id: str) -> URIRef:
         """A connection point by id, registering a port that predates its id (see projection.port_id)."""
         n = port_iri(self.pg, cp_id)
-        assert n is not None, cp_id
+        if n is None:
+            raise OperationError([f"connection point {cp_id} no longer exists when this operation runs "
+                                  "(an earlier operation in the proposal removed it)"])
         if self.pg.id_of(n) is None:
             self.pg.register(cp_id, n)
         self.touched_ports.add(n)
@@ -821,6 +825,13 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
         comp = BrickCompiler(pg, vocab, result)
     else:
         comp = _Compiler(pg, vocab, result)  # type: ignore[assignment]
+    if isinstance(comp, _Compiler):
+        # A port named anywhere in the proposal is one the author means to keep, even if an
+        # earlier operation moves the connection it was minted for.
+        comp.named_ports = {v for op in resolved_ops for k, v in op.model_dump(exclude_unset=True).items()
+                            if isinstance(v, str) and v.startswith("cp-")
+                            and (k in ("from_point", "to_point", "paired_with", "maps_to")
+                                 or (k == "id" and op.op.endswith("_connection_point")))}
     for op in resolved_ops:
         for fname in TERM_FIELDS:
             value = getattr(op, fname, None)

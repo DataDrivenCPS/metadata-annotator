@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, isActive, startsExchange,
+import { autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, isActive, issuesOnSelection, startsExchange,
   summarizeChanges, threadRuns, type AutofixOutcome, type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
@@ -72,6 +72,9 @@ function Composer() {
   const setNewRequest = useStore((s) => s.setAssistantNewRequest)
   const [sending, setSending] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const issues = useStore((s) => s.model?.issues)
+  const startAutofix = useStore((s) => s.startAutofix)
+  const autofixing = useStore((s) => !!s.autofix)
 
   useEffect(() => {
     if (!draftVersion) return
@@ -90,6 +93,7 @@ function Composer() {
   const { selection: about, source } = effectiveSelection(next, selection, thread, proposal)
   const summary = summarize(about, rows)
   const chosen = [...about.entity_ids, ...about.relationship_ids].map((id) => rows.get(id)).filter(Boolean)
+  const fixable = source === 'current' && !autofixing ? issuesOnSelection(issues ?? [], selection) : []
 
   const send = async () => {
     if (!text.trim() || running || sending) return
@@ -112,6 +116,9 @@ function Composer() {
           {chosen.slice(0, 6).map((r) => <span key={r!.id} className={`chip ${r!.kind}`}>{r!.label}</span>)}
           {chosen.length > 6 && <span className="muted">+{chosen.length - 6} more</span>}
           {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
+          {fixable.length > 0 && <button className="link" disabled={running}
+            title="The assistant works through these issues one at a time; you approve, skip or answer each proposal"
+            onClick={() => void startAutofix(fixable)}>· Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>}
         </> : <span className="muted">{summary}</span>}
       </div>
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
@@ -245,7 +252,13 @@ function Starters() {
   const autofixing = useStore((s) => !!s.autofix)
   const violations = (issues ?? []).filter((i) => i.resolution_state === 'open' && i.severity === 'violation')
   const selected = selection.entity_ids.length + selection.relationship_ids.length > 0
+  const onSelection = selected && !autofixing ? issuesOnSelection(issues ?? [], selection) : []
   const starters = [
+    onSelection.length > 0 && {
+      label: `Auto-fix the ${onSelection.length} issue${onSelection.length === 1 ? '' : 's'} on the selection`,
+      hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
+      run: () => void startAutofix(onSelection),
+    },
     violations.length > 1 && !autofixing && {
       label: `Auto-fix the ${violations.length} open violations one by one`,
       hint: 'The assistant works through each issue; you approve, skip or answer each proposal',

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { continuation, describeStep, effectiveSelection, formatDuration, issueSelection, proposalStates, startsExchange, threadRuns } from './assistant'
+import {
+  autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, nextAutofixIssue, proposalStates,
+  startsExchange, summarizeChanges, threadRuns,
+} from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
 
 const run = (id: string, created_at: string, extra: Partial<AgentRun> = {}): AgentRun => ({
@@ -95,5 +98,46 @@ describe('run steps', () => {
     const sel = issueSelection([issue(['eq-1', 'cx-1']), issue(['eq-1', 'gone'])], rows)
     expect(sel.entity_ids).toEqual(['eq-1'])
     expect(sel.relationship_ids).toEqual(['cx-1'])
+  })
+})
+
+describe('auto-fix helpers', () => {
+  const issue = (id: string, eq: string, severity: ReviewIssue['severity'] = 'violation', state: ReviewIssue['resolution_state'] = 'open') =>
+    ({ id, affected_ids: [eq], severity, resolution_state: state, explanation: id }) as ReviewIssue
+  const issues = [issue('a', 'eq-1'), issue('w', 'eq-2', 'warning'), issue('b', 'eq-2'), issue('c', 'eq-1'),
+    issue('d', 'eq-3', 'violation', 'dismissed')]
+
+  it('takes open violations by default, keeping one object together', () => {
+    expect(autofixCandidates(issues, new Set()).map((i) => i.id)).toEqual(['a', 'c', 'b'])
+  })
+
+  it('takes exactly the ticked open issues when some are ticked', () => {
+    expect(autofixCandidates(issues, new Set(['w', 'd'])).map((i) => i.id)).toEqual(['w'])
+  })
+
+  it('skips queued issues that are no longer open', () => {
+    const queue = ['a', 'x', 'b'].map((id) => ({ id, explanation: id }))
+    const { next, rest, resolved } = nextAutofixIssue(queue.slice(1), issues)
+    expect(next?.id).toBe('b')
+    expect(resolved.map((r) => r.id)).toEqual(['x'])
+    expect(rest).toEqual([])
+    expect(nextAutofixIssue([{ id: 'x', explanation: 'x' }], issues).next).toBeNull()
+  })
+})
+
+describe('proposal change lines', () => {
+  const change = (id: string, kind: 'created' | 'updated' | 'deleted', fields: [string, unknown][] = []) => ({
+    entity_id: id, entity_kind: 'connection_point', label: id, change: kind, in_selection: id !== 'out',
+    overrides_locked: [], fields: fields.map(([field, after]) => ({ field, before: null, after })),
+  })
+
+  it('lists additions first and summarizes updated fields', () => {
+    const lines = summarizeChanges([
+      change('upd', 'updated', [['maps_to', 'AHU inlet'], ['paired_with', null], ['medium', 'Water']]),
+      change('gone', 'deleted'), change('out', 'created'),
+    ], (f) => f.replace('_', ' '))
+    expect(lines.map((l) => [l.mark, l.id])).toEqual([['+', 'out'], ['~', 'upd'], ['−', 'gone']])
+    expect(lines[0]).toMatchObject({ detail: 'connection point', outside: true })
+    expect(lines[1].detail).toBe('maps to → AHU inlet; paired with → none (+1 more)')
   })
 })

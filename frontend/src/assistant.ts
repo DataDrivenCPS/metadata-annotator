@@ -1,4 +1,4 @@
-import { emptySelection, type AgentRun, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection } from './types'
+import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection } from './types'
 
 export type ProposalState = Proposal['status'] | 'superseded'
 
@@ -121,4 +121,71 @@ export function describeStep(event: ProgressEvent): string {
 export function formatDuration(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+// ------------------------------------------------------------------ auto-fix
+
+export type AutofixOutcome = 'applied' | 'dismissed' | 'skipped' | 'resolved' | 'failed'
+export interface AutofixItem { id: string; explanation: string }
+export interface AutofixState {
+  queue: AutofixItem[]
+  total: number
+  /** The issue being worked on and the runs of its conversation (the first request and any replies). */
+  current: (AutofixItem & { runIds: string[] }) | null
+  results: (AutofixItem & { outcome: AutofixOutcome })[]
+  /** Why the loop is waiting for the person; null while the assistant works. */
+  paused: 'review' | 'input' | 'failed' | null
+}
+
+/** The issues ticked in the list, else the open violations; one object's issues stay together. */
+export function autofixCandidates(issues: ReviewIssue[], ticked: Set<string>): ReviewIssue[] {
+  const open = issues.filter((i) => i.resolution_state === 'open')
+  const chosen = ticked.size ? open.filter((i) => ticked.has(i.id)) : open.filter((i) => i.severity === 'violation')
+  const owner = (i: ReviewIssue) => i.affected_ids[0] ?? i.id
+  const rank = new Map<string, number>()
+  for (const i of chosen) if (!rank.has(owner(i))) rank.set(owner(i), rank.size)
+  return chosen.map((issue, index) => ({ issue, index }))
+    .sort((a, b) => rank.get(owner(a.issue))! - rank.get(owner(b.issue))! || a.index - b.index)
+    .map((x) => x.issue)
+}
+
+/** The next queued issue still open; the ones skipped over were resolved by earlier fixes. */
+export function nextAutofixIssue(queue: AutofixItem[], issues: ReviewIssue[]):
+    { next: ReviewIssue | null; rest: AutofixItem[]; resolved: AutofixItem[] } {
+  const open = new Map(issues.filter((i) => i.resolution_state === 'open').map((i) => [i.id, i]))
+  for (let k = 0; k < queue.length; k++) {
+    const issue = open.get(queue[k].id)
+    if (issue) return { next: issue, rest: queue.slice(k + 1), resolved: queue.slice(0, k) }
+  }
+  return { next: null, rest: [], resolved: queue }
+}
+
+/** What finished the run: a proposal to review, a reply that needs the person, or a failure. */
+export function autofixPause(run: AgentRun): AutofixState['paused'] {
+  if (run.status === 'failed' || run.status === 'cancelled') return 'failed'
+  return run.outcome.proposal_id ? 'review' : 'input'
+}
+
+// ------------------------------------------------------------- proposal card
+
+export interface ChangeLine {
+  id: string; mark: '+' | '~' | '−'; change: EntityChange['change']; label: string
+  kind: string; detail: string; outside: boolean; overridesEdit: boolean
+}
+
+const MARKS = { created: '+', updated: '~', deleted: '−' } as const
+
+/** One line per changed object, added first, then changed, then removed. */
+export function summarizeChanges(changes: EntityChange[], fieldLabel: (field: string) => string): ChangeLine[] {
+  const order = { created: 0, updated: 1, deleted: 2 }
+  return [...changes].sort((a, b) => order[a.change] - order[b.change]).map((c) => {
+    const kind = c.entity_kind.replace(/_/g, ' ')
+    let detail = kind
+    if (c.change === 'updated') {
+      const shown = c.fields.slice(0, 2).map((f) => `${fieldLabel(f.field)} → ${f.after === null || f.after === undefined || f.after === '' ? 'none' : String(f.after)}`)
+      detail = shown.join('; ') + (c.fields.length > 2 ? ` (+${c.fields.length - 2} more)` : '')
+    }
+    return { id: c.entity_id, mark: MARKS[c.change], change: c.change, label: c.label, kind, detail,
+             outside: !c.in_selection, overridesEdit: c.overrides_locked.length > 0 }
+  })
 }

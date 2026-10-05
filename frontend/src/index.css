@@ -377,3 +377,43 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .document-page img { display: block; width: 100%; height: auto; }
 .document-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; max-height: 400px; overflow: auto; }
 .src-kind.pdf, .src-kind.document { background: #eef1ff; color: #5444a0; }
+
+/* proposal card face: what it fixes, what it changes; everything else under Details */
+.proposal-fixes { margin: 8px 0 6px; font-size: 12.5px; }
+.proposal-fixes ul { margin: 2px 0 4px; padding-left: 18px; }
+.proposal-fixes li { margin: 2px 0; line-height: 1.4; }
+.fixes-head { font-weight: 600; }
+.fixes-head.resolved { color: var(--ok); }
+.fixes-head.introduced { color: var(--warn); margin-top: 4px; }
+.proposal-fixes ul.introduced li { color: var(--warn); }
+.proposal-changes { margin: 6px 0; font-size: 12.5px; }
+.changes-head { font-weight: 600; margin-bottom: 2px; }
+.proposal-changes ul { list-style: none; margin: 0; padding: 0; }
+.change-line { display: flex; gap: 6px; align-items: baseline; padding: 3px 4px; border-radius: 4px; cursor: pointer; min-width: 0; }
+.change-line:hover { background: var(--accent-soft); }
+.change-mark { width: 12px; flex: none; font-weight: 700; text-align: center; color: var(--muted); }
+.change-line.created .change-mark { color: var(--ok); }
+.change-line.deleted .change-mark { color: var(--bad); }
+.change-line.deleted .change-label { text-decoration: line-through; }
+.change-label { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.change-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.build-line { margin: 4px 0; }
+.proposal-notes p { margin: 4px 0; font-size: 12.5px; }
+.proposal-details section { margin: 8px 0; }
+.proposal-details h4 { margin: 6px 0 3px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.proposal-details table.changes { margin-bottom: 6px; }
+
+/* auto-fix progress */
+.autofix-banner { margin: 0 10px 6px; padding: 7px 9px; border: 1.5px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 12.5px; }
+.autofix-banner.review, .autofix-banner.input { border-color: #8250df; background: #f6f1fc; }
+.autofix-banner.failed { border-color: var(--bad); background: #fdecea; }
+.autofix-banner.done { border-color: var(--ok); background: #f6fbf7; }
+.autofix-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.autofix-head .spacer { flex: 1; }
+.autofix-issue { margin-top: 4px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.autofix-state { margin-top: 3px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.autofix-results { list-style: none; margin: 4px 0 0; padding: 0; max-height: 180px; overflow: auto; }
+.autofix-results li { padding: 3px 0; border-top: 1px solid var(--border); }
+.autofix-outcome { font-size: 10px; text-transform: uppercase; padding: 0 5px; border-radius: 6px; background: #eef1f4; }
+.autofix-outcome.applied, .autofix-outcome.resolved { background: #e6f4ea; color: var(--ok); }
+.autofix-outcome.failed { background: #fdecea; color: var(--bad); }

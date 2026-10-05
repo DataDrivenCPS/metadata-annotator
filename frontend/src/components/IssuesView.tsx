@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { autofixCandidates, isActive } from '../assistant'
 import { useStore } from '../store'
 import { emptySelection, type IssueDismissalRecord, type IssueRepair, type ReviewIssue } from '../types'
 
@@ -15,6 +16,9 @@ export function IssuesView() {
   const projectId = useStore((s) => s.projectId)!
   const reload = useStore((s) => s.reload)
   const repairs = useStore((s) => s.repairs?.byIssue)
+  const startAutofix = useStore((s) => s.startAutofix)
+  const autofixing = useStore((s) => !!s.autofix)
+  const running = useStore((s) => Object.values(s.runs).some(isActive))
   const [showAll, setShowAll] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const visible = issues.filter((i) => showAll || (i.resolution_state === 'open' && i.severity !== 'suggestion'))
@@ -59,6 +63,15 @@ export function IssuesView() {
           Add selected to prompt
         </button>
         {selectedIssues.length > 0 && <button className="link" onClick={() => setSelectedIds(new Set())}>Clear</button>}
+        {(() => {
+          const queue = autofixCandidates(issues, selectedIds)
+          return <button disabled={!queue.length || autofixing || running}
+            title={autofixing ? 'Auto-fix is already running' : running ? 'Wait for the assistant to finish'
+              : 'The assistant works through these one at a time; you approve, skip or answer each proposal'}
+            onClick={() => { setSelectedIds(new Set()); void startAutofix(queue) }}>
+            {selectedIssues.length ? `Auto-fix selected (${queue.length})` : `Auto-fix ${queue.length} violation${queue.length === 1 ? '' : 's'}`}
+          </button>
+        })()}
       </div>
       <ul className="issues">
         {visible.map((i) => (

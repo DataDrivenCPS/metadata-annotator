@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { continuation, describeStep, effectiveSelection, formatDuration, isActive, startsExchange, threadRuns,
-  type ProposalState } from '../assistant'
+import { autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, isActive, startsExchange,
+  summarizeChanges, threadRuns, type AutofixOutcome, type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
@@ -10,7 +10,10 @@ const FIELD_LABELS: Record<string, string> = {
   label: 'Name', equipment: 'Equipment', point_kind: 'Kind', point_type: 'Point type', quantity_kind: 'Measurement', unit: 'Unit',
   sensor_type: 'Sensor type', medium: 'Medium', substance: 'Substance', type: 'Type', process: 'Process',
   contained_in: 'Part of', from_equipment: 'From', to_equipment: 'Connected to',
+  direction: 'Direction', connection: 'Connection', paired_with: 'Paired with', maps_to: 'Maps to',
+  from_point: 'From point', to_point: 'To point',
 }
+const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field.replace(/_/g, ' ')
 
 const CONTINUE_LABEL = {
   proposal: 'Replying to the proposed change',
@@ -37,6 +40,7 @@ export function AssistantPanel() {
   return (
     <aside className="assistant">
       <div className="assistant-head"><h2>Assistant</h2><ModelStatus /></div>
+      <AutofixBanner />
       <div className="thread" ref={threadRef} onScroll={(e) => {
         const el = e.currentTarget
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
@@ -141,6 +145,47 @@ function Composer() {
   )
 }
 
+const OUTCOME_TEXT: Record<AutofixOutcome, string> = {
+  applied: 'applied', dismissed: 'dismissed', skipped: 'skipped', resolved: 'already resolved', failed: 'failed',
+}
+
+/** Progress through the auto-fix queue, with Skip/Stop; a summary when it is done. */
+function AutofixBanner() {
+  const af = useStore((s) => s.autofix)
+  const skip = useStore((s) => s.skipAutofixIssue)
+  const stop = useStore((s) => s.stopAutofix)
+  const [busy, setBusy] = useState(false)
+  if (!af) return null
+  const counts = (Object.keys(OUTCOME_TEXT) as AutofixOutcome[])
+    .map((o) => [o, af.results.filter((r) => r.outcome === o).length] as const).filter(([, n]) => n > 0)
+  const tally = counts.map(([o, n]) => `${n} ${OUTCOME_TEXT[o]}`).join(' · ')
+  if (!af.current) return <div className="autofix-banner done">
+    <div className="autofix-head"><strong>Auto-fix finished</strong><span className="muted">{tally || 'nothing to do'}</span>
+      <span className="spacer" /><button onClick={stop}>Close</button></div>
+    {af.results.length > 0 && <details>
+      <summary>Details</summary>
+      <ul className="autofix-results">{af.results.map((r) => <li key={r.id}>
+        <span className={`autofix-outcome ${r.outcome}`}>{OUTCOME_TEXT[r.outcome]}</span> {r.explanation}</li>)}</ul>
+    </details>}
+  </div>
+  const position = af.results.length + 1
+  const state = af.paused === 'review' ? 'Review the proposed change below: apply it, or skip this issue.'
+    : af.paused === 'input' ? 'The assistant needs your input: answer below, or skip this issue.'
+      : af.paused === 'failed' ? 'The assistant could not finish this one.' : 'The assistant is working on it…'
+  const act = async (f: () => Promise<void> | void) => { setBusy(true); try { await f() } finally { setBusy(false) } }
+  return <div className={`autofix-banner ${af.paused ?? 'working'}`}>
+    <div className="autofix-head">
+      <strong>Auto-fix · issue {Math.min(position, af.total)} of {af.total}</strong>
+      {tally && <span className="muted">{tally}</span>}
+      <span className="spacer" />
+      <button disabled={busy} onClick={() => void act(skip)}>Skip this issue</button>
+      <button disabled={busy} onClick={() => act(stop)}>Stop</button>
+    </div>
+    <div className="autofix-issue" title={af.current.explanation}>{af.current.explanation}</div>
+    <div className="autofix-state">{!af.paused && <span className="spinner small" />} {state}</div>
+  </div>
+}
+
 const shortModel = (m: string) => m.split(/[\\/]/).pop() ?? m
 
 /** The model endpoint the assistant uses, and whether it can be reached right now. */
@@ -196,9 +241,16 @@ function Starters() {
   const selection = useStore((s) => s.selection)
   const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
   const appendAssistantContext = useStore((s) => s.appendAssistantContext)
+  const startAutofix = useStore((s) => s.startAutofix)
+  const autofixing = useStore((s) => !!s.autofix)
   const violations = (issues ?? []).filter((i) => i.resolution_state === 'open' && i.severity === 'violation')
   const selected = selection.entity_ids.length + selection.relationship_ids.length > 0
   const starters = [
+    violations.length > 1 && !autofixing && {
+      label: `Auto-fix the ${violations.length} open violations one by one`,
+      hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
+      run: () => void startAutofix(autofixCandidates(issues ?? [], new Set())),
+    },
     violations.length > 0 && {
       label: violations.length > STARTER_ISSUES ? `Fix the first ${STARTER_ISSUES} of ${violations.length} open violations`
         : `Fix the ${violations.length} open violation${violations.length === 1 ? '' : 's'}`,
@@ -360,6 +412,9 @@ function fmt(v: unknown) {
   return String(v)
 }
 
+const FACE_LINES = 8
+const FACE_FIXES = 3
+
 function ProposalPreview({ proposal, running: runningProp, showConversation = false }: {
   proposal: Proposal; running: boolean; showConversation?: boolean
 }) {
@@ -372,41 +427,22 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
   const inspect = useStore((s) => s.inspect)
   const busy = useStore((s) => s.busy)
   const head = useStore((s) => s.model?.head)
+  const [allLines, setAllLines] = useState(false)
+  const [allFixes, setAllFixes] = useState(false)
   const v = proposal.validation
-  const outside = useMemo(() => proposal.changes.filter((c) => !c.in_selection), [proposal])
+  const lines = useMemo(() => summarizeChanges(proposal.changes, fieldLabel), [proposal])
+  const outside = lines.filter((l) => l.outside).length
   const dismissals = proposal.issue_dismissals ?? []
-  const validationFindings = v && <>
-    {v.resolved.map((r, i) => <div key={`r${i}`} className="resolved">✓ fixes: {r}</div>)}
-    {v.introduced.map((r, i) => <div key={`n${i}`} className="introduced">! new: {r}</div>)}
-  </>
-  const changeDetails = <div className="change-accordions">
-    {proposal.changes.map((change) => {
-      const fields = change.fields.length ? change.fields : [{ field: change.change, before: null, after: null }]
-      return <details key={change.entity_id} className={change.in_selection ? '' : 'outside'}>
-        <summary>
-          <span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}
-          <span className="muted"> · {fields.length} field(s)</span>
-          {!change.in_selection && <span className="badge" title="Outside your selection">outside selection</span>}
-        </summary>
-        <table className="changes">
-          <thead><tr><th>Field</th><th>Before</th><th>After</th></tr></thead>
-          <tbody>{fields.map((field, index) => (
-            <tr key={`${field.field}-${index}`} onClick={(event) => {
-              if (change.change !== 'deleted') click({ id: change.entity_id },
-                { ctrl: event.ctrlKey || event.metaKey, shift: false }, [])
-              inspect(change.entity_id)
-            }}>
-              <td>{FIELD_LABELS[field.field] ?? field.field}
-                {change.overrides_locked.includes(field.field) && <span className="badge warn" title="A person set this value earlier">overrides earlier edit</span>}
-              </td>
-              <td className="before">{fmt(field.before)}</td>
-              <td className="after">{fmt(field.after)}</td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </details>
-    })}
-  </div>
+  const fixes = v?.resolved.length ? v.resolved : proposal.gate?.fixed ?? []
+  const introduced = v?.introduced ?? []
+  const show = (id: string, deleted: boolean, ctrl: boolean) => {
+    if (!deleted) click({ id }, { ctrl, shift: false }, [])
+    inspect(id)
+  }
+  const counts = { created: 0, updated: 0, deleted: 0 }
+  for (const l of lines) counts[l.change]++
+  const headline = [counts.created && `${counts.created} added`, counts.updated && `${counts.updated} changed`,
+    counts.deleted && `${counts.deleted} removed`].filter(Boolean).join(' · ')
 
   return (
     <div className={`proposal status-${proposal.status}`}>
@@ -422,12 +458,92 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
           {proposal.explanation && <p className="agent"><strong>Assistant:</strong> {proposal.explanation}</p>}
         </>}
       </div>}
-      {proposal.build_summary && (() => { const b = proposal.build_summary!; return <details>
-        <summary>Source build · {b.title} · {b.records} records</summary>
-        <div className="build-summary">
+
+      {/* (b) what gets fixed, and anything it breaks */}
+      <div className="proposal-fixes">
+        {fixes.length > 0 ? <>
+          <div className="fixes-head resolved">✓ Fixes {fixes.length} issue{fixes.length === 1 ? '' : 's'}</div>
+          <ul>{(allFixes ? fixes : fixes.slice(0, FACE_FIXES)).map((f, i) => <li key={i}>{f}</li>)}</ul>
+          {fixes.length > FACE_FIXES && <button className="link small" onClick={() => setAllFixes(!allFixes)}>
+            {allFixes ? 'show fewer' : `+${fixes.length - FACE_FIXES} more`}</button>}
+        </> : proposal.operations.length > 0 && <div className="muted small">No change to open issues.</div>}
+        {introduced.length > 0 && <>
+          <div className="fixes-head introduced">! Introduces {introduced.length} issue{introduced.length === 1 ? '' : 's'}</div>
+          <ul className="introduced">{introduced.map((f, i) => <li key={i}>{f}</li>)}</ul>
+        </>}
+      </div>
+
+      {/* (a) what gets added or changed */}
+      {lines.length > 0 && <div className="proposal-changes">
+        <div className="changes-head">{headline}
+          {outside > 0 && <span className="warn-text"> · {outside} outside your selection</span>}</div>
+        <ul>{(allLines ? lines : lines.slice(0, FACE_LINES)).map((l) => (
+          <li key={l.id} className={`change-line ${l.change}`} title="Select and inspect"
+            onClick={(e) => show(l.id, l.change === 'deleted', e.ctrlKey || e.metaKey)}>
+            <span className="change-mark">{l.mark}</span>
+            <span className="change-label">{l.label}</span>
+            <span className="change-detail muted">{l.detail}</span>
+            {l.outside && <span className="badge" title="Outside your selection">outside</span>}
+            {l.overridesEdit && <span className="badge warn" title="A person set one of these values earlier">overrides edit</span>}
+          </li>))}</ul>
+        {lines.length > FACE_LINES && <button className="link small" onClick={() => setAllLines(!allLines)}>
+          {allLines ? 'show fewer' : `+${lines.length - FACE_LINES} more`}</button>}
+      </div>}
+
+      {proposal.build_summary && (() => { const b = proposal.build_summary!; return <p className="muted small build-line">
+        Source build · {b.title}: read {Math.round(b.parse.coverage * 100)}% of {b.records} records, mapped {b.mapped_tokens} of {b.token_count} point tokens
+        {b.unmapped_records ? `; ${b.unmapped_records} records unresolved` : ''}.</p> })()}
+
+      {dismissals.length > 0 && <div className="dismissals">
+        <div className="fixes-head">Dismisses {dismissals.length} issue{dismissals.length === 1 ? '' : 's'}</div>
+        <ul>{dismissals.map((d) => <li key={d.id}>
+          <span className={`sev ${d.severity}`}>{d.severity}</span> {d.explanation}
+          <div className="dismissal-reason">Why: {d.reason}</div>
+        </li>)}</ul>
+        <p className="muted small">Hidden from the open issues; the model itself does not change. You can reopen them from the Issues list.</p>
+      </div>}
+
+      {(proposal.questions.length > 0 || proposal.notes.length > 0) && <div className="proposal-notes">
+        {proposal.questions.map((q, i) => <p key={`q${i}`} className="question">? {q}</p>)}
+        {proposal.notes.map((n, i) => <p key={`n${i}`} className="warn-text">Note: {n}</p>)}
+      </div>}
+
+      {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
+
+      <details className="proposal-details">
+        <summary>Details</summary>
+        {proposal.changes.length > 0 && <section>
+          <h4>Field changes</h4>
+          {proposal.changes.map((change) => {
+            const fields = change.fields.length ? change.fields : [{ field: change.change, before: null, after: null }]
+            return <table key={change.entity_id} className="changes">
+              <thead><tr><th colSpan={3}><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</th></tr></thead>
+              <tbody>{fields.map((field, index) => (
+                <tr key={`${field.field}-${index}`} onClick={(e) => show(change.entity_id, change.change === 'deleted', e.ctrlKey || e.metaKey)}>
+                  <td>{fieldLabel(field.field)}
+                    {change.overrides_locked.includes(field.field) && <span className="badge warn" title="A person set this value earlier">overrides earlier edit</span>}
+                  </td>
+                  <td className="before">{fmt(field.before)}</td>
+                  <td className="after">{fmt(field.after)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          })}
+        </section>}
+        {v && <section>
+          <h4>Model checks</h4>
+          <p className="small">{v.before.violations} → {v.after.violations} violation(s), {v.before.warnings} → {v.after.warnings} warning(s)</p>
+        </section>}
+        {proposal.gate && <section title="The repair engine's soundness gate (pyshifty): re-validates the model with this change and compares violations. Sound = introduces nothing; progress = fixes something.">
+          <h4>Soundness gate</h4>
+          <p className="small">{proposal.gate.sound ? 'Sound' : 'Not sound'} · {proposal.gate.progress ? 'progress' : 'no progress'}</p>
+          {proposal.gate.fixed.length > 0 && <p className="small">fixes: {proposal.gate.fixed.join('; ')}</p>}
+          {proposal.gate.introduced.length > 0 && <p className="small">introduces: {proposal.gate.introduced.join('; ')}</p>}
+        </section>}
+        {proposal.build_summary && (() => { const b = proposal.build_summary!; return <section>
+          <h4>Source mapping</h4>
           {b.revision_note && <p className="muted small">{b.revision_note}</p>}
-          <p className="muted small">Read {Math.round(b.parse.coverage * 100)}% of records using {b.parse.description}.
-            Mapped {b.mapped_tokens} of {b.token_count} point tokens{b.unmapped_records ? `; ${b.unmapped_records} records left unresolved` : ''}.</p>
+          <p className="muted small">Using {b.parse.description}.</p>
           <div className="grid-scroll short"><table className="raw-grid">
             <thead><tr><th>#</th><th>Token</th><th>Maps to</th></tr></thead>
             <tbody>{b.point_mappings.map((m) => <tr key={m.id}><td>{m.count}</td><td className="name">{m.token}</td>
@@ -435,57 +551,22 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
             {b.equipment_mappings.map((m) => <tr key={m.id}><td>{m.count}</td><td>{m.examples.slice(0, 2).join(', ')}</td>
               <td>{m.term_label ?? <span className="warn-text">unclassified</span>}</td></tr>)}</tbody>
           </table></div>
-        </div>
-      </details> })()}
-
-      {proposal.gate && <div className={`gate ${proposal.gate.sound ? 'sound' : 'unsound'}`}
-        title="The repair engine's soundness gate (pyshifty): re-validates the model with this change and compares violations. Sound = introduces nothing; progress = fixes something.">
-        <strong>Soundness gate:</strong> {proposal.gate.sound ? 'sound' : 'not sound'} · {proposal.gate.progress ? 'progress' : 'no progress'}
-        {proposal.gate.fixed.length > 0 && <div>fixes: {proposal.gate.fixed.join('; ')}</div>}
-        {proposal.gate.introduced.length > 0 && <div>introduces: {proposal.gate.introduced.join('; ')}</div>}
-      </div>}
-
-      {dismissals.length > 0 && <details className="dismissals" open>
-        <summary>Issues to dismiss · {dismissals.length}</summary>
-        <ul>{dismissals.map((d) => <li key={d.id}>
-          <span className={`sev ${d.severity}`}>{d.severity}</span> {d.explanation}
-          <div className="dismissal-reason">Why: {d.reason}</div>
-        </li>)}</ul>
-        <p className="muted small">Applying hides these from the open issues; the model itself does not change. You can reopen them from the Issues list.</p>
-      </details>}
-
-      {(proposal.changes.length > 0 || !dismissals.length) && <details>
-        <summary>Changes · {proposal.changes.length} object(s)</summary>
-        {outside.length > 0 && <p className="warn-text">{outside.length} change(s) fall outside your selection — check them before applying.</p>}
-        {proposal.changes.length ? changeDetails : <p className="muted">No model changes were needed.</p>}
-      </details>}
-
-      {(proposal.questions.length > 0 || proposal.notes.length > 0) && <details>
-        <summary>Assistant notes and questions · {proposal.questions.length + proposal.notes.length}</summary>
-        {proposal.questions.map((q, i) => <p key={`q${i}`} className="question">? {q}</p>)}
-        {proposal.notes.map((n, i) => <p key={`n${i}`} className="warn-text">Note: {n}</p>)}
-      </details>}
-
-      {v && <details>
-        <summary>Model checks · {v.before.violations} → {v.after.violations} problem(s)
-          {v.resolved.length + v.introduced.length ? ` · ${v.resolved.length + v.introduced.length} changed finding(s)` : ''}</summary>
-        <div className="validation-delta">{validationFindings}</div>
-      </details>}
-
-      <details>
-        <summary>Evidence ({proposal.evidence.length})</summary>
-        <ul className="evidence">
-          {proposal.evidence.map((e, i) => (
-            <li key={i}><span className={`ev-kind ${e.kind}`}>{e.kind}</span> <code>{e.ref}</code> {e.summary}</li>
-          ))}
-        </ul>
-      </details>
-      <details>
-        <summary>Technical detail ({proposal.operations.length} operation(s), +{proposal.diff.added.length}/−{proposal.diff.removed.length} triples)</summary>
-        <pre className="code">{JSON.stringify(proposal.operations, null, 1)}</pre>
-        <pre className="code diff">
-          {proposal.diff.removed.map((t) => `- ${t}`).join('\n')}{'\n'}{proposal.diff.added.map((t) => `+ ${t}`).join('\n')}
-        </pre>
+        </section> })()}
+        <section>
+          <h4>Evidence ({proposal.evidence.length})</h4>
+          <ul className="evidence">
+            {proposal.evidence.map((e, i) => (
+              <li key={i}><span className={`ev-kind ${e.kind}`}>{e.kind}</span> <code>{e.ref}</code> {e.summary}</li>
+            ))}
+          </ul>
+        </section>
+        <section>
+          <h4>Technical detail ({proposal.operations.length} operation(s), +{proposal.diff.added.length}/−{proposal.diff.removed.length} triples)</h4>
+          <pre className="code">{JSON.stringify(proposal.operations, null, 1)}</pre>
+          <pre className="code diff">
+            {proposal.diff.removed.map((t) => `- ${t}`).join('\n')}{'\n'}{proposal.diff.added.map((t) => `+ ${t}`).join('\n')}
+          </pre>
+        </section>
       </details>
 
       <div className="proposal-actions">

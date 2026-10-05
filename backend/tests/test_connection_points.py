@@ -144,3 +144,14 @@ def test_brick_has_no_connection_points(workspace):
     with pytest.raises(OperationError, match="connection points do not exist in Brick"):
         p.build_candidate(p.head(), ops({"op": "create_connection_point", "equipment": eq.id,
                                          "direction": "inlet", "medium": "s223:Fluid-Air"}))
+
+
+def test_an_equipments_connection_points_count_as_its_selection(plant):
+    from workbench.schemas import SelectionScope
+
+    v = plant.view(plant.head())
+    hx = by_label(v.equipment, "HX")
+    cand = plant.build_candidate(plant.head(), ops(
+        {"op": "update_connection_point", "id": port(v, "HX", "inlet", "Boiler").id,
+         "paired_with": port(v, "HX", "outlet", "Boiler").id}), SelectionScope(entity_ids=[hx.id]))
+    assert cand.changes and all(c.in_selection for c in cand.changes)

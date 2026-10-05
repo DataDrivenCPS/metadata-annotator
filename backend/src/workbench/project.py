@@ -146,10 +146,16 @@ def compute_changes(before: ModelView, after: ModelView, selected: set[str],
         locked = set(rb.locked) if rb else set()  # type: ignore[union-attr]
         out.append(EntityChange(
             entity_id=eid, entity_kind=kind, label=row.label, change=change,  # type: ignore[arg-type,union-attr]
-            fields=fields, in_selection=(not selected) or eid in selected,
+            fields=fields, in_selection=(not selected) or eid in selected or _part_of_selection(row, selected),
             overrides_locked=sorted(locked & {f.field for f in fields}) if change == "updated" else [],
         ))
     return sorted(out, key=lambda c: c.entity_id)
+
+
+def _part_of_selection(row, selected: set[str]) -> bool:
+    """A selected equipment's own connection points are part of what was selected."""
+    owner = getattr(row, "equipment", None) if getattr(row, "kind", None) == "connection_point" else None
+    return owner is not None and owner.id in selected
 
 
 def triple_diff(before: Graph, after: Graph) -> TripleDiff:

@@ -53,8 +53,19 @@ model = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
 # request_options = { effort = "medium", fallbacks = true }
 
+# Virtual relations (see backend/src/workbench/views.toml for the curated ones): a named path over
+# ontology relations, usable as virtual:<id> wherever a relation is (relate, views, inspector,
+# assistant). With `via`, setting one creates that middle node when the two share none.
+# [virtual.intersects]
+# label = "intersects"
+# families = ["brick"]
+# path = "rec:intersectingElement/^rec:intersectingElement"
+# via = "rec:Slab"
+# via_label = "Slab: {subject} | {object}"
+
 # Table views (see backend/src/workbench/views.toml for the curated ones). Rows are instances of
-# the given classes; columns are property paths; a single-step "relation" column is editable.
+# the given classes; columns are property paths (virtual relations too); a single-step
+# "relation" column is editable.
 # A view with `builtin = "spaces"` (or points/equipment/connections/connection_points) adds its
 # columns to that typed table instead.
 # [views.systems]

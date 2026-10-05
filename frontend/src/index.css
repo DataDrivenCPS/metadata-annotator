@@ -441,5 +441,5 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .relation-add input { width: 100%; }
 .relation-choices { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; }
 .relation-choices li { padding: 2px 0; }
-.react-flow__edge.space-edge.adjacent path { stroke: #b0894f; stroke-dasharray: 1 5; stroke-width: 2; }
+.react-flow__edge.space-edge.virtual path { stroke: #b0894f; stroke-dasharray: 1 5; stroke-width: 2; }
 .relation-cell .chip button { margin-left: 3px; }

@@ -32,6 +32,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
 from .graph import ProjectGraph
+from .relations import facts, find, relationship_id, relationship_key
 from .vocabulary import BRICK, QUDT, REC, S223, Vocabulary, local_name
 
 BRICK_NS, REC_NS = str(BRICK), str(REC)
@@ -101,7 +102,6 @@ class SpaceRow:
     equipment_count: int
     locked: list[str]
     evidence: list[str]
-    adjacent: list[EntityRef] = field(default_factory=list)  # Brick/REC: spaces sharing a wall or slab
     kind: str = "space"
 
 
@@ -180,6 +180,7 @@ class RelationshipRow:
     object: EntityRef | None  # another entity...
     value: TermRef | None  # ...or a vocabulary term (e.g. an enumeration value)
     symmetric: bool
+    virtual: bool = False  # a virtual relation (relations.py): read from a path, not stored
     iri: str = ""
     locked: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
@@ -359,7 +360,7 @@ def connection_ends(pg: ProjectGraph, cx) -> tuple[list[tuple[URIRef, URIRef | N
 def entity_kind(pg: ProjectGraph, vocab: Vocabulary, eid: str) -> str | None:
     """equipment / point / connection for an existing entity id, else None."""
     if eid.startswith("rl-"):
-        return "relationship" if find_relationship(pg, vocab, eid) else None
+        return "relationship" if find(pg, vocab, eid) else None
     if vocab.family == "brick":
         from . import brick
 
@@ -548,7 +549,6 @@ OWNED: dict[str, dict[str, tuple[set[str] | None, str]]] = {
         **{REC_NS + p: ({"space"}, "the space's part_of") for p in ("isPartOf", "hasPart")},
         **{BRICK_NS + p: (None, "the equipment's location") for p in ("hasLocation", "isLocationOf")},
         BRICK_NS + "hasUnit": (None, "the point's unit"),
-        REC_NS + "adjacentElement": ({"space"}, "adjacency between spaces (make_adjacent)"),
     },
 }
 
@@ -565,33 +565,9 @@ def owned_hint(vocab: Vocabulary, predicate: str, subject_kind: str | None) -> s
     return hint if kinds is None or subject_kind in kinds else None
 
 
-def relationship_key(vocab: Vocabulary, s, p, o) -> tuple[str, str, str]:
-    """One key for a fact however it is stated: symmetric pairs and inverse pairs coincide."""
-    t = vocab.term(str(p))
-    if t is not None and t.inverse and str(p) > t.inverse:
-        s, p, o = o, URIRef(t.inverse), s
-        t = vocab.term(str(p))
-    if t is not None and t.symmetric and str(o) < str(s):
-        s, o = o, s
-    return str(s), str(p), str(o)
-
-
-def relationship_id(key: tuple[str, str, str]) -> str:
-    return "rl-" + hashlib.sha1("|".join(key).encode()).hexdigest()[:8]
-
-
-def find_relationship(pg: ProjectGraph, vocab: Vocabulary, rid: str) -> tuple[URIRef, URIRef, URIRef] | None:
-    """A stored triple behind a relationship id."""
-    for s, p, o in pg.model:
-        if isinstance(s, URIRef) and isinstance(o, URIRef) and vocab.kind_of(str(p)) == "relation":
-            if relationship_id(relationship_key(vocab, s, p, o)) == rid:
-                return s, p, o  # type: ignore[return-value]
-    return None
-
-
 def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> None:
-    """Every non-owned ontology relation between the view's entities (or to a vocabulary term)."""
-    g = pg.model
+    """Every non-owned ontology relation between the view's entities (or to a vocabulary term),
+    and every virtual relation between them."""
     nodes: dict[str, tuple[str, str, str]] = {}  # iri -> (id, kind, label)
     for row in view.rows().values():
         iri = getattr(row, "iri", "")
@@ -599,8 +575,8 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
             nodes[iri] = (row.id, row.kind, row.label)  # type: ignore[attr-defined]
     seen: set[tuple[str, str, str]] = set()
     counts: dict[str, int] = {}
-    for s, p, o in g:
-        if str(s) not in nodes or not isinstance(o, URIRef) or vocab.kind_of(str(p)) != "relation":
+    for s, p, o in facts(pg, vocab):
+        if str(s) not in nodes:
             continue
         sid, skind, slabel = nodes[str(s)]
         if owned_hint(vocab, str(p), skind):
@@ -620,8 +596,8 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
             id=relationship_id(key), label=f"{slabel} {rel.label} {target}",  # type: ignore[union-attr]
             subject=EntityRef(sid, slabel), relation=rel,  # type: ignore[arg-type]
             object=EntityRef(obj[0], obj[2]) if obj else None, value=value,
-            symmetric=bool(term and term.symmetric)))
-        for eid in (sid, obj[0] if obj else None):
+            symmetric=bool(term and term.symmetric), virtual=str(p) in vocab.virtual))
+        for eid in (sid, obj[0] if obj else None) if str(p) not in vocab.virtual else ():
             if eid:
                 counts[eid] = counts.get(eid, 0) + 1
     for e in view.entities:

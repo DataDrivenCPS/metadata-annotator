@@ -12,7 +12,7 @@ const FIELD_LABELS: Record<string, string> = {
   contained_in: 'Part of', from_equipment: 'From', to_equipment: 'Connected to',
   direction: 'Direction', connection: 'Connection', paired_with: 'Paired with', maps_to: 'Maps to',
   from_point: 'From point', to_point: 'To point', part_of: 'Part of', location: 'Location',
-  subject: 'From', relation: 'Relation', object: 'To', adjacent: 'Adjacent spaces',
+  subject: 'From', relation: 'Relation', object: 'To',
 }
 const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field.replace(/_/g, ' ')
 

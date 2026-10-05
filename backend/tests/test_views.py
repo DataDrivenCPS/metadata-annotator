@@ -1,11 +1,10 @@
 """Declarative table views: curated specs, workbench.toml specs, path evaluation, editable cells."""
 
 import pytest
-from rdflib.paths import InvPath, SequencePath
-
 from conftest import by_label
 from workbench import views
 from workbench.operations import OperationList
+from workbench.relations import Path, PathError
 from workbench.vocabulary import REC, S223
 
 
@@ -15,11 +14,13 @@ def ops(*raw):
 
 def test_paths_parse_with_vocabulary_prefixes(registry):
     v = registry.get("brick")
-    path = views.parse_path(v, "rec:adjacentElement/^rec:adjacentElement")
-    assert isinstance(path, SequencePath) and isinstance(path.args[1], InvPath)
-    assert views.single_step(views.parse_path(v, "^rec:adjacentElement")) == (REC.adjacentElement, True)
-    with pytest.raises(views.PathError):
-        views.parse_path(v, "nope:thing")
+    path = Path.parse(v, "rec:adjacentElement/^rec:adjacentElement | rec:isPartOf")
+    assert path.alternatives == [[(str(REC.adjacentElement), False), (str(REC.adjacentElement), True)],
+                                 [(str(REC.isPartOf), False)]]
+    assert Path.parse(v, "^rec:adjacentElement").single_step == (str(REC.adjacentElement), True)
+    assert Path.parse(v, "virtual:adjacent").single_step == ("urn:workbench:virtual#adjacent", False)
+    with pytest.raises(PathError):
+        Path.parse(v, "nope:thing")
 
 
 def test_curated_and_configured_specs(registry):
@@ -53,12 +54,13 @@ def test_zone_view_follows_paths_and_offers_edits(zoned):
     spec = next(s for s in views.load_specs()[0] if s.id == "zones")
     out = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), spec)
     cols = {c["key"]: c for c in out["columns"]}
-    assert cols["domain_spaces"]["editor"] == "relation" and cols["spaces"]["editor"] == "none"
+    assert cols["domain_spaces"]["editor"] == "relation" and cols["spaces"]["editor"] == "relation"
+    assert [c["label"] for c in cols["spaces"]["candidates"]] == ["Office 1"]  # physical spaces only
     assert any(c["label"] == "Office 1 HVAC" for c in cols["domain_spaces"]["candidates"])
     assert any(c.get("curie") == "s223:Domain-Lighting" for c in cols["domain"]["candidates"])
     (row,) = out["rows"]
     assert row["label"] == "Zone A"
-    assert [c["label"] for c in row["cells"]["spaces"]] == ["Office 1"]  # zone -> domain space <- encloses
+    assert [c["label"] for c in row["cells"]["spaces"]] == ["Office 1"]  # virtual:serves_space
     member = row["cells"]["domain_spaces"][0]
     assert member["label"] == "Office 1 HVAC" and member["relationship"].startswith("rl-")
     # the relationship id in a cell removes exactly that fact
@@ -77,3 +79,12 @@ def test_inverse_columns_and_other_things(zoned):
     other = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), specs["other"])
     counts = {r["label"]: r["cells"]["relations"][0]["label"] for r in other["rows"]}
     assert counts == {"Office 1 HVAC": "2", "Zone A": "2"}
+
+
+def test_typed_table_extensions_merge():
+    specs, _ = views.load_specs({"space_notes": {"label": "Notes", "builtin": "spaces",
+                                                 "columns": [{"key": "parts", "label": "Parts", "path": "rec:hasPart"}]}})
+    brick = views.for_project(specs, "brick", "brick")
+    (spaces,) = [s for s in brick if s.builtin == "spaces"]
+    assert [c.key for c in spaces.columns] == ["adjacent", "parts"]
+    assert "building_elements" in {s.id for s in brick} and "zones" not in {s.id for s in brick}

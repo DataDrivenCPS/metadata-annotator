@@ -87,7 +87,6 @@ DISPLAY_FIELDS = {
         ("label", lambda r: r.label),
         ("type", lambda r: r.type.label if r.type else None),
         ("part_of", lambda r: r.part_of.label if r.part_of else None),
-        ("adjacent", lambda r: ", ".join(a.label for a in r.adjacent) or None),
     ],
     "entity": [
         ("label", lambda r: r.label),

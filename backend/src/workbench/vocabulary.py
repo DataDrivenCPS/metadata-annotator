@@ -110,8 +110,11 @@ class ValidationRun:
 class Vocabulary:
     """One profile's vocabulary, loaded once per process. Thread-safe for validation."""
 
-    def __init__(self, profile: "ProfileConfig", cache_dir: Path):
+    def __init__(self, profile: "ProfileConfig", cache_dir: Path, virtual: dict[str, dict] | None = None):
         self.profile = profile
+        self._virtual_config = virtual  # [virtual.<id>] tables from workbench.toml (see relations.py)
+        self.virtual: dict = {}  # virtual relation IRI -> relations.Virtual
+        self.virtual_errors: list[str] = []
         self.family = profile.family
         self.cache_dir = cache_dir
         self.namespaces: dict[str, str] = {}
@@ -193,6 +196,9 @@ class Vocabulary:
             tmp.write_text(json.dumps(data), encoding="utf-8")
             tmp.replace(catalog_path)
         self._install_catalog(data)
+        from .relations import install
+
+        install(self, self._virtual_config)
         log.info("vocabulary %s ready in %.1fs (%d terms)", self.profile.name,
                  time.perf_counter() - t0, len(self.terms))
 
@@ -465,6 +471,10 @@ class Vocabulary:
                     cur["objects"] |= set(sh_["objects"])
                     if sh_["max"] is not None:
                         cur["max"] = sh_["max"] if cur["max"] is None else min(cur["max"], sh_["max"])
+        for v in self.virtual.values():
+            subjects, objects = v.classes()
+            if any(self.is_a(c, s) for c in types for s in subjects):
+                out[v.iri] = {"relation": v.iri, "objects": set(objects), "max": None}
         return [{**v, "objects": sorted(v["objects"])} for v in sorted(out.values(), key=lambda v: self.label(v["relation"]).lower())]
 
     def _install_catalog(self, data: dict) -> None:
@@ -755,11 +765,27 @@ def _severity(s: str) -> str:
     return {"violation": "Violation", "warning": "Warning", "info": "Info"}.get(s.lower(), s)
 
 
+def expand_term(vocab: Vocabulary, value: str) -> str:
+    """Accept full IRIs, <IRIs>, and known prefixed names (s223:Pipe, watr:Tank, unit:PSI)."""
+    v = value.strip().strip("<>")
+    if "://" in v or v.startswith("urn:"):
+        return v
+    if ":" in v:
+        prefix, local = v.split(":", 1)
+        known = {**vocab.namespaces, "s223": str(S223), "qudt": str(QUDT),
+                 "unit": "http://qudt.org/vocab/unit/",
+                 "quantitykind": "http://qudt.org/vocab/quantitykind/",
+                 "qk": "http://qudt.org/vocab/quantitykind/"}
+        if prefix in known:
+            return known[prefix] + local
+    return v
+
+
 class VocabularyRegistry:
     """All configured profiles; each vocabulary loads on first use (or in the background)."""
 
-    def __init__(self, profiles: dict[str, "ProfileConfig"], cache_dir: Path):
-        self.vocabularies = {name: Vocabulary(p, cache_dir) for name, p in profiles.items()}
+    def __init__(self, profiles: dict[str, "ProfileConfig"], cache_dir: Path, virtual: dict[str, dict] | None = None):
+        self.vocabularies = {name: Vocabulary(p, cache_dir, virtual) for name, p in profiles.items()}
 
     def get(self, name: str, wait: float | None = 180) -> Vocabulary:
         """The loaded vocabulary. Loads it now if needed; raises if it failed or times out."""

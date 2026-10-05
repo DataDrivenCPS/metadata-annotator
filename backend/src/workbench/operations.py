@@ -36,7 +36,6 @@ from .projection import (
     connection_ends,
     entity_iri,
     entity_kind,
-    find_relationship,
     owned_hint,
     owner_of_port,
     paired_port,
@@ -46,11 +45,11 @@ from .projection import (
     port_id,
     port_iri,
     port_label,
-    relationship_id,
-    relationship_key,
     sensors_of,
 )
-from .vocabulary import QUDT, S223, Vocabulary
+from .relations import expand, relationship_id, relationship_key
+from .relations import find as find_relationship
+from .vocabulary import QUDT, S223, Vocabulary, expand_term
 
 PLACEHOLDER = "new:"
 
@@ -208,28 +207,14 @@ class DeleteEntity(_Op):
 class Relate(_Op):
     op: Literal["relate"] = "relate"
     subject: str = Field(description="Id of the entity the relation starts from (any kind)")
-    relation: str = Field(description="A relation of the loaded ontologies, e.g. s223:hasDomainSpace")
+    relation: str = Field(description="A relation of the loaded ontologies, e.g. s223:hasDomainSpace, "
+                                      "or a virtual relation (virtual:...)")
     object: str = Field(description="Id of the related entity, or a vocabulary term (e.g. s223:Domain-HVAC)")
 
 
 class Unrelate(_Op):
     op: Literal["unrelate"] = "unrelate"
     id: str = Field(description="Relationship id (rl-...)")
-
-
-class MakeAdjacent(_Op):
-    op: Literal["make_adjacent"] = "make_adjacent"
-    space: str = Field(description="Id of a space")
-    other: str = Field(description="Id of the space next to it")
-    # Filled in when resolving: the shared building element (existing, or a new rec:Wall).
-    element: str | None = Field(None, description="Optional id of the shared wall/slab to use")
-    create_element: bool | None = None
-
-
-class UnmakeAdjacent(_Op):
-    op: Literal["unmake_adjacent"] = "unmake_adjacent"
-    space: str
-    other: str
 
 
 Direction = Literal["inlet", "outlet", "bidirectional"]
@@ -271,7 +256,6 @@ Operation = Annotated[
         CreateConnectionPoint, UpdateConnectionPoint, DeleteConnectionPoint,
         CreateSpace, UpdateSpace, DeleteSpace,
         CreateEntity, UpdateEntity, DeleteEntity, Relate, Unrelate,
-        MakeAdjacent, UnmakeAdjacent,
     ],
     Field(discriminator="op"),
 ]
@@ -307,7 +291,6 @@ FAMILY_FIELDS = {
         "space": {"label", "type", "part_of", "evidence"},
         "entity": {"label", "type", "evidence"},
         "relationship": {"subject", "relation", "object"},
-        "adjacency": {"space", "other", "element", "create_element"},
         "point": {"label", "point_kind", "point_type", "unit", "equipment", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "evidence"},
     },
@@ -354,8 +337,6 @@ class ApplyResult:
 def entity_kind_of_op(op) -> str:
     if op.op in ("relate", "unrelate"):
         return "relationship"
-    if op.op in ("make_adjacent", "unmake_adjacent"):
-        return "adjacency"
     return op.op.split("_", 1)[1]  # create_connection_point -> connection_point
 
 
@@ -365,28 +346,15 @@ TYPED_CREATE = {"equipment": "create_equipment", "location": "create_space", "po
                 "port": "create_connection_point"}
 
 
-def expand_term(vocab: Vocabulary, value: str) -> str:
-    """Accept full IRIs, <IRIs>, and known prefixed names (s223:Pipe, watr:Tank, unit:PSI)."""
-    v = value.strip().strip("<>")
-    if "://" in v or v.startswith("urn:"):
-        return v
-    if ":" in v:
-        prefix, local = v.split(":", 1)
-        known = {**vocab.namespaces, "s223": str(S223), "qudt": str(QUDT),
-                 "unit": "http://qudt.org/vocab/unit/",
-                 "quantitykind": "http://qudt.org/vocab/quantitykind/",
-                 "qk": "http://qudt.org/vocab/quantitykind/"}
-        if prefix in known:
-            return known[prefix] + local
-    return v
-
-
 def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
     """Check structure; mint ids for new entities. Returns new, fully resolved operations.
 
-    Raises OperationError listing every problem found (not just the first).
+    Virtual relations are expanded first (relations.expand), so the result holds only
+    operations on stored facts. Raises OperationError listing every problem found.
     """
-    problems: list[str] = []
+    expanded, problems = expand(pg, vocab, [o.model_dump() for o in ops])
+    origin = [i for i, _ in expanded]  # positions as written, for messages
+    ops = OperationList.validate_python([o for _, o in expanded])
     unknown_terms: list[tuple[str, str, str | None]] = []
     placeholders: dict[str, str] = {}
     created: dict[str, str] = {}  # id -> kind, for entities created earlier in the list
@@ -401,20 +369,14 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             return created[eid] == kind
         return entity_kind(pg, vocab, eid) == kind
 
-    walls: dict[frozenset, str] = {}  # make_adjacent pair -> shared element chosen for it
-
     def later_placeholders(i: int) -> set[str]:
         return {o.id for o in ops[i + 1:] if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER)}
 
     for i, op in enumerate(ops):
-        where = f"operation {i + 1} ({op.op})"
+        where = f"operation {origin[i] + 1} ({op.op})"
         data = op.model_dump(exclude_unset=True)
         data["op"] = op.op
         kind = entity_kind_of_op(op)
-        if kind == "adjacency" and kind not in allowed:
-            problems.append(f"{where}: adjacency between spaces uses RealEstateCore (rooms sharing a wall), which "
-                            f"only Brick projects load")
-            continue
         if kind not in allowed:
             problems.append(f"{where}: {kind.replace('_', ' ')}s do not exist in {FAMILY_NAMES[vocab.family]} models")
             continue
@@ -436,39 +398,6 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             continue
         if op.op == "create_connection" and not (data.get("to_equipment") or data.get("to_point")):
             problems.append(f"{where}: give to_equipment" + (" or to_point" if vocab.family == "s223" else ""))
-            continue
-        if kind == "adjacency":
-            ids = [placeholders.get(data[f], data[f]) for f in ("space", "other")]
-            bad = [i for i in ids if (created.get(i) or (None if i in deleted else entity_kind(pg, vocab, i))) != "space"]
-            if bad or ids[0] == ids[1]:
-                problems.append(f"{where}: needs two different spaces" + (f"; not spaces: {', '.join(bad)}" if bad else ""))
-                continue
-            data.update(space=ids[0], other=ids[1])
-            if op.op == "make_adjacent":
-                # Decided here, not when applying, so the preview and the applied change are identical.
-                el = placeholders.get(data.get("element") or "", data.get("element"))
-                if el and data.get("create_element"):  # already resolved (e.g. applying a proposal)
-                    if pg.iri(el) is not None or el in created:
-                        problems.append(f"{where}: element id {el!r} already exists")
-                        continue
-                    created[el] = "entity"
-                    walls[frozenset(ids)] = el
-                elif el:
-                    if (created.get(el) or entity_kind(pg, vocab, el)) != "entity":
-                        problems.append(f"{where}: element {el!r} is not a building element in the model")
-                        continue
-                    data.update(element=el, create_element=False)
-                elif frozenset(ids) in walls:  # the same pair earlier in this proposal
-                    data.update(element=walls[frozenset(ids)], create_element=False)
-                else:
-                    from .brick import shared_elements
-
-                    shared = [] if any(i in created for i in ids) else shared_elements(pg, *ids)
-                    data.update(element=shared[0] if shared else new_id("entity"), create_element=not shared)
-                    walls[frozenset(ids)] = data["element"]
-                    if not shared:
-                        created[data["element"]] = "entity"
-            out.append(type(op).model_validate(data))
             continue
         if kind == "relationship":
             if op.op == "unrelate":

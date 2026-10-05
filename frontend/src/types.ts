@@ -12,7 +12,6 @@ export interface EquipmentRow {
 export interface SpaceRow {
   kind: 'space'; id: string; iri: string; label: string
   type: TermRef | null; part_of: EntityRef | null; equipment_count: number; locked: string[]; evidence: string[]
-  adjacent?: EntityRef[]  // Brick/REC: spaces sharing a wall or slab
 }
 export interface PointRow {
   kind: 'point'; id: string; iri: string; label: string
@@ -44,6 +43,7 @@ export interface RelationshipRow {
   kind: 'relationship'; id: string; iri: string; label: string
   subject: EntityRef; relation: TermRef; object: EntityRef | null; value: TermRef | null
   symmetric: boolean; locked: string[]; evidence: string[]
+  virtual?: boolean  // read from a path of ontology relations (virtual:...), not stored
 }
 export type Row = EquipmentRow | PointRow | ConnectionRow | ConnectionPointRow | SpaceRow | EntityRow | RelationshipRow
 
@@ -216,7 +216,7 @@ export interface ViewCellItem {
   relationship?: string  // the rl- id behind the value, for removing it
 }
 export interface ViewColumn {
-  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'adjacency' | 'none'
+  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'none'
   relation?: string; inverse?: boolean; relation_label?: string; relation_curie?: string
   candidates?: ViewCellItem[]
 }

@@ -19,7 +19,7 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, get_args
 
 from pydantic import ValidationError
 
@@ -54,9 +54,9 @@ How the model represents things (from the BuildingMOTIF skill's 223P/WaTr guidan
 - Space (sp-...): a physical space (s223:PhysicalSpace; say what it is in its label, e.g.
   "Mechanical room 101"). Spaces nest with part_of (a room part_of a floor part_of a
   building). Equipment says which space it is in with location.
-  Zones (e.g. an HVAC zone) are entities: a s223:Zone hasDomainSpace s223:DomainSpace entities,
-  and each physical space encloses its domain space (create_entity + relate; hasDomain e.g.
-  s223:Domain-HVAC on the zone and its domain spaces).
+  Zones (e.g. an HVAC zone) are entities: create_entity a s223:Zone, relate it to its domain
+  with s223:hasDomain (e.g. s223:Domain-HVAC), then relate it to each physical space it serves
+  with virtual:serves_space (that creates the zone's DomainSpace inside the physical space).
 - Connection point (cp-...): an inlet, outlet or bidirectional port of one piece of
   equipment, with a medium. Every connection joins an outlet to an inlet; create_connection
   makes both unless from_point/to_point name existing ones. Many validation rules are about
@@ -106,14 +106,12 @@ How the model represents things (from the BuildingMOTIF skill's Brick guidance):
   brick:Floor...) are deprecated: use the rec: class. Spaces nest with part_of (a room part_of
   a level part_of a building). Equipment says which space it is in with location; points
   have no location (they belong to equipment).
-- Rooms next to each other: make_adjacent {space, other} / unmake_adjacent {space, other}.
-  RealEstateCore states adjacency as both rooms rec:adjacentElement one shared building
-  element (a rec:Wall is created when they have none).
+- Rooms next to each other: relate them with virtual:adjacent (RealEstateCore: both rooms
+  rec:adjacentElement one shared rec:Wall, created when they share none).
 
 Operations (JSON objects with "op"):
 - create_equipment {label, type, contained_in?, location?}; update_equipment {id, fields...}; delete_equipment {id}
 - create_space {label, type, part_of?}; update_space {id, label?, type?, part_of?}; delete_space {id}
-- make_adjacent {space, other}; unmake_adjacent {space, other}
 - create_point {label, point_type, unit?, equipment?}  (point_kind only if no specific type is known)
 - update_point {id, fields...}; delete_point {id}
 - create_connection {from_equipment, to_equipment, label?}
@@ -137,7 +135,7 @@ Anything else the vocabulary defines:
   Prefer the fields above (location, part_of, equipment, contained_in...) where they exist. Call
   relations_for(entity_id) first to see which relations the vocabulary allows and what they point
   to; never invent a relation. Relationship ids are rl-...
-Terms (types, units, ...) must be real vocabulary terms. If you are not sure a term exists
+{virtual}Terms (types, units, ...) must be real vocabulary terms. If you are not sure a term exists
 or which one fits, use search_terms first. Never invent a term.
 Search with the words a term would be named by ("air handling unit", not "AHU" or
 "equipment"); search each thing once, and if a search finds nothing, try other words
@@ -187,7 +185,14 @@ def system_prompt(vocab) -> str:
         )
     example_type, example_part = (("brick:AHU", "brick:Supply_Fan") if vocab.family == "brick"
                                   else ("s223:AirHandlingUnit", "s223:Fan"))
-    rules = COMMON_RULES.format(example_type=example_type, example_part=example_part, max_steps=MAX_STEPS)
+    virtual = "".join(f"  - virtual:{v.id}: {v.spec.label} ({v.spec.path}"
+                      + (f"; relating creates a {vocab.curie(v.via)} between them when there is none" if v.settable else
+                         "; read-only") + ")\n" for v in vocab.virtual.values())
+    if virtual:
+        virtual = ("Virtual relations name a pattern of ontology relations; relate/unrelate them like any\n"
+                   "relation and the underlying relations are written for you:\n" + virtual)
+    rules = COMMON_RULES.format(example_type=example_type, example_part=example_part, max_steps=MAX_STEPS,
+                                virtual=virtual)
     return domain + rules + AgentTools.catalog(vocab.family)
 
 
@@ -213,13 +218,7 @@ def _clean_schema(schema: dict) -> dict:
 
 def operation_schema() -> dict:
     variants = []
-    for model in (ops_mod.CreateEquipment, ops_mod.UpdateEquipment, ops_mod.DeleteEquipment,
-                  ops_mod.CreatePoint, ops_mod.UpdatePoint, ops_mod.DeletePoint,
-                  ops_mod.CreateConnection, ops_mod.UpdateConnection, ops_mod.DeleteConnection,
-                  ops_mod.CreateConnectionPoint, ops_mod.UpdateConnectionPoint, ops_mod.DeleteConnectionPoint,
-                  ops_mod.CreateSpace, ops_mod.UpdateSpace, ops_mod.DeleteSpace,
-                  ops_mod.CreateEntity, ops_mod.UpdateEntity, ops_mod.DeleteEntity, ops_mod.Relate, ops_mod.Unrelate,
-                  ops_mod.MakeAdjacent, ops_mod.UnmakeAdjacent):
+    for model in get_args(get_args(ops_mod.Operation)[0]):  # every operation type
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
         sch["properties"]["op"] = {"type": "string", "enum": [name]}
@@ -281,7 +280,7 @@ FIELD_PHRASES = {
     "direction": "directions", "paired_with": "pairings", "maps_to": "container mappings",
     "from_point": "upstream connection points", "to_point": "downstream connection points",
     "part_of": "enclosing spaces", "location": "locations",
-    "subject": "subjects", "relation": "relations", "object": "related objects", "adjacent": "adjacent spaces",
+    "subject": "subjects", "relation": "relations", "object": "related objects",
 }
 
 

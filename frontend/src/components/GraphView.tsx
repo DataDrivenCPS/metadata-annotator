@@ -146,9 +146,6 @@ export function GraphView() {
     ...spaces.filter((s) => s.part_of).map((s) => ['part_of', s.part_of!.id, s.id] as const),
     ...model.view.equipment.filter((e) => e.location).map((e) => ['location', e.location!.id, e.id] as const),
   ] : [], [model, withSpaces, spaces])
-  // Adjacent spaces (REC: sharing a wall), once per pair; drawn but not used for the layout.
-  const adjacency = useMemo(() => withSpaces ? spaces.flatMap((s) => (s.adjacent ?? [])
-    .filter((o) => s.id < o.id).map((o) => [s.id, o.id] as const)) : [], [withSpaces, spaces])
   const eqIds = useMemo(() => [...model.view.equipment.map((e) => e.id), ...(withSpaces ? spaces.map((s) => s.id) : [])],
     [model, withSpaces, spaces])
   const edgePairs = useMemo(() => [
@@ -187,6 +184,9 @@ export function GraphView() {
       selected: isSelected(selection, row.id),
     })) : []),
   ]
+  const shown = new Set(nodes.map((n) => n.id))
+  const virtualEdges = (model.view.relationships ?? []).filter((r) => r.virtual && r.object
+    && shown.has(r.subject.id) && shown.has(r.object.id))
   const drawn = model.view.connections.filter((c) => c.from_equipment && c.to_equipment)
   const offsets = parallelOffsets(drawn.map((c) => ({ id: c.id, a: c.from_equipment!.id, b: c.to_equipment!.id })))
   const edges: Edge[] = [
@@ -207,9 +207,10 @@ export function GraphView() {
       id: `${kind}:${space}>${inner}`, source: space, target: inner, selectable: false,
       className: `space-edge ${kind}`, label: kind === 'part_of' ? 'contains' : 'in',
     })),
-    ...adjacency.map(([a, b]) => ({
-      id: `adjacent:${a}>${b}`, source: a, target: b, selectable: false,
-      className: 'space-edge adjacent', label: 'adjacent',
+    // Virtual relations between drawn nodes (rooms adjacent to each other...); not used for the layout.
+    ...virtualEdges.map((r) => ({
+      id: `virtual:${r.id}`, source: r.subject.id, target: r.object!.id, selectable: false,
+      className: 'space-edge virtual', label: r.relation.label,
     })),
   ]
 
@@ -225,7 +226,7 @@ export function GraphView() {
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} fitView minZoom={0.2}
         nodesConnectable={false} elementsSelectable
         onNodeClick={(e, n) => click({ id: n.id }, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }, eqIds)}
-        onEdgeClick={(e, ed) => { if (!/^(contains|part_of|location|adjacent):/.test(ed.id))
+        onEdgeClick={(e, ed) => { if (!/^(contains|part_of|location|virtual):/.test(ed.id))
           click({ id: ed.id, relationship: true }, { ctrl: e.ctrlKey || e.metaKey, shift: false }, []) }}
         onPaneClick={() => clearSelection()}
         onNodesChange={(changes) => {

@@ -121,27 +121,46 @@ ontologies define:
   a refused object class comes with a vocabulary-derived bridge ("Office 1 reaches a
   s223:DomainSpace through s223:encloses").
 
-### Room adjacency (Brick / RealEstateCore)
+### Virtual relations (`relations.py`)
 
-REC has no room-to-room relation: two spaces are adjacent when both are
-`rec:adjacentElement` of one building element (a `rec:Wall`, `rec:Slab`…). `make_adjacent
-{space, other}` reuses an element they already share or creates a `rec:Wall` ("Wall: A | B");
-`unmake_adjacent` removes both links and deletes a wall nothing else uses, and refuses to
-split a wall shared with a third room. The wall id is chosen when the operation is resolved
-(and a resolved operation resolves to itself), so previews and applied changes match.
-`rec:adjacentElement` from a space is owned by these operations. Spaces carry `adjacent`;
-the Spaces table shows it through the curated `space_adjacency` view, the graph draws
-dotted "adjacent" edges, and 223P projects refuse it (no REC).
+`relations.py` is the one module for relations between entities: fact identity
+(`relationship_key`/`relationship_id`), every fact in a model (`facts`, stored and virtual),
+property paths (`Path.parse(vocab, text).values(graph, node)`), and virtual relations.
+
+A **virtual relation** names a path over ontology relations and is used wherever a relation
+is: `relate`/`unrelate`, `relations_for` (so the inspector and the assistant offer it), the
+relationships of an entity (rows with `virtual: true`), view columns and the graph. Nothing
+virtual is stored. Definitions are `[virtual.<id>]` tables (curated in `views.toml`, extended
+or overridden in `workbench.toml`), installed on each vocabulary as terms of kind `virtual`
+(`virtual:<id>`, IRI `urn:workbench:virtual#<id>`); which entities can take one comes from the
+shapes of its path's first and last steps.
+
+A two-step path with a `via` class can be set. `resolve` first calls `relations.expand`,
+which rewrites relate/unrelate on virtual relations into ordinary operations, so a proposal
+holds only stored-fact operations (and a resolved list resolves to itself):
+
+- relate A→B: nothing if A and B already share a middle node; otherwise `create_entity` of the
+  `via` class (labelled from `via_label`), the two relates, and relates copying the subject's
+  `via_copy` relations onto the middle node.
+- unrelate: both links, plus `delete_entity` of a middle node nothing else uses; a middle
+  node that also links other entities is not split (the edit is refused).
+
+Curated: `virtual:adjacent` (Brick/RealEstateCore: rooms are adjacent when both are
+`rec:adjacentElement` of one element; `via = "rec:Wall"`) and `virtual:serves_space` (223P: a
+zone `hasDomainSpace` a domain space the physical space `encloses`; `via = "s223:DomainSpace"`,
+copying the zone's `s223:hasDomain`).
 
 ### Table views (`views.py`, `views.toml`)
 
 Tables beyond the typed ones are declarative views: rows are instances of ontology classes
 (`rows = ["s223:Zone"]`, or `"entity"` for every generic entity) and columns are property paths
-(`s223:hasDomainSpace`, `^s223:encloses`, `s223:hasDomainSpace/^s223:encloses`, `a|b`; specials
-`label`, `type`, `relations`). A single-step (possibly inverse) `relation` column is edited
+(`s223:hasDomainSpace`, `^s223:encloses`, `s223:hasDomainSpace/^s223:encloses`, `a|b`, and
+virtual relations such as `virtual:serves_space`; specials `label`, `type`, `relations`). A
+single-step (possibly inverse, possibly virtual) `relation` column is edited
 with relate/unrelate — each cell value carries its relationship id, and the column lists
 candidate objects from the shapes; owned relations stay read-only. A view with `builtin` adds
-its columns to a typed table (points, equipment, spaces, connections, connection_points).
+its columns to a typed table (points, equipment, spaces, connections, connection_points); all
+such views for one table are merged (`views.for_project`).
 Curated views ship in `views.toml` (Building elements for Brick; Zones and Domain spaces for
 223P; Other things everywhere); `[views.<id>]` in `workbench.toml` adds views or overrides
 fields of curated ones. `GET /views` lists a project's views with spec problems,

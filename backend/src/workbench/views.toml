@@ -1,6 +1,34 @@
-# Curated table views. Rows are instances of the `rows` classes ("entity" = every generic entity);
-# columns are property paths (see views.py). workbench.toml can add views or override fields of
-# these with [views.<id>] tables.
+# Curated virtual relations and table views; workbench.toml can add more or override fields of
+# these with [virtual.<id>] and [views.<id>] tables.
+#
+# Virtual relations (relations.py) name a path over ontology relations. They can be used wherever
+# a relation can: relate/unrelate, the inspector, the assistant, and view column paths
+# (virtual:<id>). One with a `via` class can be set: relating two entities that share no middle
+# node creates one (labelled by via_label) and links it both ways.
+#
+# Views: rows are instances of the `rows` classes ("entity" = every generic entity); columns are
+# paths (see views.py). `builtin` adds the columns to a typed table instead.
+
+# --------------------------------------------------------------------- virtual relations
+
+# RealEstateCore adjacency: both spaces rec:adjacentElement one shared building element.
+[virtual.adjacent]
+label = "adjacent to"
+description = "Spaces sharing a wall or other building element (RealEstateCore)"
+families = ["brick"]
+path = "rec:adjacentElement/^rec:adjacentElement"
+via = "rec:Wall"
+via_label = "Wall: {subject} | {object}"
+
+# 223P: a zone serves a physical space through a domain space the physical space encloses.
+[virtual.serves_space]
+label = "serves space"
+description = "Physical spaces a zone serves, through the domain space each one encloses (223P)"
+families = ["s223"]
+path = "s223:hasDomainSpace/^s223:encloses"
+via = "s223:DomainSpace"
+via_label = "{object} ({subject})"
+via_copy = ["s223:hasDomain"]
 
 # ------------------------------------------------------------------ Brick / RealEstateCore
 
@@ -11,7 +39,7 @@ rows = ["rec:BuildingElement"]
 columns = [
   { key = "label", label = "Element", path = "label", editor = "label" },
   { key = "type", label = "Type", path = "type", editor = "type" },
-  { key = "adjacent", label = "Adjacent spaces", path = "^rec:adjacentElement" },
+  { key = "adjacent", label = "Adjacent spaces", path = "^rec:adjacentElement", editor = "relation" },
   { key = "intersecting", label = "Intersecting spaces", path = "^rec:intersectingElement", editor = "relation" },
   { key = "part_of", label = "Part of", path = "rec:isPartOf", editor = "relation" },
 ]
@@ -27,7 +55,7 @@ columns = [
   { key = "type", label = "Type", path = "type", editor = "type" },
   { key = "domain", label = "Domain", path = "s223:hasDomain", editor = "relation" },
   { key = "domain_spaces", label = "Domain spaces", path = "s223:hasDomainSpace", editor = "relation" },
-  { key = "spaces", label = "Physical spaces", path = "s223:hasDomainSpace/^s223:encloses" },
+  { key = "spaces", label = "Physical spaces", path = "virtual:serves_space", editor = "relation" },
 ]
 
 [views.domain_spaces]
@@ -52,12 +80,20 @@ columns = [
   { key = "relations", label = "Relationships", path = "relations" },
 ]
 
-# Typed-table extension: spaces next to each other, REC style (both rooms rec:adjacentElement one
-# shared rec:Wall; edited with make_adjacent / unmake_adjacent).
+# ------------------------------------------------------------------ typed-table extensions
+
 [views.space_adjacency]
 label = "Adjacency"
 families = ["brick"]
 builtin = "spaces"
 columns = [
-  { key = "adjacent", label = "Adjacent spaces", path = "rec:adjacentElement/^rec:adjacentElement", editor = "adjacency" },
+  { key = "adjacent", label = "Adjacent spaces", path = "virtual:adjacent", editor = "relation" },
+]
+
+[views.space_zones]
+label = "Zones"
+families = ["s223"]
+builtin = "spaces"
+columns = [
+  { key = "zones", label = "Zones", path = "^virtual:serves_space", editor = "relation" },
 ]

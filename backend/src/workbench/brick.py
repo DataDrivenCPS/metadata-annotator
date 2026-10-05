@@ -76,22 +76,6 @@ def space_parent(pg: ProjectGraph, node) -> URIRef | None:
             or g.value(node, BRICK.isPartOf) or next(iter(g.subjects(BRICK.hasPart, node)), None))
 
 
-def shared_elements(pg: ProjectGraph, a_id: str, b_id: str) -> list[str]:
-    """Ids of building elements both spaces are rec:adjacentElement of (REC's adjacency)."""
-    a, b = pg.iri(a_id), pg.iri(b_id)
-    if a is None or b is None:
-        return []
-    g = pg.model
-    common = set(g.objects(a, REC.adjacentElement)) & set(g.objects(b, REC.adjacentElement))
-    return sorted(pg.id_of(e) for e in common if pg.id_of(e))  # type: ignore[type-var]
-
-
-def adjacent_spaces(pg: ProjectGraph, node) -> list[URIRef]:
-    g = pg.model
-    return sorted({s for e in g.objects(node, REC.adjacentElement) for s in g.subjects(REC.adjacentElement, e)
-                   if s != node}, key=str)
-
-
 def equipment_location(pg: ProjectGraph, node) -> URIRef | None:
     g = pg.model
     return g.value(node, BRICK.hasLocation) or next(iter(g.subjects(BRICK.isLocationOf, node)), None)  # type: ignore[return-value]
@@ -220,7 +204,7 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
             view.spaces.append(SpaceRow(
                 **common, label=label(node), type=TermRef.of(vocab, most_specific(vocab, types(pg, node), "location")),
                 part_of=ref(parent) if parent is not None and node_kind(pg, vocab, parent) == "space" else None,
-                equipment_count=0, adjacent=[r for r in map(ref, adjacent_spaces(pg, node)) if r]))
+                equipment_count=0))
         elif kind == "point":
             ptype = most_specific(vocab, types(pg, node), "point_class")
             pk = point_kind(vocab, ptype)
@@ -353,40 +337,6 @@ class BrickCompiler(GenericOps):
         g.remove((None, None, n))
         self.pg.unregister(op.id)
         self.r.touch(op.id, "deleted")
-
-    # adjacency (RealEstateCore): both spaces rec:adjacentElement one shared building element
-    def make_adjacent(self, op) -> None:
-        a, b = self.node(op.space), self.node(op.other)
-        if op.create_element:
-            wall = self.pg.register(op.element)
-            self.g.add((wall, RDF.type, REC.Wall))
-            self.g.add((wall, RDFS.label, RDFLiteral(f"Wall: {self._label(a)} | {self._label(b)}")))
-            self.r.touch(op.element, "created", "label", "type")
-        wall = self.node(op.element)
-        for s in (a, b):
-            if (s, REC.adjacentElement, wall) not in self.g:
-                self.g.add((s, REC.adjacentElement, wall))
-                self.r.touch(self.pg.id_of(s), "adjacent")  # type: ignore[arg-type]
-
-    def unmake_adjacent(self, op) -> None:
-        from .operations import OperationError
-
-        a, b = self.node(op.space), self.node(op.other)
-        for eid in shared_elements(self.pg, op.space, op.other):
-            wall = self.node(eid)
-            others = {s for s in self.g.subjects(REC.adjacentElement, wall)} - {a, b}
-            if others:
-                raise OperationError([f"{self._label(wall)} is also next to "
-                                      f"{', '.join(sorted(self._label(o) for o in others))}; edit it under "
-                                      "Building elements instead"])
-            for s in (a, b):
-                self.g.remove((s, REC.adjacentElement, wall))
-                self.r.touch(self.pg.id_of(s), "adjacent")  # type: ignore[arg-type]
-            rest = [t for t in self.g.triples((wall, None, None)) if t[1] not in (RDF.type, RDFS.label)]
-            if not rest and not list(self.g.triples((None, None, wall))):  # nothing else uses it
-                self.g.remove((wall, None, None))
-                self.pg.unregister(eid)
-                self.r.touch(eid, "deleted")
 
     def update_equipment(self, op) -> None:
         n = self.node(op.id)

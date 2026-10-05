@@ -79,7 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     logging.getLogger("rdflib.term").setLevel(logging.ERROR)
     bus = EventBus()
-    registry = VocabularyRegistry(settings.profiles, settings.cache_dir)
+    registry = VocabularyRegistry(settings.profiles, settings.cache_dir, settings.virtual)
     guidance = SkillGuidance(settings.skill_dir)
     workspace = Workspace(settings.projects_dir, registry, bus)
     runs = RunManager(settings, guidance, bus)
@@ -374,7 +374,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def project_views(p: Project):
         specs, errors = views_mod.load_specs(settings.views)
         info = p.info()
-        return [s for s in specs if s.applies(p.vocab.family, info.get("profile", ""))], errors
+        return views_mod.for_project(specs, p.vocab.family, info.get("profile", "")), errors
 
     @app.get("/api/projects/{pid}/views")
     def list_views(pid: str):
@@ -383,7 +383,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         specs, errors = project_views(p)
         return {"views": [{"id": s.id, "label": s.label, "builtin": s.builtin,
                            "errors": views_mod.check_spec(p.vocab, s)} for s in specs],
-                "errors": errors}
+                "errors": errors + p.vocab.virtual_errors}
 
     @app.get("/api/projects/{pid}/views/{vid}")
     def get_view(pid: str, vid: str, revision: str | None = None):

@@ -4,7 +4,7 @@ import { api } from '../api'
 import type { Column } from '../selection'
 import { useStore } from '../store'
 import type { ViewCellItem, ViewData, ViewRow } from '../types'
-import { AdjacencyCellEditor, RelationCellEditor, TextEditor } from './cells'
+import { RelationCellEditor, TextEditor } from './cells'
 import { TermPicker } from './TermPicker'
 
 const UPDATE_OP: Record<string, string> = {
@@ -47,7 +47,6 @@ export function cellEditor(view: ViewData, prefix: string, byId: Map<string, Vie
     if (!column || !row) return null
     const items = row.cells[column.key] ?? []
     if (column.editor === 'relation') return <RelationCellEditor row={row} column={column} items={items} done={done} />
-    if (column.editor === 'adjacency') return <AdjacencyCellEditor row={row} column={column} items={items} done={done} />
     const op = UPDATE_OP[row.kind]
     if (column.editor === 'label' && op) return <TextEditor initial={row.label} onCancel={done}
       onCommit={(label) => { done(); void edit([{ op, id: row.id, label }]) }} />

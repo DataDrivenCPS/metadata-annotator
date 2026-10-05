@@ -92,6 +92,8 @@ class Settings:
     samples_dir: Path
     # [views.<id>] tables: extra or overriding table views (see views.py)
     views: dict[str, dict] = field(default_factory=dict)
+    # [virtual.<id>] tables: extra or overriding virtual relations (see relations.py)
+    virtual: dict[str, dict] = field(default_factory=dict)
 
     @property
     def cache_dir(self) -> Path:
@@ -163,4 +165,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         frontend_dist=dist if dist.exists() else None,
         samples_dir=resolve(wb.get("samples_dir"), BACKEND_DIR.parent / "samples"),
         views={k: dict(v) for k, v in raw.get("views", {}).items()},
+        virtual={k: dict(v) for k, v in raw.get("virtual", {}).items()},
     )

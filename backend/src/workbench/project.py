@@ -81,6 +81,12 @@ DISPLAY_FIELDS = {
         ("type", lambda r: r.type.label if r.type else None),
         ("process", lambda r: r.process.label if r.process else None),
         ("contained_in", lambda r: r.contained_in.label if r.contained_in else None),
+        ("location", lambda r: r.location.label if r.location else None),
+    ],
+    "space": [
+        ("label", lambda r: r.label),
+        ("type", lambda r: r.type.label if r.type else None),
+        ("part_of", lambda r: r.part_of.label if r.part_of else None),
     ],
     "point": [
         ("label", lambda r: r.label),

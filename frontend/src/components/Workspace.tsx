@@ -5,7 +5,7 @@ import { AssistantPanel } from './AssistantPanel'
 import { Drawer } from './Drawer'
 import { GraphView } from './GraphView'
 import { IssuesView } from './IssuesView'
-import { ConnectionPointsTable, ConnectionsTable, EquipmentTable, PointsTable } from './ModelTables'
+import { ConnectionPointsTable, ConnectionsTable, EquipmentTable, PointsTable, SpacesTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
 
@@ -53,7 +53,7 @@ function FileMenu({ onImport, items }: { onImport: () => void; items: { label: s
 }
 
 const TABS: [Tab, string][] = [
-  ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'],
+  ['points', 'Points'], ['equipment', 'Equipment'], ['spaces', 'Spaces'], ['connections', 'Connections'],
   ['connection_points', 'Connection points'], ['graph', 'Graph'], ['issues', 'Issues'],
 ]
 
@@ -103,7 +103,7 @@ export function Workspace() {
   const openViolations = model.issues.filter((i) => i.resolution_state === 'open' && i.severity === 'violation').length
   const dismissedCount = model.issues.filter((i) => i.resolution_state === 'dismissed').length
   const problems = model.issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion').length
-  const counts = { points: model.view.points.length, equipment: model.view.equipment.length,
+  const counts = { points: model.view.points.length, equipment: model.view.equipment.length, spaces: model.view.spaces.length,
                    connections: model.view.connections.length, connection_points: model.view.connection_points.length,
                    graph: model.view.equipment.length, issues: problems }
   // Brick has no connection points.
@@ -173,6 +173,7 @@ export function Workspace() {
           <div className="tab-body">
             {tab === 'points' && <PointsTable />}
             {tab === 'equipment' && <EquipmentTable />}
+            {tab === 'spaces' && <SpacesTable />}
             {tab === 'connections' && <ConnectionsTable />}
             {tab === 'connection_points' && <ConnectionPointsTable />}
             {tab === 'graph' && <GraphView />}

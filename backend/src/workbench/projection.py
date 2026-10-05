@@ -12,6 +12,8 @@ Domain mapping (223P):
   a SCADA/BMS point reports or commands.
 * **Connection** - an ``s223:Connection`` (pipe, duct, wire) whose ``s223:cnx``
   connection points belong to equipment; direction comes from outlet -> inlet.
+* **Space** - an ``s223:PhysicalSpace``; spaces nest with ``parent s223:contains child`` and
+  equipment is placed with ``s223:hasPhysicalLocation``.
 * **Connection point** - an inlet, outlet or bidirectional ``s223:ConnectionPoint`` of a
   piece of equipment, with its medium, the connection that joins it, the point it is paired
   with (``s223:pairedConnectionPoint``) and the container's point it maps to (``s223:mapsTo``).
@@ -79,7 +81,21 @@ class EquipmentRow:
     point_count: int
     locked: list[str]
     evidence: list[str]
+    location: EntityRef | None = None  # the space the equipment is in
     kind: str = "equipment"
+
+
+@dataclass
+class SpaceRow:
+    id: str
+    iri: str
+    label: str
+    type: TermRef | None
+    part_of: EntityRef | None
+    equipment_count: int
+    locked: list[str]
+    evidence: list[str]
+    kind: str = "space"
 
 
 @dataclass
@@ -142,11 +158,13 @@ class ModelView:
     points: list[PointRow] = field(default_factory=list)
     connections: list[ConnectionRow] = field(default_factory=list)
     connection_points: list[ConnectionPointRow] = field(default_factory=list)
+    spaces: list[SpaceRow] = field(default_factory=list)
     # containment edges: (container id, contained id)
     containment: list[tuple[str, str]] = field(default_factory=list)
 
     def rows(self) -> dict[str, object]:
-        return {r.id: r for r in [*self.equipment, *self.points, *self.connections, *self.connection_points]}
+        return {r.id: r for r in [*self.equipment, *self.points, *self.connections, *self.connection_points,
+                                  *self.spaces]}
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -176,9 +194,9 @@ class Classifier:
 
     def kind(self, pg: ProjectGraph, node) -> str | None:
         kinds = {self.vocab.kind_of(t) for t in self.types(pg, node)}
-        for k in ("sensor", "connection", "equipment", "property"):
+        for k in ("sensor", "connection", "location", "equipment", "property"):
             if k in kinds:
-                return "point" if k == "property" else k
+                return {"property": "point", "location": "space"}.get(k, k)
         return None
 
     def point_kind(self, pg: ProjectGraph, node) -> str:
@@ -340,6 +358,7 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
         return None if port is None else EntityRef(port_id(pg, port), port_label(pg, vocab, port))
 
     point_counts: dict[str, int] = {}
+    located: dict[str, int] = {}  # space id -> equipment placed in it
     for eid in pg.entity_ids():
         node = pg.iri(eid)
         if node is None or (node, None, None) not in g:
@@ -348,18 +367,27 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
         common = dict(id=eid, iri=str(node), label=label(node),
                       locked=sorted(pg.locked_fields(node)), evidence=pg.evidence(node))
         if kind == "equipment":
-            parent = next(iter(g.subjects(S223.contains, node)), None)
+            parent = next((p for p in g.subjects(S223.contains, node) if cls.kind(pg, p) == "equipment"), None)
             watr = vocab.namespaces.get("watr")
             proc = _first(g, node, URIRef(watr + "hasProcess")) if watr else None
+            place = _first(g, node, S223.hasPhysicalLocation)
             view.equipment.append(EquipmentRow(
                 **common,
                 type=TermRef.of(vocab, most_specific(vocab, cls.types(pg, node), "equipment")),
                 process=TermRef.of(vocab, proc),
                 contained_in=ref(parent),
                 point_count=0,
+                location=ref(place),
             ))
+            if place is not None and pg.id_of(place):
+                located[pg.id_of(place)] = located.get(pg.id_of(place), 0) + 1  # type: ignore[index]
             if parent is not None and pg.id_of(parent):
                 view.containment.append((pg.id_of(parent), eid))  # type: ignore[arg-type]
+        elif kind == "space":
+            parent = next((p for p in g.subjects(S223.contains, node) if cls.kind(pg, p) == "space"), None)
+            view.spaces.append(SpaceRow(
+                **common, type=TermRef.of(vocab, most_specific(vocab, cls.types(pg, node), "location")),
+                part_of=ref(parent), equipment_count=0))
         elif kind == "point":
             pk = cls.point_kind(pg, node)
             owner = point_owner(pg, node)
@@ -418,6 +446,9 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
         ))
     for row in view.equipment:
         row.point_count = point_counts.get(row.id, 0)
+    for space in view.spaces:
+        space.equipment_count = located.get(space.id, 0)
+    view.spaces.sort(key=lambda r: r.label.lower())
     view.equipment.sort(key=lambda r: r.label.lower())
     view.points.sort(key=lambda r: r.label.lower())
     view.connections.sort(key=lambda r: r.label.lower())
@@ -441,7 +472,7 @@ def ensure_ids(pg: ProjectGraph, vocab: Vocabulary) -> int:
         if pg.id_of(node) is not None:
             continue
         kind = cls.kind(pg, node)
-        if kind in ("equipment", "point", "connection"):
+        if kind in ("equipment", "point", "connection", "space"):
             pg.register(new_id(kind), node)
             added += 1
     return added

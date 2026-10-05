@@ -22,8 +22,8 @@ Browser (React)                      Python backend (FastAPI, one process)
   never edited directly.
 - **One mutation path.** Direct cell edits, accepted proposals and imports all go through
   `Project.build_candidate` → `Project.publish`. The agent can only build candidates.
-- **Stable identifiers.** Every equipment/point/connection/connection point has an
-  app-managed id (`eq-…`, `pt-…`, `cx-…`, `cp-…`) stored as `wb:id` on its IRI. Imported
+- **Stable identifiers.** Every equipment/point/connection/connection point/space has an
+  app-managed id (`eq-…`, `pt-…`, `cx-…`, `cp-…`, `sp-…`) stored as `wb:id` on its IRI. Imported
   entities keep their IRIs and get ids. Connection points minted with a connection (and those
   in older snapshots or imports) are not registered until an operation touches them; until
   then their id is derived from the IRI (`cp-` + sha1), so it is the same in every revision.
@@ -60,6 +60,8 @@ rejected with an explanation rather than ignored.
 | Equipment | instance of a `brick:Equipment` subclass; "part of" = `parent brick:hasPart child` |
 | Point | instance of a `brick:Point` subclass (the **point type**, e.g. `brick:Zone_Air_Temperature_Sensor`); kind (sensor, setpoint, command, status, alarm, parameter) follows from the class; optional `brick:hasUnit` |
 | Point → equipment | `equipment brick:hasPoint point` (`brick:isPointOf` is read too) |
+| Space | instance of a RealEstateCore space class (`rec:Building`, `rec:Level`, `rec:Room`…; Brick's own locations are deprecated for these); "part of" = `child rec:isPartOf parent` (`rec:hasPart`, `brick:isPartOf` read too) |
+| Equipment → space | `equipment brick:hasLocation space` (`brick:isLocationOf` read too); points take no location |
 | Connection | `upstream brick:feeds downstream`. An edge has no node, so its stable id lives in the annotation graph (`wb:source`, `wb:predicate`, `wb:target`); the exported model contains only the Brick triple |
 
 ## Domain mapping: WaTr / 223P
@@ -69,13 +71,16 @@ rejected with an explanation rather than ignored.
 | Equipment | instance of a WaTr/223P equipment class (sensors excluded); `watr:hasProcess` for treatment equipment |
 | Point | an `s223:Property` — Measurement = `QuantifiableObservableProperty`, Setpoint/command value = `QuantifiableActuatableProperty`, Status = `EnumeratedObservableProperty`, On/off or mode command = `EnumeratedActuatableProperty`; `qudt:hasQuantityKind`, `qudt:hasUnit`, `s223:ofMedium` |
 | Point → equipment | `equipment s223:hasProperty point` (+ `s223:actuatedByProperty` for actuatable) |
+| Space | an `s223:PhysicalSpace`; "part of" = `parent s223:contains child` |
+| Equipment → space | `equipment s223:hasPhysicalLocation space` |
 | Sensor type | a single-property sensor `<point>.sensor` that `s223:observes` the point, with `s223:hasObservationLocation` = the equipment |
 | Connection ("Connected to") | an `s223:Pipe` (or other Connection) with `s223:cnx` to an outlet connection point on the upstream equipment and an inlet on the downstream one, each with `s223:hasMedium`. Without `from_point`/`to_point` the connection mints its own ports (`<cx>.out`, `<cx>.in`) |
 | Connection point | `s223:InletConnectionPoint` / `OutletConnectionPoint` / `BidirectionalConnectionPoint` with `s223:hasMedium`, owned via `equipment s223:hasConnectionPoint port`; **paired with** = `s223:pairedConnectionPoint` (asserted both ways; same equipment, inlet ↔ outlet); **maps to** = `port s223:mapsTo container-port`, where the container `s223:contains` the port's equipment (one-to-one both ways). Not in Brick |
 
 ## Operations (`operations.py`)
 
-Typed pydantic models: `create/update/delete` × `equipment/point/connection/connection_point`.
+Typed pydantic models: `create/update/delete` × `equipment/point/connection/connection_point/space`
+(equipment also takes a `location` space).
 Connections can join existing connection points (`from_point`/`to_point`); re-pointing an end
 drops the old port only if it was minted for that connection and never became a connection
 point of its own (id, pairing, mapsTo). Update operations carry only the fields that change

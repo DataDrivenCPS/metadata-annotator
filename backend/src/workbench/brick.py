@@ -7,6 +7,10 @@ Domain mapping (per the BuildingMOTIF skill's point-label and Brick references):
 * **Point** - an instance of a ``brick:Point`` subclass (the point type, e.g.
   ``brick:Zone_Air_Temperature_Sensor``); ``equipment brick:hasPoint point``; optional
   ``brick:hasUnit`` (QUDT). The point kind (measurement, setpoint, ...) follows from the class.
+* **Space** - an instance of a RealEstateCore space class (``rec:Building``, ``rec:Level``,
+  ``rec:Room``...; Brick deprecates its own locations for these); nesting is
+  ``child rec:isPartOf parent`` and equipment is placed with ``brick:hasLocation``. Points take
+  no location (Brick: "use isPointOf").
 * **Connection** - ``upstream brick:feeds downstream``. A feeds edge is a triple, not a node,
   so its stable id lives in the annotation graph: ``<ns cx-id> wb:source s; wb:target o;
   wb:predicate brick:feeds``. The exported model contains only the Brick triple.
@@ -21,7 +25,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
 from .graph import WB, ProjectGraph, new_id
-from .vocabulary import BRICK, Vocabulary, local_name
+from .vocabulary import BRICK, REC, Vocabulary, local_name
 
 if TYPE_CHECKING:
     from .operations import ApplyResult
@@ -58,7 +62,20 @@ def node_kind(pg: ProjectGraph, vocab: Vocabulary, node) -> str | None:
         return "point"
     if "equipment" in kinds:
         return "equipment"
+    if "location" in kinds:
+        return "space"
     return None
+
+
+def space_parent(pg: ProjectGraph, node) -> URIRef | None:
+    g = pg.model
+    return (g.value(node, REC.isPartOf) or next(iter(g.subjects(REC.hasPart, node)), None)  # type: ignore[return-value]
+            or g.value(node, BRICK.isPartOf) or next(iter(g.subjects(BRICK.hasPart, node)), None))
+
+
+def equipment_location(pg: ProjectGraph, node) -> URIRef | None:
+    g = pg.model
+    return g.value(node, BRICK.hasLocation) or next(iter(g.subjects(BRICK.isLocationOf, node)), None)  # type: ignore[return-value]
 
 
 # ------------------------------------------------------------------ edges
@@ -130,7 +147,7 @@ def point_owner(pg: ProjectGraph, point) -> URIRef | None:
 
 def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
     from .projection import (
-        ConnectionRow, EntityRef, EquipmentRow, ModelView, PointRow, TermRef, most_specific,
+        ConnectionRow, EntityRef, EquipmentRow, ModelView, PointRow, SpaceRow, TermRef, most_specific,
     )
 
     g = pg.model
@@ -144,6 +161,7 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
         return EntityRef(eid, label(node)) if eid else None
 
     counts: dict[str, int] = {}
+    located: dict[str, int] = {}
     for eid in pg.entity_ids():
         node = pg.iri(eid)
         if node is None:
@@ -165,11 +183,20 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
         if kind == "equipment":
             parent = next(iter(g.subjects(BRICK.hasPart, node)), None) or g.value(node, BRICK.isPartOf)
             parent_ref = ref(parent) if parent is not None and node_kind(pg, vocab, parent) == "equipment" else None
+            place = ref(equipment_location(pg, node))
+            if place:
+                located[place.id] = located.get(place.id, 0) + 1
             view.equipment.append(EquipmentRow(
                 **common, label=label(node), type=TermRef.of(vocab, most_specific(vocab, types(pg, node), "equipment")),
-                process=None, contained_in=parent_ref, point_count=0))
+                process=None, contained_in=parent_ref, point_count=0, location=place))
             if parent_ref:
                 view.containment.append((parent_ref.id, eid))
+        elif kind == "space":
+            parent = space_parent(pg, node)
+            view.spaces.append(SpaceRow(
+                **common, label=label(node), type=TermRef.of(vocab, most_specific(vocab, types(pg, node), "location")),
+                part_of=ref(parent) if parent is not None and node_kind(pg, vocab, parent) == "space" else None,
+                equipment_count=0))
         elif kind == "point":
             ptype = most_specific(vocab, types(pg, node), "point_class")
             pk = point_kind(vocab, ptype)
@@ -185,6 +212,9 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
                 point_type=TermRef.of(vocab, ptype)))
     for row in view.equipment:
         row.point_count = counts.get(row.id, 0)
+    for space in view.spaces:
+        space.equipment_count = located.get(space.id, 0)
+    view.spaces.sort(key=lambda r: r.label.lower())
     view.equipment.sort(key=lambda r: r.label.lower())
     view.points.sort(key=lambda r: r.label.lower())
     view.connections.sort(key=lambda r: r.label.lower())
@@ -247,8 +277,56 @@ class BrickCompiler:
         self.g.add((n, RDFS.label, RDFLiteral(op.label)))
         if op.contained_in:
             self._set_parent(n, op.contained_in)
+        if op.location:
+            self._set_location(n, op.location)
         self.pg.add_evidence(n, op.evidence or [])
         self.r.touch(op.id, "created", *op.provided())
+
+    def _set_location(self, n, space_id: str | None) -> None:
+        self.g.remove((n, BRICK.hasLocation, None))
+        self.g.remove((None, BRICK.isLocationOf, n))
+        if space_id:
+            self.g.add((n, BRICK.hasLocation, self.node(space_id)))
+
+    def _set_space_parent(self, n, parent_id: str | None) -> None:
+        for p, inverse in ((REC.isPartOf, REC.hasPart), (BRICK.isPartOf, BRICK.hasPart)):
+            self.g.remove((n, p, None))
+            self.g.remove((None, inverse, n))
+        if parent_id:
+            self.g.add((n, REC.isPartOf, self.node(parent_id)))
+
+    def create_space(self, op) -> None:
+        n = self.pg.register(op.id)
+        self.g.add((n, RDF.type, URIRef(op.type)))
+        self.g.add((n, RDFS.label, RDFLiteral(op.label)))
+        if op.part_of:
+            self._set_space_parent(n, op.part_of)
+        self.pg.add_evidence(n, op.evidence or [])
+        self.r.touch(op.id, "created", *op.provided())
+
+    def update_space(self, op) -> None:
+        n = self.node(op.id)
+        fields = op.provided()
+        if "label" in fields:
+            self.set_one(n, RDFS.label, RDFLiteral(op.label or ""))
+        if "type" in fields and op.type:
+            self.set_type(n, op.type, "location")
+        if "part_of" in fields:
+            self._set_space_parent(n, op.part_of)
+        self.r.touch(op.id, *fields)
+
+    def delete_space(self, op) -> None:
+        n = self.node(op.id)
+        g = self.g
+        children = {*g.subjects(REC.isPartOf, n), *g.objects(n, REC.hasPart), *g.subjects(BRICK.isPartOf, n)}
+        placed = {*g.subjects(BRICK.hasLocation, n), *g.objects(n, BRICK.isLocationOf)}
+        for node, fname in [*((c, "part_of") for c in children), *((e, "location") for e in placed)]:
+            if self.pg.id_of(node):
+                self.r.touch(self.pg.id_of(node), fname)  # type: ignore[arg-type]
+        g.remove((n, None, None))
+        g.remove((None, None, n))
+        self.pg.unregister(op.id)
+        self.r.touch(op.id, "deleted")
 
     def update_equipment(self, op) -> None:
         n = self.node(op.id)
@@ -259,6 +337,8 @@ class BrickCompiler:
             self.set_type(n, op.type, "equipment")
         if "contained_in" in fields:
             self._set_parent(n, op.contained_in)
+        if "location" in fields:
+            self._set_location(n, op.location)
         self.r.touch(op.id, *fields)
 
     def delete_equipment(self, op) -> None:

@@ -74,6 +74,7 @@ class CreateEquipment(_Op):
     type: str = Field(description="Equipment class IRI (or prefixed name)")
     process: str | None = Field(None, description="Treatment process IRI (watr:Process-*)")
     contained_in: str | None = Field(None, description="Id of containing equipment")
+    location: str | None = Field(None, description="Id of the space the equipment is in")
     evidence: list[str] | None = Field(None, description="Source observation ids")
 
 
@@ -84,6 +85,7 @@ class UpdateEquipment(_Op):
     type: str | None = None
     process: str | None = None
     contained_in: str | None = None
+    location: str | None = None
 
 
 class DeleteEquipment(_Op):
@@ -157,6 +159,28 @@ class DeleteConnection(_Op):
     id: str
 
 
+class CreateSpace(_Op):
+    op: Literal["create_space"] = "create_space"
+    id: str | None = Field(None, description="Omit, or 'new:<name>' to reference it from later operations")
+    label: str
+    type: str = Field(description="Space class IRI (or prefixed name), e.g. rec:Room or s223:PhysicalSpace")
+    part_of: str | None = Field(None, description="Id of the space this one is part of")
+    evidence: list[str] | None = None
+
+
+class UpdateSpace(_Op):
+    op: Literal["update_space"] = "update_space"
+    id: str
+    label: str | None = None
+    type: str | None = None
+    part_of: str | None = None
+
+
+class DeleteSpace(_Op):
+    op: Literal["delete_space"] = "delete_space"
+    id: str
+
+
 Direction = Literal["inlet", "outlet", "bidirectional"]
 
 
@@ -194,6 +218,7 @@ Operation = Annotated[
         CreatePoint, UpdatePoint, DeletePoint,
         CreateConnection, UpdateConnection, DeleteConnection,
         CreateConnectionPoint, UpdateConnectionPoint, DeleteConnectionPoint,
+        CreateSpace, UpdateSpace, DeleteSpace,
     ],
     Field(discriminator="op"),
 ]
@@ -201,7 +226,8 @@ OperationList = TypeAdapter(list[Operation])
 
 # Field names a person can lock by setting/confirming them.
 LOCKABLE_FIELDS = {
-    "equipment": {"label", "type", "process", "contained_in"},
+    "equipment": {"label", "type", "process", "contained_in", "location"},
+    "space": {"label", "type", "part_of"},
     "point": {"label", "point_kind", "point_type", "quantity_kind", "unit", "equipment", "medium",
               "substance", "sensor_type", "enumeration_kind"},
     "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type"},
@@ -223,12 +249,14 @@ TERM_FIELDS = {
 # Fields that exist in each model family; anything else is rejected with an explanation.
 FAMILY_FIELDS = {
     "brick": {
-        "equipment": {"label", "type", "contained_in", "evidence"},
+        "equipment": {"label", "type", "contained_in", "location", "evidence"},
+        "space": {"label", "type", "part_of", "evidence"},
         "point": {"label", "point_kind", "point_type", "unit", "equipment", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "evidence"},
     },
     "s223": {
-        "equipment": {"label", "type", "process", "contained_in", "evidence"},
+        "equipment": {"label", "type", "process", "contained_in", "location", "evidence"},
+        "space": {"label", "type", "part_of", "evidence"},
         "point": {"label", "point_kind", "quantity_kind", "unit", "equipment", "medium", "substance",
                   "sensor_type", "enumeration_kind", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type",
@@ -240,7 +268,8 @@ FAMILY_NAMES = {"brick": "Brick", "s223": "223P/WaTr"}
 REF_FIELDS = {"contained_in": "equipment", "equipment": "equipment",
               "from_equipment": "equipment", "to_equipment": "equipment",
               "from_point": "connection_point", "to_point": "connection_point",
-              "paired_with": "connection_point", "maps_to": "connection_point"}
+              "paired_with": "connection_point", "maps_to": "connection_point",
+              "location": "space", "part_of": "space"}
 
 
 class OperationError(Exception):
@@ -373,7 +402,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             if fname in data and data[fname] is not None:
                 iri = expand_term(vocab, data[fname])
                 data[fname] = iri
-                expected = term_kind or {"equipment": "equipment", "connection": "connection"}.get(kind)
+                expected = term_kind or {"equipment": "equipment", "connection": "connection", "space": "location"}.get(kind)
                 t = vocab.term(iri)
                 if t is None:
                     problems.append(f"{where}: {fname} {iri!r} is not a term in the loaded vocabulary")
@@ -442,6 +471,8 @@ class _Compiler:
             self.g.add((n, self.has_process, URIRef(op.process)))
         if op.contained_in:
             self.g.add((self.node(op.contained_in), S223.contains, n))
+        if op.location:
+            self.g.add((n, S223.hasPhysicalLocation, self.node(op.location)))
         self.pg.add_evidence(n, op.evidence or [])
         self.r.touch(op.id, "created", *op.provided())  # type: ignore[arg-type]
 
@@ -458,7 +489,45 @@ class _Compiler:
             self.g.remove((None, S223.contains, n))
             if op.contained_in:
                 self.g.add((self.node(op.contained_in), S223.contains, n))
+        if "location" in fields:
+            self.set_one(n, S223.hasPhysicalLocation, self.node(op.location) if op.location else None)
         self.r.touch(op.id, *fields)
+
+    # --------------------------------------------------------------- spaces
+
+    def create_space(self, op: CreateSpace) -> None:
+        n = self.pg.register(op.id)  # type: ignore[arg-type]
+        self.g.add((n, RDF.type, URIRef(op.type)))
+        self.g.add((n, RDFS.label, RDFLiteral(op.label)))
+        if op.part_of:
+            self.g.add((self.node(op.part_of), S223.contains, n))
+        self.pg.add_evidence(n, op.evidence or [])
+        self.r.touch(op.id, "created", *op.provided())  # type: ignore[arg-type]
+
+    def update_space(self, op: UpdateSpace) -> None:
+        n = self.node(op.id)
+        fields = op.provided()
+        if "label" in fields:
+            self.set_one(n, RDFS.label, RDFLiteral(op.label or ""))
+        if "type" in fields and op.type:
+            self.set_type(n, op.type, "location")
+        if "part_of" in fields:
+            self.g.remove((None, S223.contains, n))
+            if op.part_of:
+                self.g.add((self.node(op.part_of), S223.contains, n))
+        self.r.touch(op.id, *fields)
+
+    def delete_space(self, op: DeleteSpace) -> None:
+        n = self.node(op.id)
+        for child in self.g.objects(n, S223.contains):  # inner spaces stay, no longer part of it
+            if self.pg.id_of(child):
+                self.r.touch(self.pg.id_of(child), "part_of")  # type: ignore[arg-type]
+        for eq in self.g.subjects(S223.hasPhysicalLocation, n):  # equipment stays, unplaced
+            if self.pg.id_of(eq):
+                self.r.touch(self.pg.id_of(eq), "location")  # type: ignore[arg-type]
+        self.remove_node(n)
+        self.pg.unregister(op.id)
+        self.r.touch(op.id, "deleted")
 
     def delete_equipment(self, op: DeleteEquipment) -> None:
         n = self.node(op.id)
@@ -845,20 +914,24 @@ class _Compiler:
 
 
 def containment_cycles(pg: ProjectGraph, vocab: Vocabulary, equipment_ids: list[str]) -> list[str]:
-    """Equipment that would end up inside itself (A in B, B in A, ...)."""
+    """Equipment or spaces that would end up inside themselves (A in B, B in A, ...)."""
     if vocab.family == "brick":
+        from .brick import space_parent
         from .vocabulary import BRICK
 
-        pred = BRICK.hasPart
+        def parent(node):
+            return (space_parent(pg, node) if entity_kind(pg, vocab, pg.id_of(node) or "") == "space"
+                    else next(iter(pg.model.subjects(BRICK.hasPart, node)), None))
     else:
-        pred = S223.contains
+        def parent(node):
+            return next(iter(pg.model.subjects(S223.contains, node)), None)
     problems = []
     for eid in equipment_ids:
         start = pg.iri(eid)
         seen, cur = set(), start
         while cur is not None and cur not in seen:
             seen.add(cur)
-            cur = next(iter(pg.model.subjects(pred, cur)), None)
+            cur = parent(cur)
             if cur == start:
                 label = pg.model.value(start, RDFS.label) or eid
                 problems.append(f"{label} would end up inside itself (its containers form a loop)")
@@ -895,7 +968,8 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
     if isinstance(comp, _Compiler):
         comp.check_ports()
         problems = comp.problems
-    problems += containment_cycles(pg, vocab, [eid for eid, f in result.changes.items() if "contained_in" in f])
+    problems += containment_cycles(pg, vocab, [eid for eid, f in result.changes.items()
+                                               if "contained_in" in f or "part_of" in f])
     if problems:
         raise OperationError(problems)
     if lock:

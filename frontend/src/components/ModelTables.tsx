@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import type { Column } from '../selection'
 import { useStore } from '../store'
-import type { ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow } from '../types'
+import type { ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow, SpaceRow } from '../types'
 import { DataTable } from './DataTable'
 import { TermPicker } from './TermPicker'
 
@@ -114,12 +114,15 @@ export function EquipmentTable() {
     ...(hasProcess ? [{ key: 'process', header: 'Treatment process', field: 'process', value: (r: EquipmentRow) => r.process?.label ?? '' }] : []),
     { key: 'points', header: 'Points', value: (r) => String(r.point_count), width: 70 },
     { key: 'contained_in', header: 'Part of', value: (r) => r.contained_in?.label ?? '' },
+    { key: 'location', header: 'Location', field: 'location', value: (r: EquipmentRow) => r.location?.label ?? '' },
   ], [hasProcess])
+  const spaceOptions = useMemo(() => [['', '— none —'] as const, ...model.view.spaces.map((s) => [s.id, s.label] as const)], [model])
   const editor = (r: EquipmentRow, c: Column<EquipmentRow>, done: () => void): ReactNode => {
     const commit = (value: unknown) => { done(); void edit([{ op: 'update_equipment', id: r.id, [c.field!]: value }]) }
     if (c.field === 'label') return <TextEditor initial={r.label} onCommit={commit} onCancel={done} />
     if (c.field === 'type') return <TermPicker kind="equipment" allowClear={false} onPick={commit} onCancel={done} />
     if (c.field === 'process') return <TermPicker kind="process" onPick={commit} onCancel={done} />
+    if (c.field === 'location') return <Select value={r.location?.id ?? ''} options={spaceOptions} onCommit={(v) => commit(v || null)} onCancel={done} />
     return null
   }
   return <DataTable rows={model.view.equipment} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
@@ -260,4 +263,38 @@ function AddConnectionPoint() {
         : <button onClick={() => setDraft(null)}>Cancel</button>}
     </span>
   )
+}
+
+// ------------------------------------------------------------------- spaces
+
+export function SpacesTable() {
+  const { model, edit, issueCounts, highlighted } = useShared()
+  const columns: Column<SpaceRow>[] = useMemo(() => [
+    { key: 'label', header: 'Space', field: 'label', value: (r) => r.label },
+    { key: 'type', header: 'Type', field: 'type', value: (r) => r.type?.label ?? '' },
+    { key: 'part_of', header: 'Part of', field: 'part_of', value: (r) => r.part_of?.label ?? '' },
+    { key: 'equipment', header: 'Equipment', value: (r) => String(r.equipment_count), width: 90 },
+  ], [])
+  const editor = (r: SpaceRow, c: Column<SpaceRow>, done: () => void): ReactNode => {
+    const commit = (value: unknown) => { done(); void edit([{ op: 'update_space', id: r.id, [c.field!]: value }]) }
+    if (c.field === 'label') return <TextEditor initial={r.label} onCommit={commit} onCancel={done} />
+    if (c.field === 'type') return <TermPicker kind="location" allowClear={false} initial={r.type?.label} onPick={commit} onCancel={done} />
+    if (c.field === 'part_of') {
+      const options = [['', '— none —'] as const, ...model.view.spaces.filter((s) => s.id !== r.id).map((s) => [s.id, s.label] as const)]
+      return <Select value={r.part_of?.id ?? ''} options={options} onCommit={(v) => commit(v || null)} onCancel={done} />
+    }
+    return null
+  }
+  return <DataTable rows={model.view.spaces} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
+    editor={editor} toolbar={<AddSpace />}
+    empty="No spaces yet. Add buildings, floors and rooms with + Space, then set each equipment's Location." />
+}
+
+function AddSpace() {
+  const edit = useStore((s) => s.edit)
+  const [label, setLabel] = useState<string | null>(null)
+  if (label === null) return <button onClick={() => setLabel('')}>+ Space</button>
+  if (!label) return <TextEditor initial="" onCancel={() => setLabel(null)} onCommit={setLabel} />
+  return <TermPicker kind="location" allowClear={false} initial="" onCancel={() => setLabel(null)}
+    onPick={(type) => { setLabel(null); if (type) void edit([{ op: 'create_space', label, type }]) }} />
 }

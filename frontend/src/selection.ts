@@ -62,6 +62,7 @@ export const FIELD_PHRASES: Record<string, string> = {
   to_equipment: 'downstream ends', contained_in: 'containers', substance: 'substances',
   direction: 'directions', paired_with: 'pairings', maps_to: 'container mappings',
   from_point: 'upstream connection points', to_point: 'downstream connection points',
+  part_of: 'enclosing spaces', location: 'locations',
 }
 
 const cap = (s: string) => s.slice(0, 1).toUpperCase() + s.slice(1)

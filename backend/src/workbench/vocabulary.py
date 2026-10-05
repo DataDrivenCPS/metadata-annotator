@@ -44,7 +44,7 @@ QUDT = Namespace("http://qudt.org/schema/qudt/")
 QK = Namespace("http://qudt.org/vocab/quantitykind/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")
 
-CATALOG_VERSION = 11
+CATALOG_VERSION = 12
 
 # Resolve one closure at a time (each downloads its sources and imports).
 _RESOLVE_LOCK = threading.Lock()
@@ -337,6 +337,7 @@ class Vocabulary:
             groups = {
                 "sensor": sensors,
                 "connection": descendants(S223.Connection),
+                "location": descendants(S223.PhysicalSpace) | {str(S223.PhysicalSpace)},
                 "equipment": (descendants(S223.Equipment) | {str(S223.Equipment)}) - sensors,
                 "property": descendants(S223.Property) | {str(S223.Property)},
                 "medium": media,

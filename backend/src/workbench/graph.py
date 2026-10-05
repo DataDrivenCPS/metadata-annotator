@@ -29,7 +29,7 @@ WB = Namespace("urn:workbench:ann#")
 MODEL_GRAPH = URIRef("urn:workbench:graph:model")
 ANN_GRAPH = URIRef("urn:workbench:graph:annotations")
 
-ID_PREFIX = {"equipment": "eq", "point": "pt", "connection": "cx", "connection_point": "cp"}
+ID_PREFIX = {"equipment": "eq", "point": "pt", "connection": "cx", "connection_point": "cp", "space": "sp"}
 
 
 def new_id(kind: str) -> str:

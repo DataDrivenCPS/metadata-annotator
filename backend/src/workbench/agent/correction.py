@@ -50,6 +50,9 @@ How the model represents things (from the BuildingMOTIF skill's 223P/WaTr guidan
   A point belongs to one piece of equipment.
 - Connection: a pipe (or duct/wire) carrying a medium from one equipment's outlet to
   another's inlet. Direction matters: from_equipment is upstream.
+- Space (sp-...): a physical space (s223:PhysicalSpace; say what it is in its label, e.g.
+  "Mechanical room 101"). Spaces nest with part_of (a room part_of a floor part_of a
+  building). Equipment says which space it is in with location.
 - Connection point (cp-...): an inlet, outlet or bidirectional port of one piece of
   equipment, with a medium. Every connection joins an outlet to an inlet; create_connection
   makes both unless from_point/to_point name existing ones. Many validation rules are about
@@ -67,7 +70,8 @@ How the model represents things (from the BuildingMOTIF skill's 223P/WaTr guidan
     it is wrong for what actually flows.
 
 Operations (JSON objects with "op"):
-- create_equipment {{label, type{process_field}, contained_in?}}; update_equipment {{id, fields...}}; delete_equipment {{id}}
+- create_equipment {{label, type{process_field}, contained_in?, location?}}; update_equipment {{id, fields...}}; delete_equipment {{id}}
+- create_space {{label, type, part_of?}}; update_space {{id, label?, type?, part_of?}}; delete_space {{id}}
 - create_point {{label, point_kind, quantity_kind?, unit?, equipment?, medium?, substance?, sensor_type?, enumeration_kind?}}
 - update_point {{id, fields...}}; delete_point {{id}}
 - create_connection {{from_equipment, to_equipment, medium, label?, type?, from_point?, to_point?}}
@@ -93,14 +97,20 @@ How the model represents things (from the BuildingMOTIF skill's Brick guidance):
   prefer the most specific class the evidence supports. A point belongs to one piece of
   equipment and may have a QUDT unit.
 - Connection: "upstream feeds downstream" (brick:feeds), e.g. an AHU feeds a VAV box.
+- Space (sp-...): a RealEstateCore space, e.g. rec:Building, rec:Level (a floor), rec:Room and
+  its kinds (rec:UtilitiesRoom for plant rooms, rec:Office...). Brick's own location classes (brick:Room,
+  brick:Floor...) are deprecated: use the rec: class. Spaces nest with part_of (a room part_of
+  a level part_of a building). Equipment says which space it is in with location; points
+  have no location (they belong to equipment).
 
 Operations (JSON objects with "op"):
-- create_equipment {label, type, contained_in?}; update_equipment {id, fields...}; delete_equipment {id}
+- create_equipment {label, type, contained_in?, location?}; update_equipment {id, fields...}; delete_equipment {id}
+- create_space {label, type, part_of?}; update_space {id, label?, type?, part_of?}; delete_space {id}
 - create_point {label, point_type, unit?, equipment?}  (point_kind only if no specific type is known)
 - update_point {id, fields...}; delete_point {id}
 - create_connection {from_equipment, to_equipment, label?}
 - update_connection {id, from_equipment?, to_equipment?, label?}; delete_connection {id}
-Terms are prefixed names like brick:AHU, brick:Supply_Air_Temperature_Sensor, unit:DEG_F.
+Terms are prefixed names like brick:AHU, brick:Supply_Air_Temperature_Sensor, rec:Room, unit:DEG_F.
 Source abbreviations are not always standard: check with search_terms before choosing a class.
 """
 
@@ -190,7 +200,8 @@ def operation_schema() -> dict:
     for model in (ops_mod.CreateEquipment, ops_mod.UpdateEquipment, ops_mod.DeleteEquipment,
                   ops_mod.CreatePoint, ops_mod.UpdatePoint, ops_mod.DeletePoint,
                   ops_mod.CreateConnection, ops_mod.UpdateConnection, ops_mod.DeleteConnection,
-                  ops_mod.CreateConnectionPoint, ops_mod.UpdateConnectionPoint, ops_mod.DeleteConnectionPoint):
+                  ops_mod.CreateConnectionPoint, ops_mod.UpdateConnectionPoint, ops_mod.DeleteConnectionPoint,
+                  ops_mod.CreateSpace, ops_mod.UpdateSpace, ops_mod.DeleteSpace):
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
         sch["properties"]["op"] = {"type": "string", "enum": [name]}
@@ -250,6 +261,7 @@ FIELD_PHRASES = {
     "to_equipment": "downstream ends", "contained_in": "containers", "substance": "substances",
     "direction": "directions", "paired_with": "pairings", "maps_to": "container mappings",
     "from_point": "upstream connection points", "to_point": "downstream connection points",
+    "part_of": "enclosing spaces", "location": "locations",
 }
 
 
@@ -293,6 +305,15 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
             for ref in (r.equipment, r.connection, r.paired_with, r.maps_to, r.mapped_from):
                 if ref:
                     related[ref.id] = rows.get(ref.id)
+        if r.kind == "equipment" and r.location:
+            related[r.location.id] = rows.get(r.location.id)
+        if r.kind == "space":
+            if r.part_of:
+                related[r.part_of.id] = rows.get(r.part_of.id)
+            for other in [*view.spaces, *view.equipment]:
+                inside = other.part_of if other.kind == "space" else other.location
+                if inside and inside.id == r.id:
+                    related[other.id] = other
     for c in view.connections:
         ends = {c.from_equipment.id if c.from_equipment else None, c.to_equipment.id if c.to_equipment else None}
         if ends & sel_ids:
@@ -328,6 +349,8 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
         lines += ["", "Related objects:"] + ["  " + entity_line(vocab, r) for r in rel[:60]]
     lines += ["", f"All equipment ({len(view.equipment)}):"]
     lines += ["  " + entity_line(vocab, e) for e in view.equipment[:200]]
+    if view.spaces:
+        lines += ["", f"All spaces ({len(view.spaces)}):"] + ["  " + entity_line(vocab, s) for s in view.spaces[:150]]
     if not selected:
         lines += ["", f"All points ({len(view.points)}):"] + ["  " + entity_line(vocab, p) for p in view.points[:150]]
         lines += ["", "Connections:"] + ["  " + entity_line(vocab, c) for c in view.connections[:100]]

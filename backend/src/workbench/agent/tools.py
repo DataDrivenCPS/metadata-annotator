@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..project import Project
-from ..projection import ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow
+from ..projection import ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow, SpaceRow
 from ..vocabulary import S223, Vocabulary
 from .guidance import FAMILY_TOPICS, SkillGuidance
 
@@ -40,8 +40,13 @@ def term_ref(vocab: Vocabulary, ref) -> str:
 def entity_line(vocab: Vocabulary, row) -> str:
     if isinstance(row, EquipmentRow):
         parent = f" | inside: {row.contained_in.id}" if row.contained_in else ""
+        place = f" | in space: {row.location.id} (\"{row.location.label}\")" if row.location else ""
         return (f"{row.id} | equipment \"{row.label}\" | type: {term_ref(vocab, row.type)} | "
-                f"process: {term_ref(vocab, row.process)} | points: {row.point_count}{parent}")
+                f"process: {term_ref(vocab, row.process)} | points: {row.point_count}{parent}{place}")
+    if isinstance(row, SpaceRow):
+        parent = f" | part of: {row.part_of.id} (\"{row.part_of.label}\")" if row.part_of else ""
+        return (f"{row.id} | space \"{row.label}\" | type: {term_ref(vocab, row.type)}{parent} | "
+                f"equipment in it: {row.equipment_count}")
     if isinstance(row, PointRow):
         eq = f"{row.equipment.id} (\"{row.equipment.label}\")" if row.equipment else "UNASSIGNED"
         extra = ""
@@ -140,7 +145,7 @@ class AgentTools:
     @staticmethod
     def catalog(family: str = "s223") -> str:
         kinds = (["equipment", "point_class", "location", "unit", "quantity_kind"] if family == "brick"
-                 else [k for k in AgentTools.KINDS if k not in ("point_class", "location")])
+                 else [k for k in AgentTools.KINDS if k != "point_class"])
         return (
             "search_terms(query, kind?) - find ontology terms; kind one of "
             + ", ".join(kinds)

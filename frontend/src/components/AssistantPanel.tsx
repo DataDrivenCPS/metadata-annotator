@@ -11,7 +11,7 @@ const FIELD_LABELS: Record<string, string> = {
   sensor_type: 'Sensor type', medium: 'Medium', substance: 'Substance', type: 'Type', process: 'Process',
   contained_in: 'Part of', from_equipment: 'From', to_equipment: 'Connected to',
   direction: 'Direction', connection: 'Connection', paired_with: 'Paired with', maps_to: 'Maps to',
-  from_point: 'From point', to_point: 'To point',
+  from_point: 'From point', to_point: 'To point', part_of: 'Part of', location: 'Location',
 }
 const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field.replace(/_/g, ' ')
 

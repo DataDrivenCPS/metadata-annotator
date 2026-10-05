@@ -7,6 +7,11 @@ export interface EquipmentRow {
   kind: 'equipment'; id: string; iri: string; label: string
   type: TermRef | null; process: TermRef | null; contained_in: EntityRef | null
   point_count: number; locked: string[]; evidence: string[]
+  location: EntityRef | null
+}
+export interface SpaceRow {
+  kind: 'space'; id: string; iri: string; label: string
+  type: TermRef | null; part_of: EntityRef | null; equipment_count: number; locked: string[]; evidence: string[]
 }
 export interface PointRow {
   kind: 'point'; id: string; iri: string; label: string
@@ -28,11 +33,12 @@ export interface ConnectionPointRow {
   connection: EntityRef | null; paired_with: EntityRef | null
   maps_to: EntityRef | null; mapped_from: EntityRef | null; locked: string[]; evidence: string[]
 }
-export type Row = EquipmentRow | PointRow | ConnectionRow | ConnectionPointRow
+export type Row = EquipmentRow | PointRow | ConnectionRow | ConnectionPointRow | SpaceRow
 
 export interface ModelView {
   equipment: EquipmentRow[]; points: PointRow[]; connections: ConnectionRow[]
   connection_points: ConnectionPointRow[]
+  spaces: SpaceRow[]
   containment: [string, string][]
 }
 

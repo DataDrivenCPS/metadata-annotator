@@ -9,7 +9,7 @@ import {
   emptySelection, type AgentRun, type IssueRepair, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type Status,
 } from './types'
 
-export type Tab = 'points' | 'equipment' | 'connections' | 'connection_points' | 'graph' | 'issues'
+export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues'
 export type DrawerTab = 'inspector' | 'rdf' | 'history'
 
 interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
@@ -84,7 +84,7 @@ interface State {
 const indexRows = (m: ModelResponse | null) => {
   const map = new Map<string, Row>()
   if (!m) return map
-  for (const r of [...m.view.equipment, ...m.view.points, ...m.view.connections, ...(m.view.connection_points ?? [])]) map.set(r.id, r)
+  for (const r of [...m.view.equipment, ...m.view.points, ...m.view.connections, ...(m.view.connection_points ?? []), ...(m.view.spaces ?? [])]) map.set(r.id, r)
   return map
 }
 

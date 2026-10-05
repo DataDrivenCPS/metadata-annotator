@@ -25,6 +25,8 @@ from .llm import LLMError, make_client
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
 from .projection import POINT_KIND_LABELS, entity_iri, owned_hint, sensors_of
+
+VALUE_KINDS = {"enumeration", "medium", "role", "substance", "process"}
 from .runs import ProviderUnavailable, RunManager
 from .schemas import CsvImportConfig, SelectionScope
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
@@ -344,13 +346,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def term(iri: str) -> dict:
             return {"iri": iri, "curie": vocab.curie(iri), "label": vocab.label(iri)}
 
+        view = p.view(rid)
+        nodes = [(r, [str(t) for t in pg.model.objects(URIRef(r.iri), RDF.type)]) for r in view.rows().values()
+                 if r.kind != "relationship" and getattr(r, "iri", "") and r.id != eid]  # type: ignore[attr-defined]
+        # Vocabulary values a relation can point at (enumeration members, media...), never bare classes.
+        values = [t for t in vocab.terms.values() if t.kind in VALUE_KINDS and not t.deprecated]
+
+        def candidates(objects: list[str]) -> list[dict]:
+            fits = (lambda ts: any(vocab.is_a(t, o) for t in ts for o in objects)) if objects else (lambda ts: True)
+            out = [{"id": r.id, "label": r.label, "kind": r.kind} for r, ts in nodes if fits(ts)]  # type: ignore[attr-defined]
+            if objects:
+                out += [{**term(t.iri), "kind": "value"} for t in values if fits([t.iri])][:200]
+            return out
+
         allowed = []
         for r in vocab.relations_for(types):
             if owned_hint(vocab, r["relation"], row.kind):  # type: ignore[attr-defined]
                 continue
             t = vocab.term(r["relation"])
             allowed.append({**term(r["relation"]), "objects": [term(o) for o in r["objects"]], "max": r["max"],
-                            "symmetric": bool(t and t.symmetric)})
+                            "symmetric": bool(t and t.symmetric), "candidates": candidates(r["objects"])})
         current = [asdict(r) for r in p.view(rid).relationships
                    if r.subject.id == eid or (r.object is not None and r.object.id == eid)]
         return {"allowed": allowed, "relationships": current}

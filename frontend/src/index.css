@@ -431,3 +431,13 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .react-flow__edge.space-edge path { stroke: #6a9f7a; stroke-dasharray: 5 4; }
 .react-flow__edge.space-edge.location path { stroke-dasharray: 2 4; }
 .graph-toggle { position: absolute; z-index: 5; top: 8px; right: 10px; background: var(--panel); border: 1px solid var(--border); padding: 3px 8px; border-radius: var(--radius); font-size: 12px; display: flex; gap: 5px; align-items: center; }
+
+/* inspector relationships */
+.relations { list-style: none; margin: 4px 0; padding: 0; font-size: 12.5px; }
+.relations li { padding: 3px 0; border-top: 1px solid var(--border); display: flex; gap: 6px; align-items: baseline; }
+.relations li button { margin-left: auto; }
+.rel-name { color: var(--accent); }
+.relation-add { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; margin: 4px 0; font-size: 12.5px; display: grid; gap: 4px; }
+.relation-add input { width: 100%; }
+.relation-choices { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; }
+.relation-choices li { padding: 2px 0; }

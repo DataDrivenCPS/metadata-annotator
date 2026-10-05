@@ -199,3 +199,11 @@ export interface Observation {
   location: { kind: string; row?: number | null; column?: number | null; bbox?: number[] | null }
   entity_id?: string | null
 }
+
+/** GET /entities/{id}/relations: what the vocabulary's shapes allow, with candidates in the model. */
+export interface VocabTermRef { iri: string; curie: string; label: string }
+export interface RelationCandidate { id?: string; iri?: string; curie?: string; label: string; kind: string }
+export interface AllowedRelation extends VocabTermRef {
+  objects: VocabTermRef[]; max: number | null; symmetric: boolean; candidates: RelationCandidate[]
+}
+export interface EntityRelations { allowed: AllowedRelation[]; relationships: RelationshipRow[] }

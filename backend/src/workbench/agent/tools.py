@@ -10,7 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..project import Project
-from ..projection import ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow, SpaceRow
+from ..projection import (
+    ConnectionPointRow, ConnectionRow, EntityRow, EquipmentRow, PointRow, RelationshipRow, SpaceRow, owned_hint,
+)
 from ..vocabulary import S223, Vocabulary
 from .guidance import FAMILY_TOPICS, SkillGuidance
 
@@ -43,6 +45,11 @@ def entity_line(vocab: Vocabulary, row) -> str:
         place = f" | in space: {row.location.id} (\"{row.location.label}\")" if row.location else ""
         return (f"{row.id} | equipment \"{row.label}\" | type: {term_ref(vocab, row.type)} | "
                 f"process: {term_ref(vocab, row.process)} | points: {row.point_count}{parent}{place}")
+    if isinstance(row, EntityRow):
+        return f"{row.id} | {term_ref(vocab, row.type)} \"{row.label}\" | relationships: {row.relation_count}"
+    if isinstance(row, RelationshipRow):
+        target = f"{row.object.id} (\"{row.object.label}\")" if row.object else term_ref(vocab, row.value)
+        return (f"{row.id} | {row.subject.id} (\"{row.subject.label}\") {curie(vocab, row.relation.iri)} {target}")
     if isinstance(row, SpaceRow):
         parent = f" | part of: {row.part_of.id} (\"{row.part_of.label}\")" if row.part_of else ""
         return (f"{row.id} | space \"{row.label}\" | type: {term_ref(vocab, row.type)}{parent} | "
@@ -81,7 +88,7 @@ def entity_line(vocab: Vocabulary, row) -> str:
 
 class AgentTools:
     KINDS = ["equipment", "point_class", "location", "sensor", "connection", "process", "medium",
-             "substance", "quantity_kind", "unit", "enumeration", "role"]
+             "substance", "quantity_kind", "unit", "enumeration", "role", "class", "relation"]
 
     def __init__(self, project: Project, revision: str, guidance: SkillGuidance):
         self.project = project
@@ -133,6 +140,25 @@ class AgentTools:
                 out.append(f"  connection points of {r.id}: {', '.join(cps) if cps else 'none'}")
         return out or [f"(nothing in the model matches {query!r})"]
 
+    def relations_for(self, entity_id: str) -> dict[str, Any]:
+        """Relations the vocabulary's shapes allow for this entity, what they point to, and its current ones."""
+        view = self.project.view(self.revision)
+        row = view.rows().get(entity_id)
+        if row is None or row.kind == "relationship":  # type: ignore[attr-defined]
+            return {"error": f"no entity {entity_id}"}
+        pg = self.project.graph(self.revision)
+        from rdflib import URIRef
+        from rdflib.namespace import RDF
+
+        types = [str(t) for t in pg.model.objects(URIRef(row.iri), RDF.type)]  # type: ignore[attr-defined]
+        allowed = [f"{curie(self.vocab, r['relation'])} -> {', '.join(curie(self.vocab, o) for o in r['objects']) or 'anything'}"
+                   + (" (one value)" if r["max"] == 1 else "")
+                   for r in self.vocab.relations_for(types)
+                   if not owned_hint(self.vocab, r["relation"], row.kind)]  # type: ignore[attr-defined]
+        current = [entity_line(self.vocab, r) for r in view.relationships
+                   if r.subject.id == entity_id or (r.object and r.object.id == entity_id)]
+        return {"entity": entity_line(self.vocab, row), "allowed_relations": allowed, "current": current}
+
     def read_guidance(self, topic: str) -> str:
         """Modeling guidance from the BuildingMOTIF skill for one topic."""
         return self.guidance.topic(topic)
@@ -144,7 +170,7 @@ class AgentTools:
 
     @staticmethod
     def catalog(family: str = "s223") -> str:
-        kinds = (["equipment", "point_class", "location", "unit", "quantity_kind"] if family == "brick"
+        kinds = (["equipment", "point_class", "location", "class", "relation", "unit", "quantity_kind"] if family == "brick"
                  else [k for k in AgentTools.KINDS if k != "point_class"])
         return (
             "search_terms(query, kind?) - find ontology terms; kind one of "
@@ -154,6 +180,7 @@ class AgentTools:
             + ("\nfind_entities(query) - find equipment/points/connections in the model by name" if family == "brick"
                else "\nfind_entities(query) - find equipment/points/connections/connection points by name"
                     " (an equipment's name lists its connection points too)")
+            + "\nrelations_for(entity_id) - relations the vocabulary allows for an entity, and its current ones"
             + "\nread_evidence(observation_id) - the source record behind an entity"
             + "\nread_guidance(topic) - modeling guidance; topics: " + ", ".join(FAMILY_TOPICS[family])
         )

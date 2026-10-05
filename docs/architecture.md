@@ -115,6 +115,11 @@ ontologies define:
 - **Owned predicates** (`projection.OWNED`): relations a typed editor manages (`hasPoint`,
   `cnx`, `contains`, `hasLocation`, `rec:isPartOf` between spaces…) are refused by `relate` with
   the field to use, and are not listed as relationships, so each fact has one editor.
+- The inspector's **Relationships** panel lists an entity's relations and adds one the
+  vocabulary allows (with candidate objects already in the model, or vocabulary values for
+  enumerations). The assistant has the same operations and a `relations_for(entity_id)` tool;
+  a refused object class comes with a vocabulary-derived bridge ("Office 1 reaches a
+  s223:DomainSpace through s223:encloses").
 
 ## Revisions, undo, stale proposals
 

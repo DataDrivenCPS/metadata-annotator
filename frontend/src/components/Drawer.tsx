@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
-import { emptySelection, type EntityDetail, type Revision, type ReviewIssue } from '../types'
+import { emptySelection, type EntityDetail, type EntityRelations, type Revision, type ReviewIssue } from '../types'
 import { DismissalNote, RepairDetail } from './IssuesView'
 import { shortIri } from './TermPicker'
 
@@ -116,6 +116,7 @@ function Inspector() {
           ))}
         </ul>
       ) : <p className="muted">No issues recorded for this object.</p>}
+      <RelationsPanel eid={detail.id} />
       <h5>Evidence</h5>
       {detail.evidence.length ? detail.evidence.map((e) => (
         <div key={e.id} className="evidence-item"><code>{e.id}</code> {JSON.stringify(e.content)}</div>
@@ -128,6 +129,68 @@ function Inspector() {
       ) : <p className="muted">No changes recorded.</p>}
     </div>
   )
+}
+
+/** The entity's ontology relations, and adding one the vocabulary allows (from its shapes). */
+function RelationsPanel({ eid }: { eid: string }) {
+  const projectId = useStore((s) => s.projectId)!
+  const head = useStore((s) => s.model?.head)
+  const viewing = useStore((s) => s.viewing)
+  const edit = useStore((s) => s.edit)
+  const [data, setData] = useState<EntityRelations | null>(null)
+  const [adding, setAdding] = useState<{ relation: string; filter: string } | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    api.entityRelations(projectId, eid, viewing ?? undefined).then((d) => alive && setData(d)).catch(() => alive && setData(null))
+    return () => { alive = false }
+  }, [projectId, eid, head, viewing])
+
+  if (!data) return null
+  const chosen = adding ? data.allowed.find((a) => a.iri === adding.relation) : undefined
+  const shown = data.allowed.filter((a) => !adding?.filter || `${a.label} ${a.curie}`.toLowerCase().includes(adding.filter.toLowerCase()))
+  return <>
+    <h5>Relationships</h5>
+    {data.relationships.length ? <ul className="relations">
+      {data.relationships.map((r) => {
+        const outgoing = r.subject.id === eid
+        const other = outgoing ? (r.object?.label ?? r.value?.label ?? '?') : r.subject.label
+        return <li key={r.id}>
+          {outgoing ? <><span className="rel-name">{r.relation.label}</span> → {other}</>
+            : <>{other} <span className="rel-name">{r.relation.label}</span> → this</>}
+          {!viewing && <button className="link" title="Remove this relationship"
+            onClick={() => void edit([{ op: 'unrelate', id: r.id }])}>×</button>}
+        </li>
+      })}
+    </ul> : <p className="muted">No other relationships.</p>}
+    {!viewing && data.allowed.length > 0 && (adding === null
+      ? <button className="link" onClick={() => setAdding({ relation: '', filter: '' })}>+ Add relationship</button>
+      : <div className="relation-add">
+        {!chosen ? <>
+          <input autoFocus placeholder={`Filter ${data.allowed.length} relations the vocabulary allows…`} value={adding.filter}
+            onChange={(e) => setAdding({ ...adding, filter: e.target.value })} />
+          <ul className="relation-choices">{shown.slice(0, 40).map((a) => <li key={a.iri}>
+            <button className="link" onClick={() => setAdding({ ...adding, relation: a.iri })}
+              title={a.objects.length ? `Points to: ${a.objects.map((o) => o.curie).join(', ')}` : 'Unconstrained'}>
+              {a.label} <code>{a.curie}</code></button>
+            <span className="muted small"> → {a.objects.map((o) => o.label).join(' / ') || 'anything'}{a.max === 1 ? ' (one)' : ''}</span>
+          </li>)}</ul>
+        </> : <>
+          <div><span className="rel-name">{chosen.label}</span> → {chosen.objects.map((o) => o.label).join(' / ') || 'anything'}</div>
+          {chosen.candidates.length ? <select autoFocus defaultValue="" onChange={(e) => {
+            const c = chosen.candidates[Number(e.target.value)]
+            if (!c) return
+            setAdding(null)
+            void edit([{ op: 'relate', subject: eid, relation: chosen.iri, object: c.id ?? c.curie ?? c.iri }])
+          }}>
+            <option value="" disabled>choose…</option>
+            {chosen.candidates.map((c, i) => <option key={i} value={i}>{c.label}{c.kind === 'value' ? ` (${c.curie})` : ` · ${c.kind.replace('_', ' ')}`}</option>)}
+          </select> : <p className="muted small">Nothing in the model is a {chosen.objects.map((o) => o.label).join(' or ')} yet;
+            create one first (or ask the assistant).</p>}
+        </>}
+        <button className="link" onClick={() => setAdding(null)}>cancel</button>
+      </div>)}
+  </>
 }
 
 function RdfView() {

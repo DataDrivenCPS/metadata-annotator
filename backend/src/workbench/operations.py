@@ -494,8 +494,11 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                     unknown_terms.append((fname, iri, expected))
                 elif expected and t.kind != expected:
                     instead = TYPED_CREATE.get(t.kind) if kind == "entity" else None
-                    problems.append(f"{where}: {fname} {iri!r} is a {t.kind}, expected a {expected}"
-                                    + (f"; it has its own editor: use {instead}" if instead else ""))
+                    generic = t.kind == "class" and kind != "entity"
+                    problems.append(f"{where}: {fname} {vocab.curie(iri)} is a {t.kind}, expected a {expected}"
+                                    + (f"; it has its own editor: use {instead}" if instead else "")
+                                    + (f"; a {vocab.curie(iri)} is a separate entity: create_entity, then relate it"
+                                       if generic else ""))
                 elif t.abstract:
                     problems.append(f"{where}: {fname} {t.label!r} is abstract and cannot be instantiated")
 
@@ -613,8 +616,14 @@ class GenericOps:
                 continue
             otypes = self._types(o) if self.pg.id_of(o) or (o, RDF.type, None) in g else [str(o)]
             if not any(v.is_a(ot, oc) for ot in otypes for oc in objects):
+                # A relation from the object's class to the expected class usually means an
+                # intermediate entity is missing (a PhysicalSpace encloses a DomainSpace...).
+                bridges = [f"{self._name(o)} reaches a {v.curie(oc)} through {v.curie(r['relation'])}"
+                           for r in v.relations_for(otypes) for oc in objects
+                           if any(v.is_a(x, oc) or v.is_a(oc, x) for x in r["objects"])][:2]
                 problems.append(f"{self._name(s)} {v.curie(str(p))} expects {', '.join(v.curie(c) for c in objects)}, "
-                                f"but {self._name(o)} is {', '.join(v.curie(c) for c in otypes) or 'untyped'}")
+                                f"but {self._name(o)} is {', '.join(v.curie(c) for c in otypes) or 'untyped'}"
+                                + (f" (relate to a {v.curie(objects[0])} instead: {'; '.join(bridges)})" if bridges else ""))
         return problems
 
 

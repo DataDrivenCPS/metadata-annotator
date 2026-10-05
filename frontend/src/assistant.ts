@@ -93,6 +93,7 @@ const TOOL_STEPS: Record<string, (arg: string) => string> = {
   units_for: (a) => `Looked up units for ${a}`,
   describe_class: (a) => `Read the definition of ${a}`,
   find_entities: (a) => `Searched the model for ${a}`,
+  relations_for: (a) => `Looked up the relations allowed for ${a}`,
   read_evidence: (a) => `Read source evidence ${a}`,
   read_guidance: (a) => `Read the modeling guidance on ${a}`,
 }
@@ -111,7 +112,7 @@ export function describeStep(event: ProgressEvent): string {
     args.set(m[1], (m[2] ?? m[3] ?? m[4]).trim())
   }
   // Name the step after what was looked up, not a filter such as kind='equipment'.
-  const key = ['query', 'term', 'quantity_kind', 'topic', 'observation_id'].find((k) => args.get(k))
+  const key = ['query', 'term', 'quantity_kind', 'topic', 'observation_id', 'entity_id'].find((k) => args.get(k))
   const arg = key ? args.get(key)! : (args.values().next().value ?? '')
   const kind = args.get('kind') && key === 'query' ? ` (${args.get('kind')!.replaceAll('_', ' ')})` : ''
   return describe(arg ? `“${arg}”${kind}` : 'a term').replace(/ “”$/, '')

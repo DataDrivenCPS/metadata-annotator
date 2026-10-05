@@ -34,7 +34,8 @@ from .tools import AgentTools, curie, entity_line
 MAX_STEPS = 8
 MAX_REPAIRS = 2
 
-TOOL_ACTIONS = ["search_terms", "units_for", "describe_class", "find_entities", "read_evidence", "read_guidance"]
+TOOL_ACTIONS = ["search_terms", "units_for", "describe_class", "find_entities", "relations_for", "read_evidence",
+                "read_guidance"]
 
 S223_DOMAIN = """\
 You help a person correct a knowledge-graph model of a {system}. The person knows the
@@ -53,6 +54,9 @@ How the model represents things (from the BuildingMOTIF skill's 223P/WaTr guidan
 - Space (sp-...): a physical space (s223:PhysicalSpace; say what it is in its label, e.g.
   "Mechanical room 101"). Spaces nest with part_of (a room part_of a floor part_of a
   building). Equipment says which space it is in with location.
+  Zones (e.g. an HVAC zone) are entities: a s223:Zone hasDomainSpace s223:DomainSpace entities,
+  and each physical space encloses its domain space (create_entity + relate; hasDomain e.g.
+  s223:Domain-HVAC on the zone and its domain spaces).
 - Connection point (cp-...): an inlet, outlet or bidirectional port of one piece of
   equipment, with a medium. Every connection joins an outlet to an inlet; create_connection
   makes both unless from_point/to_point name existing ones. Many validation rules are about
@@ -121,6 +125,14 @@ Refer to entities by their ids (eq-..., pt-..., cx-...). Give a new entity an id
 label) in the later operation, e.g.
   [{{"op": "create_equipment", "id": "new:x1", "label": "Unit 1", "type": "{example_type}"}},
    {{"op": "create_equipment", "label": "Part A", "type": "{example_part}", "contained_in": "new:x1"}}]
+Anything else the vocabulary defines:
+- create_entity {{label, type}}; update_entity {{id, fields...}}; delete_entity {{id}} - an instance of any
+  other class (e.g. a zone, a wall, a system); classes with their own operation above use that one.
+- relate {{subject, relation, object}}; unrelate {{id}} - any relation the vocabulary defines between two
+  entities (any kind, by id), or from an entity to a vocabulary value (e.g. an enumeration member).
+  Prefer the fields above (location, part_of, equipment, contained_in...) where they exist. Call
+  relations_for(entity_id) first to see which relations the vocabulary allows and what they point
+  to; never invent a relation. Relationship ids are rl-...
 Terms (types, units, ...) must be real vocabulary terms. If you are not sure a term exists
 or which one fits, use search_terms first. Never invent a term.
 Search with the words a term would be named by ("air handling unit", not "AHU" or
@@ -201,7 +213,8 @@ def operation_schema() -> dict:
                   ops_mod.CreatePoint, ops_mod.UpdatePoint, ops_mod.DeletePoint,
                   ops_mod.CreateConnection, ops_mod.UpdateConnection, ops_mod.DeleteConnection,
                   ops_mod.CreateConnectionPoint, ops_mod.UpdateConnectionPoint, ops_mod.DeleteConnectionPoint,
-                  ops_mod.CreateSpace, ops_mod.UpdateSpace, ops_mod.DeleteSpace):
+                  ops_mod.CreateSpace, ops_mod.UpdateSpace, ops_mod.DeleteSpace,
+                  ops_mod.CreateEntity, ops_mod.UpdateEntity, ops_mod.DeleteEntity, ops_mod.Relate, ops_mod.Unrelate):
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
         sch["properties"]["op"] = {"type": "string", "enum": [name]}
@@ -229,6 +242,7 @@ def step_schema() -> dict:
                     "quantity_kind": {"type": "string"},
                     "topic": {"type": "string"},
                     "observation_id": {"type": "string"},
+                    "entity_id": {"type": "string"},
                 },
             },
             "explanation": {"type": "string"},
@@ -262,6 +276,7 @@ FIELD_PHRASES = {
     "direction": "directions", "paired_with": "pairings", "maps_to": "container mappings",
     "from_point": "upstream connection points", "to_point": "downstream connection points",
     "part_of": "enclosing spaces", "location": "locations",
+    "subject": "subjects", "relation": "relations", "object": "related objects",
 }
 
 
@@ -305,6 +320,13 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
             for ref in (r.equipment, r.connection, r.paired_with, r.maps_to, r.mapped_from):
                 if ref:
                     related[ref.id] = rows.get(ref.id)
+        if r.kind == "relationship":
+            for ref in (r.subject, r.object):
+                if ref:
+                    related[ref.id] = rows.get(ref.id)
+        for rel in view.relationships:  # relationships touching the selection
+            if rel.subject.id == r.id or (rel.object and rel.object.id == r.id):
+                related[rel.id] = rel
         if r.kind == "equipment" and r.location:
             related[r.location.id] = rows.get(r.location.id)
         if r.kind == "space":
@@ -351,6 +373,11 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
     lines += ["  " + entity_line(vocab, e) for e in view.equipment[:200]]
     if view.spaces:
         lines += ["", f"All spaces ({len(view.spaces)}):"] + ["  " + entity_line(vocab, s) for s in view.spaces[:150]]
+    if view.entities:
+        lines += ["", f"Other entities ({len(view.entities)}):"] + ["  " + entity_line(vocab, e) for e in view.entities[:150]]
+    if view.relationships and not selected:
+        lines += ["", f"Relationships ({len(view.relationships)}):"] + [
+            "  " + entity_line(vocab, r) for r in view.relationships[:150]]
     if not selected:
         lines += ["", f"All points ({len(view.points)}):"] + ["  " + entity_line(vocab, p) for p in view.points[:150]]
         lines += ["", "Connections:"] + ["  " + entity_line(vocab, c) for c in view.connections[:100]]
@@ -814,6 +841,8 @@ def _call_tool(tools: AgentTools, action: str, args: dict) -> Any:
             return tools.find_entities(str(args.get("query", "")))
         if action == "read_evidence":
             return tools.read_evidence(str(args.get("observation_id", "")))
+        if action == "relations_for":
+            return tools.relations_for(str(args.get("entity_id") or args.get("query") or ""))
         if action == "read_guidance":
             return tools.read_guidance(str(args.get("topic", "")))
     except Exception as exc:  # a tool failure is information for the model, not a crash

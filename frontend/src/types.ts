@@ -207,3 +207,17 @@ export interface AllowedRelation extends VocabTermRef {
   objects: VocabTermRef[]; max: number | null; symmetric: boolean; candidates: RelationCandidate[]
 }
 export interface EntityRelations { allowed: AllowedRelation[]; relationships: RelationshipRow[] }
+
+/** A table view (curated or from workbench.toml); builtin ones add columns to a typed table. */
+export interface ViewInfo { id: string; label: string; builtin: string | null; errors: string[] }
+export interface ViewCellItem {
+  id?: string; iri?: string; curie?: string; label: string; kind?: string
+  relationship?: string  // the rl- id behind the value, for removing it
+}
+export interface ViewColumn {
+  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'none'
+  relation?: string; inverse?: boolean; relation_label?: string; relation_curie?: string
+  candidates?: ViewCellItem[]
+}
+export interface ViewRow { id: string; kind: string; label: string; iri: string; cells: Record<string, ViewCellItem[]> }
+export interface ViewData { id: string; label: string; builtin: string | null; columns: ViewColumn[]; rows: ViewRow[] }

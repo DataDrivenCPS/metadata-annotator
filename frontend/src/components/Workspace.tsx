@@ -8,6 +8,7 @@ import { IssuesView } from './IssuesView'
 import { ConnectionPointsTable, ConnectionsTable, EquipmentTable, PointsTable, SpacesTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
+import { ViewTable } from './ViewTable'
 
 const MIN_MODEL_WIDTH = 360
 const HANDLE = 6
@@ -67,6 +68,7 @@ export function Workspace() {
   const undo = useStore((s) => s.undo)
   const viewing = useStore((s) => s.viewing)
   const viewRevision = useStore((s) => s.viewRevision)
+  const views = useStore((s) => s.views)
   const redo = useStore((s) => s.redo)
   const reload = useStore((s) => s.reload)
   const notify = useStore((s) => s.notify)
@@ -107,7 +109,12 @@ export function Workspace() {
                    connections: model.view.connections.length, connection_points: model.view.connection_points.length,
                    graph: model.view.equipment.length + model.view.spaces.length, issues: problems }
   // Brick has no connection points.
-  const tabs = model.info.family === 'brick' ? TABS.filter(([id]) => id !== 'connection_points') : TABS
+  const typed = model.info.family === 'brick' ? TABS.filter(([id]) => id !== 'connection_points') : TABS
+  // Views with a table of their own go after the typed tables, before Graph and Issues.
+  const own: [Tab, string][] = views.filter((v) => !v.builtin).map((v) => [`view:${v.id}`, v.label])
+  const cut = typed.findIndex(([id]) => id === 'graph')
+  const tabs = [...typed.slice(0, cut), ...own, ...typed.slice(cut)]
+  const tabCount = (id: Tab) => (counts as Record<string, number | undefined>)[id]
 
   return (
     <div className="workspace">
@@ -166,7 +173,7 @@ export function Workspace() {
             {tabs.map(([id, label]) => (
               <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}
                 title={id === 'issues' ? 'Validation findings plus source extraction and association issues' : undefined}>
-                {label} <span className={`count ${id === 'issues' && counts[id] ? 'warn' : ''}`}>{counts[id]}</span>
+                {label} <span className={`count ${id === 'issues' && tabCount(id) ? 'warn' : ''}`}>{tabCount(id)}</span>
               </button>
             ))}
           </nav>
@@ -178,6 +185,7 @@ export function Workspace() {
             {tab === 'connection_points' && <ConnectionPointsTable />}
             {tab === 'graph' && <GraphView />}
             {tab === 'issues' && <IssuesView />}
+            {tab.startsWith('view:') && <ViewTable key={tab} vid={tab.slice(5)} />}
           </div>
           <ResizeHandle label="Resize inspector tray" onResize={resizeDrawer} onReset={resetDrawer} />
           <Drawer />

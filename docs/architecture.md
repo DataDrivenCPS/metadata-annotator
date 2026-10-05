@@ -121,6 +121,20 @@ ontologies define:
   a refused object class comes with a vocabulary-derived bridge ("Office 1 reaches a
   s223:DomainSpace through s223:encloses").
 
+### Table views (`views.py`, `views.toml`)
+
+Tables beyond the typed ones are declarative views: rows are instances of ontology classes
+(`rows = ["s223:Zone"]`, or `"entity"` for every generic entity) and columns are property paths
+(`s223:hasDomainSpace`, `^s223:encloses`, `s223:hasDomainSpace/^s223:encloses`, `a|b`; specials
+`label`, `type`, `relations`). A single-step (possibly inverse) `relation` column is edited
+with relate/unrelate — each cell value carries its relationship id, and the column lists
+candidate objects from the shapes; owned relations stay read-only. A view with `builtin` adds
+its columns to a typed table (points, equipment, spaces, connections, connection_points).
+Curated views ship in `views.toml` (Building elements for Brick; Zones and Domain spaces for
+223P; Other things everywhere); `[views.<id>]` in `workbench.toml` adds views or overrides
+fields of curated ones. `GET /views` lists a project's views with spec problems,
+`GET /views/{id}` evaluates one.
+
 ## Revisions, undo, stale proposals
 
 - `publish` runs under the project lock: check the base is still the head, write the snapshot

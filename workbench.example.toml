@@ -52,3 +52,16 @@ kind = "anthropic"
 model = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
 # request_options = { effort = "medium", fallbacks = true }
+
+# Table views (see backend/src/workbench/views.toml for the curated ones). Rows are instances of
+# the given classes; columns are property paths; a single-step "relation" column is editable.
+# A view with `builtin = "spaces"` (or points/equipment/connections/connection_points) adds its
+# columns to that typed table instead.
+# [views.systems]
+# label = "Systems"
+# families = ["brick"]
+# rows = ["brick:System"]
+# columns = [
+#   { key = "label", label = "System", path = "label", editor = "label" },
+#   { key = "members", label = "Members", path = "brick:hasPart", editor = "relation" },
+# ]

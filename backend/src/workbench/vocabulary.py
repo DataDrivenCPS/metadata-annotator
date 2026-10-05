@@ -727,6 +727,8 @@ _META = ("http://qudt.org/", "http://www.w3.org/", "http://datashapes.org/", "ht
 
 
 _VALUE_SHAPES = ("https://brickschema.org/schema/BrickShape#",)
+# Term kinds that are values a relation can point at (enumeration members, media...), not classes.
+VALUE_KINDS = {"enumeration", "medium", "role", "substance", "process"}
 
 
 def _meta(iri: str) -> bool:

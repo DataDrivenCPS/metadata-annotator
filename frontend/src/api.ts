@@ -1,5 +1,5 @@
 import type {
-  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, EntityRelations, ModelResponse, ProjectInfo, Proposal, Revision, Selection, Status, Term,
+  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term,
 } from './types'
 
 export class ApiError extends Error {
@@ -59,6 +59,9 @@ export const api = {
     req<Record<string, IssueRepair>>('GET', `${P(pid)}/repairs?revision=${encodeURIComponent(revision)}`),
   setIssueState: (pid: string, id: string, state: 'open' | 'dismissed') =>
     req('PUT', `${P(pid)}/issues/${encodeURIComponent(id)}`, { state }),
+  views: (pid: string) => req<{ views: ViewInfo[]; errors: string[] }>('GET', `${P(pid)}/views`),
+  view: (pid: string, vid: string, revision?: string) =>
+    req<ViewData>('GET', `${P(pid)}/views/${vid}${revision ? `?revision=${revision}` : ''}`),
   entityRelations: (pid: string, eid: string, revision?: string) =>
     req<EntityRelations>('GET', `${P(pid)}/entities/${eid}/relations${revision ? `?revision=${revision}` : ''}`),
   entity: (pid: string, eid: string, revision?: string) =>

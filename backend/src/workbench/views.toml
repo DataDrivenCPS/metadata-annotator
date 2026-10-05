@@ -1,0 +1,53 @@
+# Curated table views. Rows are instances of the `rows` classes ("entity" = every generic entity);
+# columns are property paths (see views.py). workbench.toml can add views or override fields of
+# these with [views.<id>] tables.
+
+# ------------------------------------------------------------------ Brick / RealEstateCore
+
+[views.building_elements]
+label = "Building elements"
+families = ["brick"]
+rows = ["rec:BuildingElement"]
+columns = [
+  { key = "label", label = "Element", path = "label", editor = "label" },
+  { key = "type", label = "Type", path = "type", editor = "type" },
+  { key = "adjacent", label = "Adjacent spaces", path = "^rec:adjacentElement" },
+  { key = "intersecting", label = "Intersecting spaces", path = "^rec:intersectingElement", editor = "relation" },
+  { key = "part_of", label = "Part of", path = "rec:isPartOf", editor = "relation" },
+]
+
+# --------------------------------------------------------------------------- 223P / WaTr
+
+[views.zones]
+label = "Zones"
+families = ["s223"]
+rows = ["s223:Zone"]
+columns = [
+  { key = "label", label = "Zone", path = "label", editor = "label" },
+  { key = "type", label = "Type", path = "type", editor = "type" },
+  { key = "domain", label = "Domain", path = "s223:hasDomain", editor = "relation" },
+  { key = "domain_spaces", label = "Domain spaces", path = "s223:hasDomainSpace", editor = "relation" },
+  { key = "spaces", label = "Physical spaces", path = "s223:hasDomainSpace/^s223:encloses" },
+]
+
+[views.domain_spaces]
+label = "Domain spaces"
+families = ["s223"]
+rows = ["s223:DomainSpace"]
+columns = [
+  { key = "label", label = "Domain space", path = "label", editor = "label" },
+  { key = "domain", label = "Domain", path = "s223:hasDomain", editor = "relation" },
+  { key = "enclosed_by", label = "Enclosed by", path = "^s223:encloses", editor = "relation" },
+  { key = "zone", label = "Zone", path = "^s223:hasDomainSpace", editor = "relation" },
+]
+
+# ---------------------------------------------------------------------------- every family
+
+[views.other]
+label = "Other things"
+rows = ["entity"]
+columns = [
+  { key = "label", label = "Name", path = "label", editor = "label" },
+  { key = "type", label = "Type", path = "type", editor = "type" },
+  { key = "relations", label = "Relationships", path = "relations" },
+]

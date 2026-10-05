@@ -6,10 +6,10 @@ import {
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
-  emptySelection, type AgentRun, type IssueRepair, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type Status,
+  emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type Status,
 } from './types'
 
-export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues'
+export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues' | `view:${string}`
 export type DrawerTab = 'inspector' | 'rdf' | 'history'
 
 interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
@@ -43,6 +43,8 @@ interface State {
   autofix: AutofixState | null
   /** An earlier revision being browsed read-only; null = the current model. */
   viewing: string | null
+  /** Table views for the project (curated + workbench.toml); builtin ones extend a typed table. */
+  views: ViewInfo[]
 
   toggleSources: () => void
   loadStatus: () => Promise<void>
@@ -116,6 +118,7 @@ export const useStore = create<State>((set, get) => ({
   sourcesOpen: false,
   autofix: null,
   viewing: null,
+  views: [],
 
   // Remembered per project once toggled; until then the tray opens only if the project has sources.
   toggleSources: () => {
@@ -134,7 +137,7 @@ export const useStore = create<State>((set, get) => ({
   openProject: async (id) => {
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
           runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantNewRequest: false,
-          autofix: null, viewing: null })
+          autofix: null, viewing: null, views: [] })
     if (id) {
       localStorage.setItem('workbench.project', id)
       const stored = localStorage.getItem(`workbench.sourcesOpen.${id}`)
@@ -145,6 +148,7 @@ export const useStore = create<State>((set, get) => ({
         }
       }).catch(() => {})
       await get().reload()
+      void api.views(id).then((r) => { if (get().projectId === id) set({ views: r.views }) }).catch(() => {})
       // restore the conversation and the latest pending proposal, if any
       const [proposals, runs] = await Promise.all([api.proposals(id), api.runs(id).catch(() => [] as AgentRun[])])
       if (get().projectId !== id) return

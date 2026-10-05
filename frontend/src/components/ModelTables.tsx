@@ -4,6 +4,8 @@ import { useStore } from '../store'
 import type { ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow, SpaceRow } from '../types'
 import { DataTable } from './DataTable'
 import { TermPicker } from './TermPicker'
+import { Select, TextEditor } from './cells'
+import { useExtraColumns } from './viewColumns'
 
 const POINT_KINDS = [
   ['measurement', 'Measurement'], ['setpoint', 'Setpoint / command value'],
@@ -29,32 +31,11 @@ function useShared() {
   return { model, edit, issueCounts, highlighted, brick, hasProcess }
 }
 
-function TextEditor({ initial, onCommit, onCancel }: { initial: string; onCommit: (v: string) => void; onCancel: () => void }) {
-  const [v, setV] = useState(initial)
-  return (
-    <input className="cell-input" autoFocus value={v} onChange={(e) => setV(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => { if (e.key === 'Enter' && v.trim()) onCommit(v.trim()); if (e.key === 'Escape') onCancel() }}
-      onBlur={onCancel} />
-  )
-}
-
-function Select({ value, options, onCommit, onCancel }: {
-  value: string; options: readonly (readonly [string, string])[]; onCommit: (v: string) => void; onCancel: () => void
-}) {
-  return (
-    <select className="cell-input" autoFocus defaultValue={value} onClick={(e) => e.stopPropagation()}
-      onChange={(e) => onCommit(e.target.value)} onBlur={onCancel}
-      onKeyDown={(e) => e.key === 'Escape' && onCancel()}>
-      {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-    </select>
-  )
-}
-
 // ------------------------------------------------------------------ points
 
 export function PointsTable() {
   const { model, edit, issueCounts, highlighted, brick } = useShared()
+  const extra = useExtraColumns<PointRow>('points')
   const equipmentOptions = useMemo(
     () => [['', '— unassigned —'] as const, ...model.view.equipment.map((e) => [e.id, e.label] as const)], [model])
   const columns: Column<PointRow>[] = useMemo(() => brick ? [
@@ -88,8 +69,8 @@ export function PointsTable() {
       default: return null
     }
   }
-  return <DataTable rows={model.view.points} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
-    editor={editor} empty="No points yet. Upload a point list in Sources, import an existing model, or add one with + Point."
+  return <DataTable rows={model.view.points} columns={[...columns, ...extra.columns]} issueCounts={issueCounts} highlighted={highlighted}
+    editor={(r, c, done) => extra.editor?.(r, c, done) ?? editor(r, c, done)} empty="No points yet. Upload a point list in Sources, import an existing model, or add one with + Point."
     toolbar={<AddPoint brick={brick} />} />
 }
 
@@ -108,6 +89,7 @@ function AddPoint({ brick }: { brick: boolean }) {
 
 export function EquipmentTable() {
   const { model, edit, issueCounts, highlighted, hasProcess } = useShared()
+  const extra = useExtraColumns<EquipmentRow>('equipment')
   const columns: Column<EquipmentRow>[] = useMemo(() => [
     { key: 'label', header: 'Equipment', field: 'label', value: (r) => r.label },
     { key: 'type', header: 'Type', field: 'type', value: (r) => r.type?.label ?? '' },
@@ -125,8 +107,8 @@ export function EquipmentTable() {
     if (c.field === 'location') return <Select value={r.location?.id ?? ''} options={spaceOptions} onCommit={(v) => commit(v || null)} onCancel={done} />
     return null
   }
-  return <DataTable rows={model.view.equipment} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
-    editor={editor} empty="No equipment yet. Import a model, add one with + Equipment, or ask the assistant." toolbar={<AddEquipment />} />
+  return <DataTable rows={model.view.equipment} columns={[...columns, ...extra.columns]} issueCounts={issueCounts} highlighted={highlighted}
+    editor={(r, c, done) => extra.editor?.(r, c, done) ?? editor(r, c, done)} empty="No equipment yet. Import a model, add one with + Equipment, or ask the assistant." toolbar={<AddEquipment />} />
 }
 
 function AddEquipment() {
@@ -142,6 +124,7 @@ function AddEquipment() {
 
 export function ConnectionsTable() {
   const { model, edit, issueCounts, highlighted, brick } = useShared()
+  const extra = useExtraColumns<ConnectionRow>('connections')
   const eqOptions = useMemo(() => model.view.equipment.map((e) => [e.id, e.label] as const), [model])
   const columns: Column<ConnectionRow>[] = useMemo(() => [
     { key: 'label', header: 'Connection', field: 'label', value: (r) => r.label, width: 110 },
@@ -169,8 +152,8 @@ export function ConnectionsTable() {
     if (c.field === 'type') return <TermPicker kind="connection" allowClear={false} onPick={commit} onCancel={done} />
     return null
   }
-  return <DataTable rows={model.view.connections} columns={columns} relationship issueCounts={issueCounts}
-    highlighted={highlighted} editor={editor} empty={brick ? 'No feeds relationships yet.' : 'No connections yet.'}
+  return <DataTable rows={model.view.connections} columns={[...columns, ...extra.columns]} relationship issueCounts={issueCounts}
+    highlighted={highlighted} editor={(r, c, done) => extra.editor?.(r, c, done) ?? editor(r, c, done)} empty={brick ? 'No feeds relationships yet.' : 'No connections yet.'}
     toolbar={<AddConnection brick={brick} />} />
 }
 
@@ -205,6 +188,7 @@ const NONE = ['', '— none —'] as const
 
 export function ConnectionPointsTable() {
   const { model, edit, issueCounts, highlighted } = useShared()
+  const extra = useExtraColumns<ConnectionPointRow>('connection_points')
   const eqOptions = useMemo(() => model.view.equipment.map((e) => [e.id, e.label] as const), [model])
   const columns: Column<ConnectionPointRow>[] = useMemo(() => [
     { key: 'label', header: 'Connection point', field: 'label', value: (r) => r.label, width: 240 },
@@ -239,8 +223,8 @@ export function ConnectionPointsTable() {
       default: return null
     }
   }
-  return <DataTable rows={model.view.connection_points} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
-    editor={editor} toolbar={<AddConnectionPoint />}
+  return <DataTable rows={model.view.connection_points} columns={[...columns, ...extra.columns]} issueCounts={issueCounts} highlighted={highlighted}
+    editor={(r, c, done) => extra.editor?.(r, c, done) ?? editor(r, c, done)} toolbar={<AddConnectionPoint />}
     empty="No connection points yet. Each connection adds an outlet and an inlet; add others with + Connection point." />
 }
 
@@ -269,6 +253,7 @@ function AddConnectionPoint() {
 
 export function SpacesTable() {
   const { model, edit, issueCounts, highlighted } = useShared()
+  const extra = useExtraColumns<SpaceRow>('spaces')
   const columns: Column<SpaceRow>[] = useMemo(() => [
     { key: 'label', header: 'Space', field: 'label', value: (r) => r.label },
     { key: 'type', header: 'Type', field: 'type', value: (r) => r.type?.label ?? '' },
@@ -285,8 +270,8 @@ export function SpacesTable() {
     }
     return null
   }
-  return <DataTable rows={model.view.spaces} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
-    editor={editor} toolbar={<AddSpace />}
+  return <DataTable rows={model.view.spaces} columns={[...columns, ...extra.columns]} issueCounts={issueCounts} highlighted={highlighted}
+    editor={(r, c, done) => extra.editor?.(r, c, done) ?? editor(r, c, done)} toolbar={<AddSpace />}
     empty="No spaces yet. Add buildings, floors and rooms with + Space, then set each equipment's Location." />
 }
 

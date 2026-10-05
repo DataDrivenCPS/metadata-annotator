@@ -21,16 +21,15 @@ from .agent.correction import describe_selection
 from .agent.guidance import SkillGuidance
 from .config import Settings, load_settings
 from .events import EventBus
+from . import views as views_mod
 from .llm import LLMError, make_client
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
 from .projection import POINT_KIND_LABELS, entity_iri, owned_hint, sensors_of
-
-VALUE_KINDS = {"enumeration", "medium", "role", "substance", "process"}
 from .runs import ProviderUnavailable, RunManager
 from .schemas import CsvImportConfig, SelectionScope
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
-from .vocabulary import BRICK, QUDT, S223, Vocabulary, VocabularyRegistry
+from .vocabulary import BRICK, QUDT, S223, VALUE_KINDS, Vocabulary, VocabularyRegistry
 
 log = logging.getLogger(__name__)
 
@@ -369,6 +368,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current = [asdict(r) for r in p.view(rid).relationships
                    if r.subject.id == eid or (r.object is not None and r.object.id == eid)]
         return {"allowed": allowed, "relationships": current}
+
+    # ------------------------------------------------------------- views
+
+    def project_views(p: Project):
+        specs, errors = views_mod.load_specs(settings.views)
+        info = p.info()
+        return [s for s in specs if s.applies(p.vocab.family, info.get("profile", ""))], errors
+
+    @app.get("/api/projects/{pid}/views")
+    def list_views(pid: str):
+        """Table views for this project: curated ones and workbench.toml's, with spec problems."""
+        p = project(pid)
+        specs, errors = project_views(p)
+        return {"views": [{"id": s.id, "label": s.label, "builtin": s.builtin,
+                           "errors": views_mod.check_spec(p.vocab, s)} for s in specs],
+                "errors": errors}
+
+    @app.get("/api/projects/{pid}/views/{vid}")
+    def get_view(pid: str, vid: str, revision: str | None = None):
+        p = project(pid)
+        rid = rev_or_head(p, revision)
+        spec = next((s for s in project_views(p)[0] if s.id == vid), None)
+        if spec is None:
+            raise HTTPException(404, f"No view {vid}")
+        return views_mod.evaluate(p.graph(rid), p.vocab, p.view(rid), spec)
 
     # ------------------------------------------------------------ sources
 

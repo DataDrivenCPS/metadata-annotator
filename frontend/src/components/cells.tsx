@@ -53,3 +53,27 @@ export function RelationCellEditor({ row, column, items, done }: {
     </span>
   )
 }
+
+/** Spaces next to this one (REC: sharing a wall): × removes, the picker adds. */
+export function AdjacencyCellEditor({ row, column, items, done }: {
+  row: { id: string }; column: ViewColumn; items: ViewCellItem[]; done: () => void
+}) {
+  const edit = useStore((s) => s.edit)
+  const have = new Set(items.map((i) => i.id))
+  const options = (column.candidates ?? []).filter((c) => c.id !== row.id && !have.has(c.id))
+  return (
+    <span className="relation-cell" onClick={(e) => e.stopPropagation()}>
+      {items.map((i) => <span key={i.id ?? i.label} className="chip">{i.label}
+        <button className="link" title="Not adjacent"
+          onMouseDown={(e) => { e.preventDefault(); done(); void edit([{ op: 'unmake_adjacent', space: row.id, other: i.id }]) }}>×</button></span>)}
+      <select autoFocus defaultValue="" onBlur={done} onKeyDown={(e) => e.key === 'Escape' && done()}
+        onChange={(e) => {
+          const c = options[Number(e.target.value)]
+          if (c) { done(); void edit([{ op: 'make_adjacent', space: row.id, other: c.id }]) }
+        }}>
+        <option value="" disabled>{options.length ? 'add adjacent space…' : 'no other spaces'}</option>
+        {options.map((c, i) => <option key={i} value={i}>{c.label}</option>)}
+      </select>
+    </span>
+  )
+}

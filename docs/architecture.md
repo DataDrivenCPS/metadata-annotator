@@ -121,6 +121,18 @@ ontologies define:
   a refused object class comes with a vocabulary-derived bridge ("Office 1 reaches a
   s223:DomainSpace through s223:encloses").
 
+### Room adjacency (Brick / RealEstateCore)
+
+REC has no room-to-room relation: two spaces are adjacent when both are
+`rec:adjacentElement` of one building element (a `rec:Wall`, `rec:Slab`…). `make_adjacent
+{space, other}` reuses an element they already share or creates a `rec:Wall` ("Wall: A | B");
+`unmake_adjacent` removes both links and deletes a wall nothing else uses, and refuses to
+split a wall shared with a third room. The wall id is chosen when the operation is resolved
+(and a resolved operation resolves to itself), so previews and applied changes match.
+`rec:adjacentElement` from a space is owned by these operations. Spaces carry `adjacent`;
+the Spaces table shows it through the curated `space_adjacency` view, the graph draws
+dotted "adjacent" edges, and 223P projects refuse it (no REC).
+
 ### Table views (`views.py`, `views.toml`)
 
 Tables beyond the typed ones are declarative views: rows are instances of ontology classes

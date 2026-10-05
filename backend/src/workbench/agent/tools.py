@@ -52,8 +52,9 @@ def entity_line(vocab: Vocabulary, row) -> str:
         return (f"{row.id} | {row.subject.id} (\"{row.subject.label}\") {curie(vocab, row.relation.iri)} {target}")
     if isinstance(row, SpaceRow):
         parent = f" | part of: {row.part_of.id} (\"{row.part_of.label}\")" if row.part_of else ""
+        adjacent = f" | adjacent: {', '.join(a.id for a in row.adjacent)}" if row.adjacent else ""
         return (f"{row.id} | space \"{row.label}\" | type: {term_ref(vocab, row.type)}{parent} | "
-                f"equipment in it: {row.equipment_count}")
+                f"equipment in it: {row.equipment_count}{adjacent}")
     if isinstance(row, PointRow):
         eq = f"{row.equipment.id} (\"{row.equipment.label}\")" if row.equipment else "UNASSIGNED"
         extra = ""

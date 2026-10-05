@@ -38,7 +38,7 @@ class ColumnSpec(BaseModel):
     key: str
     label: str
     path: str
-    editor: Literal["label", "type", "relation", "none"] = "none"
+    editor: Literal["label", "type", "relation", "adjacency", "none"] = "none"
 
 
 class ViewSpec(BaseModel):
@@ -171,7 +171,10 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
                 continue
             parsed[col.key] = path
             step = single_step(path)
-            if col.editor == "relation" and step is not None:
+            if col.editor == "adjacency" and vocab.family == "brick" and spec.builtin == "spaces":
+                meta.update(editor="adjacency", candidates=[{"id": s.id, "label": s.label, "kind": "space"}
+                                                             for s in view.spaces])
+            elif col.editor == "relation" and step is not None:
                 pred, inverse = step
                 kinds = {r.kind for r in rows}  # type: ignore[attr-defined]
                 owned = any(owned_hint(vocab, str(pred), k) for k in kinds) if not inverse else False

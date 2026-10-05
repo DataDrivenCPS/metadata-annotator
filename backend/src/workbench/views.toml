@@ -51,3 +51,13 @@ columns = [
   { key = "type", label = "Type", path = "type", editor = "type" },
   { key = "relations", label = "Relationships", path = "relations" },
 ]
+
+# Typed-table extension: spaces next to each other, REC style (both rooms rec:adjacentElement one
+# shared rec:Wall; edited with make_adjacent / unmake_adjacent).
+[views.space_adjacency]
+label = "Adjacency"
+families = ["brick"]
+builtin = "spaces"
+columns = [
+  { key = "adjacent", label = "Adjacent spaces", path = "rec:adjacentElement/^rec:adjacentElement", editor = "adjacency" },
+]

@@ -12,6 +12,7 @@ export interface EquipmentRow {
 export interface SpaceRow {
   kind: 'space'; id: string; iri: string; label: string
   type: TermRef | null; part_of: EntityRef | null; equipment_count: number; locked: string[]; evidence: string[]
+  adjacent?: EntityRef[]  // Brick/REC: spaces sharing a wall or slab
 }
 export interface PointRow {
   kind: 'point'; id: string; iri: string; label: string
@@ -215,7 +216,7 @@ export interface ViewCellItem {
   relationship?: string  // the rl- id behind the value, for removing it
 }
 export interface ViewColumn {
-  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'none'
+  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'adjacency' | 'none'
   relation?: string; inverse?: boolean; relation_label?: string; relation_curie?: string
   candidates?: ViewCellItem[]
 }

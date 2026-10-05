@@ -106,10 +106,14 @@ How the model represents things (from the BuildingMOTIF skill's Brick guidance):
   brick:Floor...) are deprecated: use the rec: class. Spaces nest with part_of (a room part_of
   a level part_of a building). Equipment says which space it is in with location; points
   have no location (they belong to equipment).
+- Rooms next to each other: make_adjacent {space, other} / unmake_adjacent {space, other}.
+  RealEstateCore states adjacency as both rooms rec:adjacentElement one shared building
+  element (a rec:Wall is created when they have none).
 
 Operations (JSON objects with "op"):
 - create_equipment {label, type, contained_in?, location?}; update_equipment {id, fields...}; delete_equipment {id}
 - create_space {label, type, part_of?}; update_space {id, label?, type?, part_of?}; delete_space {id}
+- make_adjacent {space, other}; unmake_adjacent {space, other}
 - create_point {label, point_type, unit?, equipment?}  (point_kind only if no specific type is known)
 - update_point {id, fields...}; delete_point {id}
 - create_connection {from_equipment, to_equipment, label?}
@@ -214,7 +218,8 @@ def operation_schema() -> dict:
                   ops_mod.CreateConnection, ops_mod.UpdateConnection, ops_mod.DeleteConnection,
                   ops_mod.CreateConnectionPoint, ops_mod.UpdateConnectionPoint, ops_mod.DeleteConnectionPoint,
                   ops_mod.CreateSpace, ops_mod.UpdateSpace, ops_mod.DeleteSpace,
-                  ops_mod.CreateEntity, ops_mod.UpdateEntity, ops_mod.DeleteEntity, ops_mod.Relate, ops_mod.Unrelate):
+                  ops_mod.CreateEntity, ops_mod.UpdateEntity, ops_mod.DeleteEntity, ops_mod.Relate, ops_mod.Unrelate,
+                  ops_mod.MakeAdjacent, ops_mod.UnmakeAdjacent):
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
         sch["properties"]["op"] = {"type": "string", "enum": [name]}
@@ -276,7 +281,7 @@ FIELD_PHRASES = {
     "direction": "directions", "paired_with": "pairings", "maps_to": "container mappings",
     "from_point": "upstream connection points", "to_point": "downstream connection points",
     "part_of": "enclosing spaces", "location": "locations",
-    "subject": "subjects", "relation": "relations", "object": "related objects",
+    "subject": "subjects", "relation": "relations", "object": "related objects", "adjacent": "adjacent spaces",
 }
 
 

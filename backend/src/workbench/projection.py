@@ -101,6 +101,7 @@ class SpaceRow:
     equipment_count: int
     locked: list[str]
     evidence: list[str]
+    adjacent: list[EntityRef] = field(default_factory=list)  # Brick/REC: spaces sharing a wall or slab
     kind: str = "space"
 
 

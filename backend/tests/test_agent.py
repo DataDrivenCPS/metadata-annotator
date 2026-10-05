@@ -79,6 +79,22 @@ def test_questions_without_operations(sample_project, guidance):
     assert out.proposal is None and out.questions
 
 
+def test_repeated_tool_calls_are_not_rerun(sample_project, guidance):
+    p = sample_project
+    search = {"thought": "find it", "action": "search_terms", "args": {"query": "AHU", "kind": "equipment"}}
+    llm = ScriptedLLM([search, search, {"action": "propose", "explanation": "Nothing to change.", "operations": []}])
+    out, events = run(p, llm, guidance, SelectionScope(), "add an AHU")
+    assert [e[0] for e in events].count("tool") == 1 and any(e[0] == "repeat" for e in events)
+    first, second = llm.seen[1][-1]["content"], llm.seen[2][-1]["content"]
+    assert "s223:AirHandlingUnit" in first and "more replies" in first
+    assert "already called search_terms" in second
+
+
+def test_vocabulary_search_matches_initials(vocab):
+    assert vocab.search("AHU", ["equipment"], 3)[0].label == "Air handling unit"
+    assert [t for t in vocab.search("equipment", ["equipment"], 5) if t.label == "Equipment"]
+
+
 def test_repair_budget_is_bounded(sample_project, guidance):
     p = sample_project
     bad = {"action": "propose", "explanation": "x", "operations": [{"op": "update_point", "id": "pt-nope", "label": "x"}]}

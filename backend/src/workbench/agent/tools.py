@@ -29,7 +29,8 @@ def curie(vocab: Vocabulary, iri: str | None) -> str:
     for p, ns in prefixes:
         if iri.startswith(ns):
             return p + iri[len(ns):]
-    return f"<{iri}>"
+    short = vocab.curie(iri)  # other prefixes the ontologies declare, e.g. g36:
+    return short if short != iri else f"<{iri}>"
 
 
 def term_ref(vocab: Vocabulary, ref) -> str:

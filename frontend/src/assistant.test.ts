@@ -69,7 +69,9 @@ describe('run steps', () => {
 
   it('describes tool calls in plain words', () => {
     expect(describeStep(step('tool', "search_terms(query='pressure', kind='quantity_kind')")))
-      .toBe('Looked up vocabulary terms for “pressure”')
+      .toBe('Looked up vocabulary terms for “pressure” (quantity kind)')
+    expect(describeStep(step('tool', "search_terms(kind='equipment', query='Air Handling Unit')")))
+      .toBe('Looked up vocabulary terms for “Air Handling Unit” (equipment)')
     expect(describeStep(step('tool', "describe_class(term='watr:Pump')"))).toBe('Read the definition of “watr:Pump”')
     expect(describeStep(step('tool', 'find_entities(query="it\'s RO-1")'))).toBe('Searched the model for “it\'s RO-1”')
     expect(describeStep(step('tool', 'mystery_tool(x=1)'))).toBe('mystery_tool(x=1)')

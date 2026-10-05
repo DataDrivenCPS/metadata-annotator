@@ -110,6 +110,7 @@ class Vocabulary:
         self.by_kind: dict[str, list[str]] = defaultdict(list)
         self.ancestors: dict[str, list[str]] = {}
         self.qk_broader: dict[str, list[str]] = {}
+        self._search_index: dict[str, tuple[set[str], str]] = {}  # iri -> (search words, "label name")
         self.root_ontology: str = ""
         self.missing_imports: list[str] = []
         self._validator = None
@@ -373,6 +374,7 @@ class Vocabulary:
         self.by_kind = defaultdict(list)
         for iri, t in sorted(self.terms.items(), key=lambda kv: kv[1].label.lower()):
             self.by_kind[t.kind].append(iri)
+        self._search_index = {iri: _search_tokens(iri, t) for iri, t in self.terms.items()}
 
     # ------------------------------------------------------------------ lookups
 
@@ -427,8 +429,7 @@ class Vocabulary:
             if (t.deprecated and not include_deprecated) or t.abstract or (exact and t is exact[0]):
                 continue
             name = local_name(iri)
-            tokens = set(_tokens(t.label)) | set(_tokens(name)) | ({t.symbol.lower()} if t.symbol else set())
-            label_text = f"{t.label} {name}".lower()
+            tokens, label_text = self._search_index.get(iri) or _search_tokens(iri, t)
             score = 0.0
             matched = 0
             for w in words:
@@ -595,6 +596,16 @@ class Vocabulary:
         return {"sound": bool(outcome.is_sound), "progress": bool(outcome.is_progress),
                 "fixed": [violation(v) for v in outcome.fixed],
                 "introduced": [violation(v) for v in outcome.introduced]}
+
+
+def _search_tokens(iri: str, t: Term) -> tuple[set[str], str]:
+    """The words a search query matches against, and the text it falls back to."""
+    name = local_name(iri)
+    label_tokens = _tokens(t.label)
+    tokens = set(label_tokens) | set(_tokens(name)) | ({t.symbol.lower()} if t.symbol else set())
+    if len(label_tokens) > 2:  # initials, so "AHU" finds "Air handling unit"
+        tokens.add("".join(w[0] for w in label_tokens))
+    return tokens, f"{t.label} {name}".lower()
 
 
 def _tokens(text: str) -> list[str]:

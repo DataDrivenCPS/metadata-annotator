@@ -106,9 +106,15 @@ export function describeStep(event: ProgressEvent): string {
   const call = event.stage === 'tool' ? /^(\w+)\((.*)\)$/s.exec(event.message) : null
   const describe = call && TOOL_STEPS[call[1]]
   if (!call || !describe) return event.message
-  const first = /^\w+=(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|([^,]*))/.exec(call[2])
-  const arg = first ? (first[1] ?? first[2] ?? first[3]).trim() : ''
-  return describe(arg ? `“${arg}”` : 'a term').replace(/ “”$/, '')
+  const args = new Map<string, string>()
+  for (const m of call[2].matchAll(/(\w+)=(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|([^,]*))/g)) {
+    args.set(m[1], (m[2] ?? m[3] ?? m[4]).trim())
+  }
+  // Name the step after what was looked up, not a filter such as kind='equipment'.
+  const key = ['query', 'term', 'quantity_kind', 'topic', 'observation_id'].find((k) => args.get(k))
+  const arg = key ? args.get(key)! : (args.values().next().value ?? '')
+  const kind = args.get('kind') && key === 'query' ? ` (${args.get('kind')!.replaceAll('_', ' ')})` : ''
+  return describe(arg ? `“${arg}”${kind}` : 'a term').replace(/ “”$/, '')
 }
 
 /** Elapsed time as m:ss. */

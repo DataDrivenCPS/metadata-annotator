@@ -89,10 +89,16 @@ Source abbreviations are not always standard: check with search_terms before cho
 
 COMMON_RULES = """
 In update operations include only the fields that change; set a field to null to clear it.
-Refer to entities by their ids (eq-..., pt-..., cx-...). Give new entities an id like
-"new:x1" if later operations in the same proposal refer to them.
+Refer to entities by their ids (eq-..., pt-..., cx-...). Give a new entity an id like
+"new:x1" when a later operation in the same proposal refers to it, and use that id (not its
+label) in the later operation, e.g.
+  [{{"op": "create_equipment", "id": "new:x1", "label": "Unit 1", "type": "{example_type}"}},
+   {{"op": "create_equipment", "label": "Part A", "type": "{example_part}", "contained_in": "new:x1"}}]
 Terms (types, units, ...) must be real vocabulary terms. If you are not sure a term exists
 or which one fits, use search_terms first. Never invent a term.
+Search with the words a term would be named by ("air handling unit", not "AHU" or
+"equipment"); search each thing once, and if a search finds nothing, try other words
+instead of repeating it. Once you have the terms you need, propose.
 
 Rules:
 - Make the change the person asked for, scoped to their selection. You may read anything,
@@ -103,16 +109,18 @@ Rules:
 - Keep the explanation short and in plain language (no RDF jargon).
 - Review issues have ids in [brackets]. When an issue does not reflect a real problem (for
   example the validator flags behaviour that is expected, and the person confirms it or the
-  evidence shows it), propose dismissing it with dismiss_issues: [{"id": "...", "reason": "..."}].
+  evidence shows it), propose dismissing it with dismiss_issues: [{{"id": "...", "reason": "..."}}].
   Dismissing does not change the model; the person applies it like any proposal. Never dismiss
   an issue you could fix with operations, and only dismiss issues listed with an id. Describe
   issues in words in the explanation; the person does not see the ids.
   When replying to a proposal, withdraw_dismissals: ["<id>"] removes one it would dismiss.
 
-Each reply is one JSON object: either a tool call
-  {"action": "<tool>", "args": {...}, "thought": "..."}
+Each reply is one JSON object. Start it with "thought": one or two sentences on what you
+already know and why the next step is needed. Then either a tool call
+  {{"thought": "...", "action": "<tool>", "args": {{...}}}}
 or your final answer
-  {"action": "propose", "explanation": "...", "operations": [...], "dismiss_issues": [...], "questions": [...], "thought": "..."}
+  {{"thought": "...", "action": "propose", "explanation": "...", "operations": [...], "dismiss_issues": [...], "questions": [...]}}
+You have at most {max_steps} replies; each tool result says how many remain.
 
 Tools:
 """
@@ -132,7 +140,10 @@ def system_prompt(vocab) -> str:
             examples="watr:Tank, s223:Pipe, unit:PSI, quantitykind:Pressure" if watr
             else "s223:Pump, s223:Pipe, unit:PSI, quantitykind:Pressure",
         )
-    return domain + COMMON_RULES + AgentTools.catalog(vocab.family)
+    example_type, example_part = (("brick:AHU", "brick:Supply_Fan") if vocab.family == "brick"
+                                  else ("s223:AirHandlingUnit", "s223:Fan"))
+    rules = COMMON_RULES.format(example_type=example_type, example_part=example_part, max_steps=MAX_STEPS)
+    return domain + rules + AgentTools.catalog(vocab.family)
 
 
 def _clean_schema(schema: dict) -> dict:
@@ -207,7 +218,8 @@ def step_schema() -> dict:
             "withdraw_dismissals": {"type": "array", "items": {"type": "string"}},
             "questions": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["action"],
+        # Required and first, so constrained decoding makes the model reason before it acts.
+        "required": ["thought", "action"],
     }
 
 
@@ -503,6 +515,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     messages: list[dict[str, Any]] = [{"role": "user", "content": context}]
     outcome = CorrectionOutcome(proposal=None)
     repairs = 0
+    calls: dict[tuple[str, str], int] = {}  # tool call -> step it was first made
     # A build starts unconnected, so its gate findings are expected; don't second-guess it.
     gate_checked = build_from_sources or (prior_proposal is not None and prior_proposal.kind == "build")
     # A reply is only questioned about what it adds to the pending proposal.
@@ -529,12 +542,29 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
 
         if action in TOOL_ACTIONS and not last_call:
             args = data.get("args") or {}
+            left = MAX_STEPS - step - 1
+            budget = (f"\n({left} more replies; the last one must propose.)" if left > 1
+                      else "\n(Your next reply must propose.)")
+            key = (action, json.dumps(args, sort_keys=True))
+            if key in calls:
+                progress("repeat", f"Repeated {action}({_fmt_args(args)}); reminded the model", {})
+                messages.append({"role": "user", "content":
+                                 f"You already called {action} with these arguments at step {calls[key]}; its"
+                                 " result is above and will not change. Use it, try different arguments, or"
+                                 " propose." + budget})
+                continue
+            calls[key] = step + 1
             result = _call_tool(tools, action, args)
             progress("tool", f"{action}({_fmt_args(args)})", {"result_preview": str(result)[:300]})
             if action == "read_guidance":
                 evidence.append(EvidenceRef(kind="guidance", ref=str(args.get("topic")),
                                             summary=f"BuildingMOTIF skill {guidance.version}: {args.get('topic')}"))
-            messages.append({"role": "user", "content": f"Result of {action}:\n{_fmt_result(result)}"})
+            text = _fmt_result(result)
+            if action == "search_terms" and not result:
+                text = (f"No terms match {args.get('query')!r}" + (f" of kind {args['kind']}" if args.get("kind") else "")
+                        + ". Try the words the term would be named by (spell out abbreviations), a broader"
+                          " word, or no kind.")
+            messages.append({"role": "user", "content": f"Result of {action}:\n{text}{budget}"})
             continue
 
         if action != "propose":

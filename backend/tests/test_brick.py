@@ -113,3 +113,15 @@ def test_s223_rejects_brick_fields(sample_project):
 def test_validation_runs(brick_project):
     p = brick_project
     assert p.revision(p.head()).validation is not None
+
+
+def test_updating_a_feed_removed_with_its_equipment_is_an_error_not_a_crash(brick_project):
+    p = brick_project
+    v = p.view(p.head())
+    cx = v.connections[0]
+    eq = next(e for e in v.equipment if e.id == cx.from_equipment.id)
+    with pytest.raises(OperationError, match="no longer exists"):
+        p.build_candidate(p.head(), ops({"op": "delete_equipment", "id": eq.id},
+                                        {"op": "update_connection", "id": cx.id, "label": "x"}))
+    # deleting it again is a no-op
+    p.build_candidate(p.head(), ops({"op": "delete_equipment", "id": eq.id}, {"op": "delete_connection", "id": cx.id}))

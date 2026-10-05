@@ -340,7 +340,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
         if op.op.startswith("create_"):
             raw = data.get("id")
             if raw and not raw.startswith(PLACEHOLDER):
-                if pg.iri(raw) is not None or raw in created:
+                if pg.iri(raw) is not None or raw in created or entity_kind(pg, vocab, raw) is not None:
                     problems.append(f"{where}: id {raw!r} already exists")
                     continue
                 eid = raw
@@ -406,8 +406,16 @@ class _Compiler:
 
     def node(self, eid: str) -> URIRef:
         n = self.pg.iri(eid)
-        assert n is not None, eid
+        if n is None:
+            raise OperationError([f"{eid} no longer exists when this operation runs "
+                                  "(an earlier operation in the proposal removed it)"])
         return n
+
+    def gone(self, eid: str) -> bool:
+        """Already removed by an earlier operation's cascade (deleting equipment takes its
+        connections and connection points); deleting it again is then a no-op."""
+        n = entity_iri(self.pg, eid)
+        return n is None or ((n, None, None) not in self.g and (None, None, n) not in self.g)
 
     def set_one(self, s, p, value) -> None:
         self.g.remove((s, p, None))
@@ -462,6 +470,10 @@ class _Compiler:
                 if cid and (cx, None, None) in self.g:
                     self.delete_connection(DeleteConnection(id=cid))
             self.remove_node(port)
+            pid = self.pg.id_of(port)
+            if pid:  # a connection point with an id: drop its annotations too
+                self.pg.unregister(pid)
+                self.r.touch(pid, "deleted")
         # Points stay, unassigned.
         orphaned = 0
         for p in list(self.g.objects(n, S223.hasProperty)) + list(self.g.objects(n, S223.actuatedByProperty)):
@@ -614,6 +626,7 @@ class _Compiler:
         g.add((n, RDF.type, URIRef(op.type) if op.type else S223.Pipe))
         a_port = self.port(op.from_point) if op.from_point else None
         b_port = self.port(op.to_point) if op.to_point else None
+        self._check_ends(a_port, b_port, op.label or "new connection")
         a = self._end_owner(a_port, op.from_equipment, "from")
         b = self._end_owner(b_port, op.to_equipment, "to")
         medium = op.medium or next((str(m) for p in (a_port, b_port) if p is not None
@@ -627,6 +640,15 @@ class _Compiler:
         g.add((n, S223.cnx, a_port if a_port is not None else self._port(cid, "out", a, medium)))  # type: ignore[arg-type]
         g.add((n, S223.cnx, b_port if b_port is not None else self._port(cid, "in", b, medium)))  # type: ignore[arg-type]
         self.r.touch(cid, "created", *op.provided())  # type: ignore[arg-type]
+
+    def _check_ends(self, out_port, in_port, name: str) -> None:
+        """The upstream end is an outlet (or bidirectional), the downstream end an inlet, and they differ."""
+        if out_port is not None and out_port == in_port:
+            self.problems.append(f"{name}: from_point and to_point are the same connection point")
+        if out_port is not None and port_direction(self.pg, out_port) == "inlet":
+            self.problems.append(f"{name}: from_point {self._port_name(out_port)} is an inlet; the upstream end must be an outlet")
+        if in_port is not None and port_direction(self.pg, in_port) == "outlet":
+            self.problems.append(f"{name}: to_point {self._port_name(in_port)} is an outlet; the downstream end must be an inlet")
 
     def _end_owner(self, port, equipment: str | None, end: str):
         """The equipment at one end: the given point's owner, which must agree with the equipment if both are given."""
@@ -660,6 +682,8 @@ class _Compiler:
                 old = ends[idx][0] if len(ends) > idx else None
             if pname in fields and getattr(op, pname):
                 new = self.port(getattr(op, pname))
+                other = next((p for p, _, _ in connection_ends(self.pg, n)[0] if p != old), None)
+                self._check_ends(*((new, other) if direction == "out" else (other, new)), self._label(n))
                 if ename in fields and getattr(op, ename):
                     self._end_owner(new, getattr(op, ename), pname.split("_")[0])
                 if old is not None and old != new:
@@ -681,6 +705,8 @@ class _Compiler:
         self.r.touch(op.id, *fields)
 
     def delete_connection(self, op: DeleteConnection) -> None:
+        if self.gone(op.id):
+            return
         n = self.node(op.id)
         ends, _ = connection_ends(self.pg, n)
         for port, _, _ in ends:
@@ -770,6 +796,8 @@ class _Compiler:
         self.r.touch(op.id, *fields)
 
     def delete_connection_point(self, op: DeleteConnectionPoint) -> None:
+        if self.gone(op.id):
+            return
         n = self.port(op.id)
         for cx in port_connections(self.pg, n):
             cid = self.pg.id_of(cx)
@@ -816,6 +844,28 @@ class _Compiler:
                 self.problems.append(f"{name} is already joined by another connection")
 
 
+def containment_cycles(pg: ProjectGraph, vocab: Vocabulary, equipment_ids: list[str]) -> list[str]:
+    """Equipment that would end up inside itself (A in B, B in A, ...)."""
+    if vocab.family == "brick":
+        from .vocabulary import BRICK
+
+        pred = BRICK.hasPart
+    else:
+        pred = S223.contains
+    problems = []
+    for eid in equipment_ids:
+        start = pg.iri(eid)
+        seen, cur = set(), start
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            cur = next(iter(pg.model.subjects(pred, cur)), None)
+            if cur == start:
+                label = pg.model.value(start, RDFS.label) or eid
+                problems.append(f"{label} would end up inside itself (its containers form a loop)")
+                break
+    return problems
+
+
 def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = True) -> ApplyResult:
     """Apply resolved operations to ``pg`` in place. Use on a copy."""
     result = ApplyResult()
@@ -839,10 +889,13 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
             if t is not None and t.deprecated:
                 result.notes.append(f"{t.label} ({value}) is deprecated or superseded in the loaded vocabulary")
         getattr(comp, op.op)(op)
+    problems = list(getattr(comp, "problems", []))
     if isinstance(comp, _Compiler):
         comp.check_ports()
-        if comp.problems:
-            raise OperationError(comp.problems)
+        problems = comp.problems
+    problems += containment_cycles(pg, vocab, [eid for eid, f in result.changes.items() if "contained_in" in f])
+    if problems:
+        raise OperationError(problems)
     if lock:
         for eid, fields in result.changes.items():
             node = entity_iri(pg, eid)

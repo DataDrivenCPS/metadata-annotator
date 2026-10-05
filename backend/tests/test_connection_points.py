@@ -169,3 +169,60 @@ def test_a_port_named_later_in_the_proposal_survives_moving_its_connection(plant
     ))
     kept = plant.view(rev.id).rows()[coil_in.id]
     assert kept.maps_to is not None and kept.connection is None
+
+
+def test_deleting_what_an_earlier_delete_removed_is_a_no_op(plant):
+    base = plant.head()
+    v = plant.view(base)
+    boiler = by_label(v.equipment, "Boiler")
+    boiler_out = port(v, "Boiler", "outlet", "HX")
+    pipe = next(c for c in v.connections if c.from_equipment.label == "Boiler")
+    rev, _ = plant.edit(base, ops(
+        {"op": "delete_equipment", "id": boiler.id},  # takes its ports and pipes with it
+        {"op": "delete_connection_point", "id": boiler_out.id},
+        {"op": "delete_connection", "id": pipe.id},
+    ))
+    rows = plant.view(rev.id).rows()
+    assert boiler.id not in rows and boiler_out.id not in rows and pipe.id not in rows
+    hx_in = port(v, "HX", "inlet", "Coil")
+    with pytest.raises(OperationError, match="no longer exists"):
+        plant.build_candidate(base, ops(
+            {"op": "delete_equipment", "id": boiler.id},
+            {"op": "update_connection", "id": pipe.id, "label": "renamed"},
+        ))
+    assert hx_in.id in rows
+
+
+def test_connection_ends_must_run_outlet_to_inlet(plant):
+    v = plant.view(plant.head())
+    ahu, coil = by_label(v.equipment, "AHU"), by_label(v.equipment, "Coil")
+    with pytest.raises(OperationError) as exc:
+        plant.build_candidate(plant.head(), ops(
+            {"op": "create_connection_point", "id": "new:i", "equipment": ahu.id, "direction": "inlet", "medium": "s223:Fluid-Air"},
+            {"op": "create_connection_point", "id": "new:o", "equipment": coil.id, "direction": "outlet", "medium": "s223:Fluid-Air"},
+            {"op": "create_connection", "from_point": "new:i", "to_point": "new:o"},
+        ))
+    text = " ".join(exc.value.problems)
+    assert "upstream end must be an outlet" in text and "downstream end must be an inlet" in text
+
+
+def test_deleting_equipment_drops_its_connection_points_ids(plant):
+    v = plant.view(plant.head())
+    ahu = by_label(v.equipment, "AHU")
+    rev, _ = plant.edit(plant.head(), ops(
+        {"op": "create_connection_point", "id": "new:i", "equipment": ahu.id, "direction": "inlet", "medium": "s223:Fluid-Air"}))
+    cp_id = next(c.id for c in plant.view(rev.id).connection_points if c.equipment.id == ahu.id)
+    rev2, cand = plant.edit(rev.id, ops({"op": "delete_equipment", "id": ahu.id}))
+    assert plant.graph(rev2.id).iri(cp_id) is None
+    assert any(c.entity_id == cp_id and c.change == "deleted" for c in cand.changes)
+
+
+def test_containment_loops_and_id_collisions_are_rejected(plant):
+    v = plant.view(plant.head())
+    ahu, coil = by_label(v.equipment, "AHU"), by_label(v.equipment, "Coil")
+    with pytest.raises(OperationError, match="inside itself"):
+        plant.build_candidate(plant.head(), ops({"op": "update_equipment", "id": ahu.id, "contained_in": coil.id}))
+    taken = port(v, "HX", "inlet", "Boiler").id  # a derived id: not in the registry
+    with pytest.raises(OperationError, match="already exists"):
+        plant.build_candidate(plant.head(), ops({"op": "create_connection_point", "id": taken, "equipment": ahu.id,
+                                                 "direction": "inlet", "medium": "s223:Fluid-Air"}))

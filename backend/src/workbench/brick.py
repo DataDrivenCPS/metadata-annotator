@@ -200,7 +200,11 @@ class BrickCompiler:
 
     def node(self, eid: str) -> URIRef:
         n = self.pg.iri(eid)
-        assert n is not None, eid
+        if n is None:
+            from .operations import OperationError
+
+            raise OperationError([f"{eid} no longer exists when this operation runs "
+                                  "(an earlier operation in the proposal removed it)"])
         return n
 
     def _label(self, n) -> str:
@@ -320,7 +324,11 @@ class BrickCompiler:
 
     def update_connection(self, op) -> None:
         e = edge(self.pg, op.id)
-        assert e is not None
+        if e is None:  # its equipment was deleted earlier in the proposal
+            from .operations import OperationError
+
+            raise OperationError([f"{op.id} no longer exists when this operation runs "
+                                  "(an earlier operation in the proposal removed it)"])
         s, p, o = e
         fields = op.provided()
         ns = self.node(op.from_equipment) if "from_equipment" in fields and op.from_equipment else s

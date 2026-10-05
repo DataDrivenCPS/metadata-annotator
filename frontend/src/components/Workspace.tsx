@@ -5,7 +5,7 @@ import { AssistantPanel } from './AssistantPanel'
 import { Drawer } from './Drawer'
 import { GraphView } from './GraphView'
 import { IssuesView } from './IssuesView'
-import { ConnectionsTable, EquipmentTable, PointsTable } from './ModelTables'
+import { ConnectionPointsTable, ConnectionsTable, EquipmentTable, PointsTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
 
@@ -53,7 +53,8 @@ function FileMenu({ onImport, items }: { onImport: () => void; items: { label: s
 }
 
 const TABS: [Tab, string][] = [
-  ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'], ['graph', 'Graph'], ['issues', 'Issues'],
+  ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'],
+  ['connection_points', 'Connection points'], ['graph', 'Graph'], ['issues', 'Issues'],
 ]
 
 export function Workspace() {
@@ -101,7 +102,10 @@ export function Workspace() {
   const dismissedCount = model.issues.filter((i) => i.resolution_state === 'dismissed').length
   const problems = model.issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion').length
   const counts = { points: model.view.points.length, equipment: model.view.equipment.length,
-                   connections: model.view.connections.length, graph: model.view.equipment.length, issues: problems }
+                   connections: model.view.connections.length, connection_points: model.view.connection_points.length,
+                   graph: model.view.equipment.length, issues: problems }
+  // Brick has no connection points.
+  const tabs = model.info.family === 'brick' ? TABS.filter(([id]) => id !== 'connection_points') : TABS
 
   return (
     <div className="workspace">
@@ -150,7 +154,7 @@ export function Workspace() {
               aria-pressed={sourcesOpen} title={sourcesOpen ? 'Hide the sources tray' : 'Show the sources tray'}>
               {sourcesOpen ? '◂' : '▸'} Sources
             </button>
-            {TABS.map(([id, label]) => (
+            {tabs.map(([id, label]) => (
               <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}
                 title={id === 'issues' ? 'Validation findings plus source extraction and association issues' : undefined}>
                 {label} <span className={`count ${id === 'issues' && counts[id] ? 'warn' : ''}`}>{counts[id]}</span>
@@ -161,6 +165,7 @@ export function Workspace() {
             {tab === 'points' && <PointsTable />}
             {tab === 'equipment' && <EquipmentTable />}
             {tab === 'connections' && <ConnectionsTable />}
+            {tab === 'connection_points' && <ConnectionPointsTable />}
             {tab === 'graph' && <GraphView />}
             {tab === 'issues' && <IssuesView />}
           </div>

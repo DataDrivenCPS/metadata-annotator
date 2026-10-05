@@ -10,7 +10,8 @@ made when it is applied.
 Operations speak domain terms (equipment, point, connection, unit, ...) and compile per
 model family: Brick (brick.py) or 223P/WaTr (below). The 223P patterns follow the
 BuildingMOTIF skill's 223P/WaTr references:
-connection points with media joined by a Connection via ``s223:cnx``; a point is a
+connection points with media joined by a Connection via ``s223:cnx`` (paired with
+``s223:pairedConnectionPoint``, mapped to a container's with ``s223:mapsTo``); a point is a
 Property observed by a single-property Sensor at an observation location; actuatable
 properties are linked with ``s223:actuatedByProperty``.
 """
@@ -30,11 +31,19 @@ from .projection import (
     ACTUATABLE_KINDS,
     OBSERVABLE_KINDS,
     POINT_KINDS,
+    PORT_CLASSES,
     Classifier,
     connection_ends,
+    entity_iri,
     entity_kind,
     owner_of_port,
+    paired_port,
     point_owner,
+    port_connections,
+    port_direction,
+    port_id,
+    port_iri,
+    port_label,
     sensors_of,
 )
 from .vocabulary import QUDT, S223, Vocabulary
@@ -122,9 +131,11 @@ class CreateConnection(_Op):
     op: Literal["create_connection"] = "create_connection"
     id: str | None = None
     label: str | None = None
-    from_equipment: str
-    to_equipment: str
-    medium: str | None = Field(None, description="Medium IRI, e.g. s223:Fluid-Water (223P/WaTr: required)")
+    from_equipment: str | None = Field(None, description="Upstream equipment id (or give from_point)")
+    to_equipment: str | None = Field(None, description="Downstream equipment id (or give to_point)")
+    from_point: str | None = Field(None, description="Existing outlet connection point to join (223P/WaTr)")
+    to_point: str | None = Field(None, description="Existing inlet connection point to join (223P/WaTr)")
+    medium: str | None = Field(None, description="Medium IRI, e.g. s223:Fluid-Water (223P/WaTr: required unless a point gives it)")
     type: str | None = Field(None, description="Connection class IRI; default s223:Pipe")
     evidence: list[str] | None = None
 
@@ -135,6 +146,8 @@ class UpdateConnection(_Op):
     label: str | None = None
     from_equipment: str | None = None
     to_equipment: str | None = None
+    from_point: str | None = None
+    to_point: str | None = None
     medium: str | None = None
     type: str | None = None
 
@@ -144,11 +157,43 @@ class DeleteConnection(_Op):
     id: str
 
 
+Direction = Literal["inlet", "outlet", "bidirectional"]
+
+
+class CreateConnectionPoint(_Op):
+    op: Literal["create_connection_point"] = "create_connection_point"
+    id: str | None = Field(None, description="Omit, or 'new:<name>' to reference it from later operations")
+    label: str | None = None
+    equipment: str = Field(description="Id of the equipment the connection point belongs to")
+    direction: Direction
+    medium: str = Field(description="Medium IRI, e.g. s223:Fluid-Air")
+    paired_with: str | None = Field(None, description="Id of this equipment's connection point on the same flow path")
+    maps_to: str | None = Field(None, description="Id of the containing equipment's connection point this one is")
+    evidence: list[str] | None = None
+
+
+class UpdateConnectionPoint(_Op):
+    op: Literal["update_connection_point"] = "update_connection_point"
+    id: str
+    label: str | None = None
+    equipment: str | None = None
+    direction: Direction | None = None
+    medium: str | None = None
+    paired_with: str | None = None
+    maps_to: str | None = None
+
+
+class DeleteConnectionPoint(_Op):
+    op: Literal["delete_connection_point"] = "delete_connection_point"
+    id: str
+
+
 Operation = Annotated[
     Union[
         CreateEquipment, UpdateEquipment, DeleteEquipment,
         CreatePoint, UpdatePoint, DeletePoint,
         CreateConnection, UpdateConnection, DeleteConnection,
+        CreateConnectionPoint, UpdateConnectionPoint, DeleteConnectionPoint,
     ],
     Field(discriminator="op"),
 ]
@@ -159,7 +204,8 @@ LOCKABLE_FIELDS = {
     "equipment": {"label", "type", "process", "contained_in"},
     "point": {"label", "point_kind", "point_type", "quantity_kind", "unit", "equipment", "medium",
               "substance", "sensor_type", "enumeration_kind"},
-    "connection": {"label", "from_equipment", "to_equipment", "medium", "type"},
+    "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type"},
+    "connection_point": {"label", "equipment", "direction", "medium", "paired_with", "maps_to"},
 }
 
 TERM_FIELDS = {
@@ -185,12 +231,16 @@ FAMILY_FIELDS = {
         "equipment": {"label", "type", "process", "contained_in", "evidence"},
         "point": {"label", "point_kind", "quantity_kind", "unit", "equipment", "medium", "substance",
                   "sensor_type", "enumeration_kind", "evidence"},
-        "connection": {"label", "from_equipment", "to_equipment", "medium", "type", "evidence"},
+        "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type",
+                       "evidence"},
+        "connection_point": {"label", "equipment", "direction", "medium", "paired_with", "maps_to", "evidence"},
     },
 }
 FAMILY_NAMES = {"brick": "Brick", "s223": "223P/WaTr"}
 REF_FIELDS = {"contained_in": "equipment", "equipment": "equipment",
-              "from_equipment": "equipment", "to_equipment": "equipment"}
+              "from_equipment": "equipment", "to_equipment": "equipment",
+              "from_point": "connection_point", "to_point": "connection_point",
+              "paired_with": "connection_point", "maps_to": "connection_point"}
 
 
 class OperationError(Exception):
@@ -214,7 +264,7 @@ class ApplyResult:
 
 
 def entity_kind_of_op(op) -> str:
-    return op.op.split("_", 1)[1]
+    return op.op.split("_", 1)[1]  # create_connection_point -> connection_point
 
 
 def expand_term(vocab: Vocabulary, value: str) -> str:
@@ -253,11 +303,17 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             return created[eid] == kind
         return entity_kind(pg, vocab, eid) == kind
 
+    def later_placeholders(i: int) -> set[str]:
+        return {o.id for o in ops[i + 1:] if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER)}
+
     for i, op in enumerate(ops):
         where = f"operation {i + 1} ({op.op})"
         data = op.model_dump(exclude_unset=True)
         data["op"] = op.op
         kind = entity_kind_of_op(op)
+        if kind not in allowed:
+            problems.append(f"{where}: {kind.replace('_', ' ')}s do not exist in {FAMILY_NAMES[vocab.family]} models")
+            continue
         extra = sorted(set(data) - {"op", "id"} - allowed[kind])
         if extra:
             problems.append(f"{where}: {', '.join(extra)} do(es) not apply to {kind}s in "
@@ -267,9 +323,16 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             if data.get("point_kind") in ("alarm", "parameter"):
                 problems.append(f"{where}: point_kind {data['point_kind']!r} is only available in Brick models")
                 continue
-            if op.op == "create_connection" and not data.get("medium"):
+            if op.op == "create_connection" and not (data.get("medium") or data.get("from_point")
+                                                     or data.get("to_point")):
                 problems.append(f"{where}: medium is required (what the pipe or duct carries)")
                 continue
+        if op.op == "create_connection" and not (data.get("from_equipment") or data.get("from_point")):
+            problems.append(f"{where}: give from_equipment" + (" or from_point" if vocab.family == "s223" else ""))
+            continue
+        if op.op == "create_connection" and not (data.get("to_equipment") or data.get("to_point")):
+            problems.append(f"{where}: give to_equipment" + (" or to_point" if vocab.family == "s223" else ""))
+            continue
         if vocab.family == "s223" and "process" in data and not vocab.namespaces.get("watr"):
             problems.append(f"{where}: treatment processes are only available in WaTr models")
             continue
@@ -298,8 +361,11 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             if fname in data and data[fname] is not None:
                 ref = placeholders.get(data[fname], data[fname])
                 data[fname] = ref
-                if not exists(ref, target_kind):
-                    problems.append(f"{where}: {fname} refers to unknown {target_kind} {ref!r}")
+                if ref in later_placeholders(i):
+                    problems.append(f"{where}: {fname} refers to {ref!r}, which a later operation creates; "
+                                    "create it first, or set this in an update after both exist")
+                elif not exists(ref, target_kind):
+                    problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
                 elif ref == eid:
                     problems.append(f"{where}: {fname} cannot refer to the entity itself")
 
@@ -334,6 +400,8 @@ class _Compiler:
         self.g = pg.model
         watr = vocab.namespaces.get("watr")
         self.has_process = URIRef(watr + "hasProcess") if watr else None
+        self.touched_ports: set[URIRef] = set()  # checked against 223P's port rules after all ops
+        self.problems: list[str] = []
 
     def node(self, eid: str) -> URIRef:
         n = self.pg.iri(eid)
@@ -512,12 +580,29 @@ class _Compiler:
 
     # ---------------------------------------------------------- connections
 
-    def _port(self, cid: str, end: str, owner, medium: str) -> URIRef:
+    def _port(self, cid: str, end: str, owner, medium) -> URIRef:
         port = self.pg.ns[f"{cid}.{end}"]
         self.g.add((port, RDF.type, S223.OutletConnectionPoint if end == "out" else S223.InletConnectionPoint))
-        self.g.add((port, S223.hasMedium, URIRef(medium)))
+        if medium is not None:
+            self.g.add((port, S223.hasMedium, URIRef(medium)))
         self.g.add((owner, S223.hasConnectionPoint, port))
         return port
+
+    def _disposable(self, cx, port) -> bool:
+        """A port minted for this connection that nobody has made into a connection point of its
+        own (id, pairing, mapsTo) goes with the connection; any other port is an equipment fact."""
+        g = self.g
+        return (str(port).startswith(str(cx) + ".") and self.pg.id_of(port) is None
+                and not any((port, p, None) in g or (None, p, port) in g
+                            for p in (S223.pairedConnectionPoint, S223.mapsTo)))
+
+    def _detach(self, cx, port) -> None:
+        """Unhook one end of a connection, dropping the port if it was only the connection's."""
+        for t in ((cx, S223.cnx, port), (port, S223.cnx, cx), (port, S223.connectsThrough, cx),
+                  (cx, S223.connectsAt, port)):
+            self.g.remove(t)
+        if self._disposable(cx, port):
+            self.remove_node(port)
 
     def create_connection(self, op: CreateConnection) -> None:
         cid = op.id
@@ -525,12 +610,31 @@ class _Compiler:
         self.pg.add_evidence(n, op.evidence or [])
         g = self.g
         g.add((n, RDF.type, URIRef(op.type) if op.type else S223.Pipe))
-        a, b = self.node(op.from_equipment), self.node(op.to_equipment)
-        g.add((n, RDFS.label, RDFLiteral(op.label or f"{self._label(a)} → {self._label(b)}")))
-        g.add((n, S223.hasMedium, URIRef(op.medium)))
-        g.add((n, S223.cnx, self._port(cid, "out", a, op.medium)))  # type: ignore[arg-type]
-        g.add((n, S223.cnx, self._port(cid, "in", b, op.medium)))  # type: ignore[arg-type]
+        a_port = self.port(op.from_point) if op.from_point else None
+        b_port = self.port(op.to_point) if op.to_point else None
+        a = self._end_owner(a_port, op.from_equipment, "from")
+        b = self._end_owner(b_port, op.to_equipment, "to")
+        medium = op.medium or next((str(m) for p in (a_port, b_port) if p is not None
+                                    for m in g.objects(p, S223.hasMedium)), None)
+        if medium is None:
+            self.problems.append(f"{op.label or 'new connection'}: give a medium; the connection points have none")
+        name = lambda owner, port: self._label(owner) if owner is not None else self._port_name(port)  # noqa: E731
+        g.add((n, RDFS.label, RDFLiteral(op.label or f"{name(a, a_port)} → {name(b, b_port)}")))
+        if medium is not None:
+            g.add((n, S223.hasMedium, URIRef(medium)))
+        g.add((n, S223.cnx, a_port if a_port is not None else self._port(cid, "out", a, medium)))  # type: ignore[arg-type]
+        g.add((n, S223.cnx, b_port if b_port is not None else self._port(cid, "in", b, medium)))  # type: ignore[arg-type]
         self.r.touch(cid, "created", *op.provided())  # type: ignore[arg-type]
+
+    def _end_owner(self, port, equipment: str | None, end: str):
+        """The equipment at one end: the given point's owner, which must agree with the equipment if both are given."""
+        if port is None:
+            return self.node(equipment)  # type: ignore[arg-type]
+        owner = owner_of_port(self.pg, port)
+        if equipment and owner != self.node(equipment):
+            self.problems.append(f"{end}_point {self._port_name(port)} does not belong to "
+                                 f"{self._label(self.node(equipment))}")
+        return owner
 
     def update_connection(self, op: UpdateConnection) -> None:
         n = self.node(op.id)
@@ -545,34 +649,167 @@ class _Compiler:
             self.set_one(n, S223.hasMedium, op.medium)
             for port, _, _ in ends:
                 self.set_one(port, S223.hasMedium, op.medium)
-        for fname, direction in (("from_equipment", "out"), ("to_equipment", "in")):
-            if fname not in fields or not getattr(op, fname):
-                continue
-            new_owner = self.node(getattr(op, fname))
-            port = next((p for p, _, d in ends if d == direction), None)
-            if port is None:  # undirected/imported: take the end not owned by the other side
+        medium = next(iter(g.objects(n, S223.hasMedium)), None)
+        for pname, ename, direction in (("from_point", "from_equipment", "out"), ("to_point", "to_equipment", "in")):
+            ends, _ = connection_ends(self.pg, n)
+            old = next((p for p, _, d in ends if d == direction), None)
+            if old is None:  # undirected/imported: take the end not owned by the other side
                 idx = 0 if direction == "out" else 1
-                port = ends[idx][0] if len(ends) > idx else None
-            if port is None:
-                continue
-            old_owner = owner_of_port(self.pg, port)
-            if old_owner is not None:
-                g.remove((old_owner, S223.hasConnectionPoint, port))
-            g.remove((port, S223.isConnectionPointOf, None))
-            g.add((new_owner, S223.hasConnectionPoint, port))
+                old = ends[idx][0] if len(ends) > idx else None
+            if pname in fields and getattr(op, pname):
+                new = self.port(getattr(op, pname))
+                if ename in fields and getattr(op, ename):
+                    self._end_owner(new, getattr(op, ename), pname.split("_")[0])
+                if old is not None and old != new:
+                    self._detach(n, old)
+                g.add((n, S223.cnx, new))
+            elif ename in fields and getattr(op, ename):
+                new_owner = self.node(getattr(op, ename))
+                if old is None:
+                    continue
+                if self._disposable(n, old):  # the connection's own port moves with it
+                    old_owner = owner_of_port(self.pg, old)
+                    if old_owner is not None:
+                        g.remove((old_owner, S223.hasConnectionPoint, old))
+                    g.remove((old, S223.isConnectionPointOf, None))
+                    g.add((new_owner, S223.hasConnectionPoint, old))
+                else:  # an equipment's own connection point stays with it; mint one on the new end
+                    self._detach(n, old)
+                    g.add((n, S223.cnx, self._port(op.id, direction, new_owner, medium)))
         self.r.touch(op.id, *fields)
 
     def delete_connection(self, op: DeleteConnection) -> None:
         n = self.node(op.id)
         ends, _ = connection_ends(self.pg, n)
         for port, _, _ in ends:
-            # Ports the app minted for this connection go with it; ports that came from an
-            # imported model are equipment facts and stay.
-            if str(port).startswith(str(n) + "."):
+            # Ports the app minted only for this connection go with it; ports that came from an
+            # imported model or became connection points in their own right stay.
+            if self._disposable(n, port):
                 self.remove_node(port)
         self.remove_node(n)
         self.pg.unregister(op.id)
         self.r.touch(op.id, "deleted")
+
+    # ----------------------------------------------------- connection points
+
+    def _port_name(self, n) -> str:
+        return port_label(self.pg, self.vocab, n)
+
+    def port(self, cp_id: str) -> URIRef:
+        """A connection point by id, registering a port that predates its id (see projection.port_id)."""
+        n = port_iri(self.pg, cp_id)
+        assert n is not None, cp_id
+        if self.pg.id_of(n) is None:
+            self.pg.register(cp_id, n)
+        self.touched_ports.add(n)
+        return n
+
+    def _pair(self, n, other) -> None:
+        for p in (n, other):
+            if p is None:
+                continue
+            old = paired_port(self.pg, p)
+            if old is not None and old not in (n, other):
+                self.r.touch(port_id(self.pg, old), "paired_with")
+            self.g.remove((p, S223.pairedConnectionPoint, None))
+            self.g.remove((None, S223.pairedConnectionPoint, p))
+        if other is not None:
+            # A symmetric relation in 223P; asserted both ways so validation without inference sees it.
+            self.g.add((n, S223.pairedConnectionPoint, other))
+            self.g.add((other, S223.pairedConnectionPoint, n))
+            self.r.touch(port_id(self.pg, other), "paired_with")
+
+    def _set_owner(self, n, equipment: str) -> None:
+        self.g.remove((None, S223.hasConnectionPoint, n))
+        self.g.remove((n, S223.isConnectionPointOf, None))
+        self.g.add((self.node(equipment), S223.hasConnectionPoint, n))
+
+    def create_connection_point(self, op: CreateConnectionPoint) -> None:
+        n = self.pg.register(op.id)  # type: ignore[arg-type]
+        self.touched_ports.add(n)
+        self.g.add((n, RDF.type, PORT_CLASSES[op.direction]))
+        if op.label:
+            self.g.add((n, RDFS.label, RDFLiteral(op.label)))
+        self.g.add((n, S223.hasMedium, URIRef(op.medium)))
+        self._set_owner(n, op.equipment)
+        if op.paired_with:
+            self._pair(n, self.port(op.paired_with))
+        if op.maps_to:
+            self.g.add((n, S223.mapsTo, self.port(op.maps_to)))
+        self.pg.add_evidence(n, op.evidence or [])
+        self.r.touch(op.id, "created", *op.provided())  # type: ignore[arg-type]
+
+    def update_connection_point(self, op: UpdateConnectionPoint) -> None:
+        n = self.port(op.id)
+        fields = op.provided()
+        if "label" in fields:
+            self.g.remove((n, RDFS.label, None))
+            if op.label:
+                self.g.add((n, RDFS.label, RDFLiteral(op.label)))
+        if "equipment" in fields:
+            if op.equipment:
+                self._set_owner(n, op.equipment)
+            else:
+                self.problems.append(f"{self._port_name(n)}: a connection point must belong to equipment")
+        if "direction" in fields and op.direction:
+            for cls in PORT_CLASSES.values():
+                self.g.remove((n, RDF.type, cls))
+            self.g.add((n, RDF.type, PORT_CLASSES[op.direction]))
+        if "medium" in fields and op.medium:
+            self.set_one(n, S223.hasMedium, op.medium)
+        if "paired_with" in fields:
+            self._pair(n, self.port(op.paired_with) if op.paired_with else None)
+        if "maps_to" in fields:
+            self.g.remove((n, S223.mapsTo, None))
+            if op.maps_to:
+                self.g.add((n, S223.mapsTo, self.port(op.maps_to)))
+        self.r.touch(op.id, *fields)
+
+    def delete_connection_point(self, op: DeleteConnectionPoint) -> None:
+        n = self.port(op.id)
+        for cx in port_connections(self.pg, n):
+            cid = self.pg.id_of(cx)
+            if cid and (cx, None, None) in self.g:
+                self.delete_connection(DeleteConnection(id=cid))
+        other = paired_port(self.pg, n)
+        if other is not None:
+            self.r.touch(port_id(self.pg, other), "paired_with")
+        for child in self.g.subjects(S223.mapsTo, n):
+            self.r.touch(port_id(self.pg, child), "maps_to")
+        self.remove_node(n)
+        self.pg.unregister(op.id)
+        self.r.touch(op.id, "deleted")
+
+    def check_ports(self) -> None:
+        """223P's one-to-one rules for the connection points these operations touched."""
+        g = self.g
+        for n in sorted(self.touched_ports, key=str):
+            if (n, None, None) not in g:
+                continue  # deleted
+            name = self._port_name(n)
+            owner = owner_of_port(self.pg, n)
+            other = paired_port(self.pg, n)
+            if other is not None:
+                partners = set(g.objects(other, S223.pairedConnectionPoint)) | set(
+                    g.subjects(S223.pairedConnectionPoint, other))
+                if owner_of_port(self.pg, other) != owner:
+                    self.problems.append(f"{name} can only be paired with a connection point of the same equipment")
+                elif {port_direction(self.pg, n), port_direction(self.pg, other)} != {"inlet", "outlet"}:
+                    self.problems.append(f"{name}: pair an inlet with an outlet")
+                elif len(partners) > 1:
+                    self.problems.append(f"{self._port_name(other)} is already paired")
+            target = next(iter(g.objects(n, S223.mapsTo)), None)
+            if target is not None:
+                container = owner_of_port(self.pg, target)
+                if owner is None or container is None or (container, S223.contains, owner) not in g:
+                    self.problems.append(f"{name} can only map to a connection point of the equipment that contains "
+                                         f"{self._label(owner) if owner is not None else 'its equipment'} (maps_to goes "
+                                         "from the inner equipment's point to its container's point)")
+                elif len(set(g.subjects(S223.mapsTo, target))) > 1:
+                    self.problems.append(f"{self._port_name(target)} already has a contained "
+                                         "connection point mapped to it (mapsTo is one-to-one)")
+            if len(port_connections(self.pg, n)) > 1:
+                self.problems.append(f"{name} is already joined by another connection")
 
 
 def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = True) -> ApplyResult:
@@ -591,9 +828,13 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
             if t is not None and t.deprecated:
                 result.notes.append(f"{t.label} ({value}) is deprecated or superseded in the loaded vocabulary")
         getattr(comp, op.op)(op)
+    if isinstance(comp, _Compiler):
+        comp.check_ports()
+        if comp.problems:
+            raise OperationError(comp.problems)
     if lock:
         for eid, fields in result.changes.items():
-            node = pg.iri(eid)
+            node = entity_iri(pg, eid)
             kind = entity_kind(pg, vocab, eid)
             if node is None or kind is None:
                 continue

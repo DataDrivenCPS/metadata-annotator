@@ -22,8 +22,11 @@ Browser (React)                      Python backend (FastAPI, one process)
   never edited directly.
 - **One mutation path.** Direct cell edits, accepted proposals and imports all go through
   `Project.build_candidate` → `Project.publish`. The agent can only build candidates.
-- **Stable identifiers.** Every equipment/point/connection has an app-managed id (`eq-…`,
-  `pt-…`, `cx-…`) stored as `wb:id` on its IRI. Imported entities keep their IRIs and get ids.
+- **Stable identifiers.** Every equipment/point/connection/connection point has an
+  app-managed id (`eq-…`, `pt-…`, `cx-…`, `cp-…`) stored as `wb:id` on its IRI. Imported
+  entities keep their IRIs and get ids. Connection points minted with a connection (and those
+  in older snapshots or imports) are not registered until an operation touches them; until
+  then their id is derived from the IRI (`cp-` + sha1), so it is the same in every revision.
   Selections, proposals, evidence links, layout and issues all refer to ids, never to labels,
   row numbers or positions.
 - **Observations are not assertions.** Source observations live in the `observations` table;
@@ -67,14 +70,20 @@ rejected with an explanation rather than ignored.
 | Point | an `s223:Property` — Measurement = `QuantifiableObservableProperty`, Setpoint/command value = `QuantifiableActuatableProperty`, Status = `EnumeratedObservableProperty`, On/off or mode command = `EnumeratedActuatableProperty`; `qudt:hasQuantityKind`, `qudt:hasUnit`, `s223:ofMedium` |
 | Point → equipment | `equipment s223:hasProperty point` (+ `s223:actuatedByProperty` for actuatable) |
 | Sensor type | a single-property sensor `<point>.sensor` that `s223:observes` the point, with `s223:hasObservationLocation` = the equipment |
-| Connection ("Connected to") | an `s223:Pipe` (or other Connection) with `s223:cnx` to an outlet connection point on the upstream equipment and an inlet on the downstream one, each with `s223:hasMedium` |
+| Connection ("Connected to") | an `s223:Pipe` (or other Connection) with `s223:cnx` to an outlet connection point on the upstream equipment and an inlet on the downstream one, each with `s223:hasMedium`. Without `from_point`/`to_point` the connection mints its own ports (`<cx>.out`, `<cx>.in`) |
+| Connection point | `s223:InletConnectionPoint` / `OutletConnectionPoint` / `BidirectionalConnectionPoint` with `s223:hasMedium`, owned via `equipment s223:hasConnectionPoint port`; **paired with** = `s223:pairedConnectionPoint` (asserted both ways; same equipment, inlet ↔ outlet); **maps to** = `port s223:mapsTo container-port`, where the container `s223:contains` the port's equipment (one-to-one both ways). Not in Brick |
 
 ## Operations (`operations.py`)
 
-Typed pydantic models: `create/update/delete` × `equipment/point/connection`. Update operations
-carry only the fields that change (explicit `null` clears). `resolve()` checks every id and
+Typed pydantic models: `create/update/delete` × `equipment/point/connection/connection_point`.
+Connections can join existing connection points (`from_point`/`to_point`); re-pointing an end
+drops the old port only if it was minted for that connection and never became a connection
+point of its own (id, pairing, mapsTo). Update operations carry only the fields that change
+(explicit `null` clears). `resolve()` checks every id and
 every vocabulary term (kind, abstract, existence) and mints ids for `new:*` placeholders,
-reporting all problems at once. A resolved operation list applies deterministically, so
+reporting all problems at once. 223P's connection-point rules (pairing, mapsTo, one
+connection per port) are checked on the result after all operations apply, so a proposal can
+create and wire ports in one go. A resolved operation list applies deterministically, so
 `apply_proposal` re-applies the stored operations and **refuses if the resulting triple diff
 differs from the previewed diff**.
 
@@ -104,7 +113,8 @@ once; the two must persist together (see branch-report.md). The merged closure i
 `skos:broader` lineage, deprecation/superseded flags) is cached alongside. Validation uses a
 `shifty.PreparedValidator` over the cached shapes in `union` graph mode: ~0.5–0.7 s per run.
 `issues.py` maps each finding's focus node to the owning entity (port → equipment, sensor →
-point). The issue text is the validator's own message (IRIs shown as model labels or prefixed
+point); connection points named by a finding are added to its `affected_ids` after the owner,
+so issue ids do not change. The issue text is the validator's own message (IRIs shown as model labels or prefixed
 names from the loaded ontologies); nothing is paraphrased. An issue's id is a hash of the
 entity, shape, path and raw message, so it is independent of labels and display wording.
 Issues are rebuilt from each revision's stored findings when read.

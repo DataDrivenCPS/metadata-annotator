@@ -20,11 +20,19 @@ export interface ConnectionRow {
   kind: 'connection'; id: string; iri: string; label: string
   type: TermRef | null; from_equipment: EntityRef | null; to_equipment: EntityRef | null
   medium: TermRef | null; directed: boolean; locked: string[]; evidence: string[]
+  from_point: EntityRef | null; to_point: EntityRef | null
 }
-export type Row = EquipmentRow | PointRow | ConnectionRow
+export interface ConnectionPointRow {
+  kind: 'connection_point'; id: string; iri: string; label: string
+  equipment: EntityRef | null; direction: 'inlet' | 'outlet' | 'bidirectional'; medium: TermRef | null
+  connection: EntityRef | null; paired_with: EntityRef | null
+  maps_to: EntityRef | null; mapped_from: EntityRef | null; locked: string[]; evidence: string[]
+}
+export type Row = EquipmentRow | PointRow | ConnectionRow | ConnectionPointRow
 
 export interface ModelView {
   equipment: EquipmentRow[]; points: PointRow[]; connections: ConnectionRow[]
+  connection_points: ConnectionPointRow[]
   containment: [string, string][]
 }
 

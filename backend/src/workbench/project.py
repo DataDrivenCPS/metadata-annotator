@@ -99,6 +99,17 @@ DISPLAY_FIELDS = {
         ("to_equipment", lambda r: r.to_equipment.label if r.to_equipment else None),
         ("medium", lambda r: r.medium.label if r.medium else None),
         ("type", lambda r: r.type.label if r.type else None),
+        ("from_point", lambda r: r.from_point.label if r.from_point else None),
+        ("to_point", lambda r: r.to_point.label if r.to_point else None),
+    ],
+    "connection_point": [
+        ("label", lambda r: r.label),
+        ("equipment", lambda r: r.equipment.label if r.equipment else None),
+        ("direction", lambda r: r.direction),
+        ("medium", lambda r: r.medium.label if r.medium else None),
+        ("connection", lambda r: r.connection.label if r.connection else None),
+        ("paired_with", lambda r: r.paired_with.label if r.paired_with else None),
+        ("maps_to", lambda r: r.maps_to.label if r.maps_to else None),
     ],
 }
 
@@ -108,11 +119,17 @@ def compute_changes(before: ModelView, after: ModelView, selected: set[str],
     """Every entity whose projection differs, whether or not the operations named it."""
     b, a = before.rows(), after.rows()
     out: list[EntityChange] = []
-    for eid in sorted(set(b) | set(a)):
+    changed_connections: set[str] = set()
+    for eid in sorted(set(b) | set(a), key=lambda i: i.startswith("cp-")):  # connections first
         rb, ra = b.get(eid), a.get(eid)
         row = ra or rb
         kind = row.kind  # type: ignore[union-attr]
-        getters = DISPLAY_FIELDS[kind]
+        # A port minted for a connection (<connection>.in/.out) is created, deleted and renamed
+        # as part of that connection's change; only its own facts (pairing, mapsTo...) are shown.
+        minted = kind == "connection_point" and row.iri.rsplit(".", 1)[0] in changed_connections  # type: ignore[union-attr]
+        if minted and (rb is None or ra is None):
+            continue
+        getters = [(f, g) for f, g in DISPLAY_FIELDS[kind] if not (minted and f in ("label", "connection"))]
         if rb is None:
             change = "created"
             fields = [FieldChange(field=f, after=g(ra)) for f, g in getters if g(ra) not in (None, "")]
@@ -124,13 +141,15 @@ def compute_changes(before: ModelView, after: ModelView, selected: set[str],
             if not fields:
                 continue
             change = "updated"
+        if kind == "connection":
+            changed_connections.add(row.iri)  # type: ignore[union-attr]
         locked = set(rb.locked) if rb else set()  # type: ignore[union-attr]
         out.append(EntityChange(
             entity_id=eid, entity_kind=kind, label=row.label, change=change,  # type: ignore[arg-type,union-attr]
             fields=fields, in_selection=(not selected) or eid in selected,
             overrides_locked=sorted(locked & {f.field for f in fields}) if change == "updated" else [],
         ))
-    return out
+    return sorted(out, key=lambda c: c.entity_id)
 
 
 def triple_diff(before: Graph, after: Graph) -> TripleDiff:

@@ -16,7 +16,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDFS
 
 from .graph import ProjectGraph
-from .projection import owner_of_port
+from .projection import is_port, owner_of_port, port_id, port_label
 from .schemas import ReviewIssue, ValidationSummary
 from .vocabulary import S223, ValidationRun, Vocabulary
 
@@ -50,7 +50,10 @@ def _label(pg: ProjectGraph, node: str) -> str | None:
 
 
 def render_iri(pg: ProjectGraph, vocab: Vocabulary, iri: str) -> str:
-    """A model node by its own label, a vocabulary term as a prefixed name, otherwise the IRI."""
+    """A model node by its own label (a connection point by its table label), a vocabulary
+    term as a prefixed name, otherwise the IRI."""
+    if _label(pg, iri) is None and iri.startswith(("http", "urn")) and is_port(pg, URIRef(iri)):
+        return port_label(pg, vocab, URIRef(iri))
     return _label(pg, iri) or vocab.curie(iri)
 
 
@@ -79,12 +82,16 @@ def group_findings(pg: ProjectGraph, vocab: Vocabulary,
     seen: dict[str, ReviewIssue] = {}
     for eid, d in findings:
         key = finding_key(eid, d)
+        ports = [port_id(pg, URIRef(n)) for n in (d.get("focus"), d.get("value"))
+                 if n and n.startswith(("http", "urn")) and is_port(pg, URIRef(n))]
         if key in seen:
             seen[key].details["findings"].append(d)
+            seen[key].affected_ids += [i for i in ports if i not in seen[key].affected_ids]
             continue
         seen[key] = ReviewIssue(
             id=f"val-{key}",
-            affected_ids=[eid] if eid else [],
+            # The owning entity first (its id is part of the issue id); then the connection points involved.
+            affected_ids=([eid] if eid else []) + [i for i in dict.fromkeys(ports) if i != eid],
             category="validation",
             severity=SEVERITY.get(d.get("severity") or "", "warning"),  # type: ignore[arg-type]
             explanation=_render(pg, vocab, eid, d),

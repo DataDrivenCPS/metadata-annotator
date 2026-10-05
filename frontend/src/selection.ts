@@ -60,6 +60,8 @@ export const FIELD_PHRASES: Record<string, string> = {
   point_kind: 'point kinds', sensor_type: 'sensor types', label: 'names', type: 'types',
   process: 'treatment processes', medium: 'media', from_equipment: 'upstream ends',
   to_equipment: 'downstream ends', contained_in: 'containers', substance: 'substances',
+  direction: 'directions', paired_with: 'pairings', maps_to: 'container mappings',
+  from_point: 'upstream connection points', to_point: 'downstream connection points',
 }
 
 const cap = (s: string) => s.slice(0, 1).toUpperCase() + s.slice(1)
@@ -74,7 +76,7 @@ export function summarize(sel: Selection, rows: Map<string, Row>): string {
   const regions = sel.source_regions.length
   const regionText = regions ? `${regions} source region${regions === 1 ? '' : 's'}` : ''
   if (counts.size === 0) return regions ? cap(regionText) : 'Nothing selected (whole model)'
-  const noun = [...counts].map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`).join(', ')
+  const noun = [...counts].map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}${n === 1 ? '' : 's'}`).join(', ')
   const withRegions = (t: string) => (regions ? `${t} + ${regionText}` : t)
   if (sel.field_ids.length) {
     const phrases = sel.field_ids.map((f) => FIELD_PHRASES[f] ?? f.replace(/_/g, ' '))

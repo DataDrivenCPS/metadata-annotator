@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import type { Column } from '../selection'
 import { useStore } from '../store'
-import type { ConnectionRow, EquipmentRow, PointRow } from '../types'
+import type { ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow } from '../types'
 import { DataTable } from './DataTable'
 import { TermPicker } from './TermPicker'
 
@@ -147,10 +147,18 @@ export function ConnectionsTable() {
     ...(brick ? [] : [
       { key: 'medium', header: 'Medium', field: 'medium', value: (r: ConnectionRow) => r.medium?.label ?? '' },
       { key: 'type', header: 'Kind', field: 'type', value: (r: ConnectionRow) => r.type?.label ?? '', width: 90 },
+      { key: 'from_point', header: 'From point', field: 'from_point', value: (r: ConnectionRow) => r.from_point?.label ?? '' },
+      { key: 'to_point', header: 'To point', field: 'to_point', value: (r: ConnectionRow) => r.to_point?.label ?? '' },
     ]),
   ], [brick])
+  // Free connection points an end can move to: right direction, not joined by another connection.
+  const pointOptions = (r: ConnectionRow, direction: 'outlet' | 'inlet') => model.view.connection_points
+    .filter((p) => (p.direction === direction || p.direction === 'bidirectional') && (!p.connection || p.connection.id === r.id))
+    .map((p) => [p.id, p.label] as const)
   const editor = (r: ConnectionRow, c: Column<ConnectionRow>, done: () => void): ReactNode => {
     const commit = (value: unknown) => { done(); void edit([{ op: 'update_connection', id: r.id, [c.field!]: value }]) }
+    if (c.field === 'from_point') return <Select value={r.from_point?.id ?? ''} options={pointOptions(r, 'outlet')} onCommit={commit} onCancel={done} />
+    if (c.field === 'to_point') return <Select value={r.to_point?.id ?? ''} options={pointOptions(r, 'inlet')} onCommit={commit} onCancel={done} />
     if (c.field === 'label') return <TextEditor initial={r.label} onCommit={commit} onCancel={done} />
     if (c.field === 'from_equipment') return <Select value={r.from_equipment?.id ?? ''} options={eqOptions} onCommit={commit} onCancel={done} />
     if (c.field === 'to_equipment') return <Select value={r.to_equipment?.id ?? ''} options={eqOptions} onCommit={commit} onCancel={done} />
@@ -182,6 +190,73 @@ function AddConnection({ brick }: { brick: boolean }) {
         : draft.from && draft.to && draft.from !== draft.to
         ? <TermPicker kind="medium" allowClear={false} onCancel={() => setDraft(null)}
             onPick={(medium) => { setDraft(null); if (medium) void edit([{ op: 'create_connection', from_equipment: draft.from, to_equipment: draft.to, medium }]) }} />
+        : <button onClick={() => setDraft(null)}>Cancel</button>}
+    </span>
+  )
+}
+
+// -------------------------------------------------------- connection points
+
+const DIRECTIONS = [['inlet', 'Inlet'], ['outlet', 'Outlet'], ['bidirectional', 'Bidirectional']] as const
+const NONE = ['', '— none —'] as const
+
+export function ConnectionPointsTable() {
+  const { model, edit, issueCounts, highlighted } = useShared()
+  const eqOptions = useMemo(() => model.view.equipment.map((e) => [e.id, e.label] as const), [model])
+  const columns: Column<ConnectionPointRow>[] = useMemo(() => [
+    { key: 'label', header: 'Connection point', field: 'label', value: (r) => r.label, width: 240 },
+    { key: 'equipment', header: 'Equipment', field: 'equipment', value: (r) => r.equipment?.label ?? '' },
+    { key: 'direction', header: 'Direction', field: 'direction', value: (r) => DIRECTIONS.find(([d]) => d === r.direction)?.[1] ?? r.direction, width: 100 },
+    { key: 'medium', header: 'Medium', field: 'medium', value: (r) => r.medium?.label ?? '', width: 90 },
+    { key: 'connection', header: 'Connection', value: (r) => r.connection?.label ?? '' },
+    { key: 'paired_with', header: 'Paired with', field: 'paired_with', value: (r) => r.paired_with?.label ?? '' },
+    { key: 'maps_to', header: 'Maps to (container)', field: 'maps_to', value: (r) => r.maps_to?.label ?? '' },
+  ], [])
+  const editor = (r: ConnectionPointRow, c: Column<ConnectionPointRow>, done: () => void): ReactNode => {
+    const commit = (value: unknown) => { done(); void edit([{ op: 'update_connection_point', id: r.id, [c.field!]: value }]) }
+    const points = model.view.connection_points
+    switch (c.field) {
+      case 'label': return <TextEditor initial={r.label} onCommit={commit} onCancel={done} />
+      case 'equipment': return <Select value={r.equipment?.id ?? ''} options={eqOptions} onCommit={commit} onCancel={done} />
+      case 'direction': return <Select value={r.direction} options={DIRECTIONS} onCommit={commit} onCancel={done} />
+      case 'medium': return <TermPicker kind="medium" allowClear={false} initial={r.medium?.label} onPick={commit} onCancel={done} />
+      case 'paired_with': {
+        // An inlet pairs with an outlet of the same equipment (one per flow path).
+        const opposite = r.direction === 'inlet' ? 'outlet' : r.direction === 'outlet' ? 'inlet' : null
+        const options = points.filter((p) => p.id !== r.id && p.equipment?.id === r.equipment?.id && p.direction === opposite)
+          .map((p) => [p.id, p.label] as const)
+        return <Select value={r.paired_with?.id ?? ''} options={[NONE, ...options]} onCommit={(v) => commit(v || null)} onCancel={done} />
+      }
+      case 'maps_to': {
+        // A contained equipment's point maps to a point of its container.
+        const container = model.view.equipment.find((e) => e.id === r.equipment?.id)?.contained_in?.id
+        const options = points.filter((p) => container && p.equipment?.id === container).map((p) => [p.id, p.label] as const)
+        return <Select value={r.maps_to?.id ?? ''} options={[NONE, ...options]} onCommit={(v) => commit(v || null)} onCancel={done} />
+      }
+      default: return null
+    }
+  }
+  return <DataTable rows={model.view.connection_points} columns={columns} issueCounts={issueCounts} highlighted={highlighted}
+    editor={editor} toolbar={<AddConnectionPoint />}
+    empty="No connection points yet. Each connection adds an outlet and an inlet; add others with + Connection point." />
+}
+
+function AddConnectionPoint() {
+  const model = useStore((s) => s.model)!
+  const edit = useStore((s) => s.edit)
+  const [draft, setDraft] = useState<{ equipment: string; direction: string } | null>(null)
+  if (!draft) return <button onClick={() => setDraft({ equipment: '', direction: '' })} disabled={!model.view.equipment.length}>+ Connection point</button>
+  return (
+    <span className="inline-form">
+      <select value={draft.equipment} onChange={(e) => setDraft({ ...draft, equipment: e.target.value })}>
+        <option value="">equipment…</option>{model.view.equipment.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+      </select>
+      <select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value })}>
+        <option value="">direction…</option>{DIRECTIONS.map(([d, l]) => <option key={d} value={d}>{l}</option>)}
+      </select>
+      {draft.equipment && draft.direction
+        ? <TermPicker kind="medium" allowClear={false} onCancel={() => setDraft(null)}
+            onPick={(medium) => { setDraft(null); if (medium) void edit([{ op: 'create_connection_point', equipment: draft.equipment, direction: draft.direction, medium }]) }} />
         : <button onClick={() => setDraft(null)}>Cancel</button>}
     </span>
   )

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..project import Project
-from ..projection import ConnectionRow, EquipmentRow, PointRow
+from ..projection import ConnectionPointRow, ConnectionRow, EquipmentRow, PointRow
 from ..vocabulary import S223, Vocabulary
 from .guidance import FAMILY_TOPICS, SkillGuidance
 
@@ -59,8 +59,18 @@ def entity_line(vocab: Vocabulary, row) -> str:
     if isinstance(row, ConnectionRow):
         a = f"{row.from_equipment.id} (\"{row.from_equipment.label}\")" if row.from_equipment else "?"
         b = f"{row.to_equipment.id} (\"{row.to_equipment.label}\")" if row.to_equipment else "?"
+        if row.from_point or row.to_point:
+            a += f" at {row.from_point.id if row.from_point else '?'}"
+            b += f" at {row.to_point.id if row.to_point else '?'}"
         return (f"{row.id} | connection \"{row.label}\" | from {a} to {b} | "
                 f"medium: {term_ref(vocab, row.medium)} | type: {term_ref(vocab, row.type)}")
+    if isinstance(row, ConnectionPointRow):
+        eq = f"{row.equipment.id} (\"{row.equipment.label}\")" if row.equipment else "no equipment"
+        extra = "".join(f" | {name}: {ref.id}" for name, ref in (
+            ("paired with", row.paired_with), ("maps to", row.maps_to), ("mapped from", row.mapped_from)) if ref)
+        return (f"{row.id} | connection point \"{row.label}\" | {row.direction} of {eq} | "
+                f"medium: {term_ref(vocab, row.medium)} | connection: {row.connection.id if row.connection else 'none'}"
+                + extra)
     return str(row)
 
 
@@ -105,12 +115,18 @@ class AgentTools:
                           for k, v in c.items()} for c in d["constraints"]][:12],
         }
 
-    def find_entities(self, query: str, limit: int = 15) -> list[str]:
-        """Search the model's equipment/points/connections by name."""
-        q = query.lower()
-        rows = self.project.view(self.revision).rows().values()
-        hits = [r for r in rows if q in r.label.lower() or q == r.id]
-        return [entity_line(self.vocab, r) for r in hits[:limit]]
+    def find_entities(self, query: str, limit: int = 25) -> list[str]:
+        """Search the model's equipment/points/connections/connection points by name."""
+        q = query.lower().strip()
+        view = self.project.view(self.revision)
+        hits = [r for r in view.rows().values() if q in r.label.lower() or q in r.id]
+        out = []
+        for r in hits[:limit]:
+            out.append(entity_line(self.vocab, r))
+            if isinstance(r, EquipmentRow) and self.vocab.family == "s223":
+                cps = [c.id for c in view.connection_points if c.equipment and c.equipment.id == r.id]
+                out.append(f"  connection points of {r.id}: {', '.join(cps) if cps else 'none'}")
+        return out or [f"(nothing in the model matches {query!r})"]
 
     def read_guidance(self, topic: str) -> str:
         """Modeling guidance from the BuildingMOTIF skill for one topic."""
@@ -130,7 +146,9 @@ class AgentTools:
             + ", ".join(kinds)
             + "\nunits_for(quantity_kind) - list units valid for a quantity kind"
             + "\ndescribe_class(term) - parents and required properties of an equipment/sensor class"
-            + "\nfind_entities(query) - find equipment/points/connections in the model by name"
+            + ("\nfind_entities(query) - find equipment/points/connections in the model by name" if family == "brick"
+               else "\nfind_entities(query) - find equipment/points/connections/connection points by name"
+                    " (an equipment's name lists its connection points too)")
             + "\nread_evidence(observation_id) - the source record behind an entity"
             + "\nread_guidance(topic) - modeling guidance; topics: " + ", ".join(FAMILY_TOPICS[family])
         )

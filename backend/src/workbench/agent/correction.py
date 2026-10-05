@@ -50,13 +50,30 @@ How the model represents things (from the BuildingMOTIF skill's 223P/WaTr guidan
   A point belongs to one piece of equipment.
 - Connection: a pipe (or duct/wire) carrying a medium from one equipment's outlet to
   another's inlet. Direction matters: from_equipment is upstream.
+- Connection point (cp-...): an inlet, outlet or bidirectional port of one piece of
+  equipment, with a medium. Every connection joins an outlet to an inlet; create_connection
+  makes both unless from_point/to_point name existing ones. Many validation rules are about
+  connection points:
+  - "inlets ... each paired with an outlet" (heat exchangers, coils): set paired_with on
+    each inlet to the outlet on the same flow path (one pair per loop).
+  - Contained equipment (contained_in) must not connect directly to equipment outside its
+    container. Give the container its own connection point, set maps_to on the inner
+    equipment's point to it, and join the outside connection to the container's point
+    (update_connection with to_point/from_point).
+  - "shall have at least one inlet/outlet": connect the equipment, or add the connection
+    point the evidence supports.
+  - A rule that names a medium ("using the medium Mix-Fluid") also accepts any narrower
+    medium (water is a fluid). Keep the specific medium the model has; change it only when
+    it is wrong for what actually flows.
 
 Operations (JSON objects with "op"):
 - create_equipment {{label, type{process_field}, contained_in?}}; update_equipment {{id, fields...}}; delete_equipment {{id}}
 - create_point {{label, point_kind, quantity_kind?, unit?, equipment?, medium?, substance?, sensor_type?, enumeration_kind?}}
 - update_point {{id, fields...}}; delete_point {{id}}
-- create_connection {{from_equipment, to_equipment, medium, label?, type?}}
-- update_connection {{id, from_equipment?, to_equipment?, medium?, label?, type?}}; delete_connection {{id}}
+- create_connection {{from_equipment, to_equipment, medium, label?, type?, from_point?, to_point?}}
+- update_connection {{id, from_equipment?, to_equipment?, from_point?, to_point?, medium?, label?, type?}}; delete_connection {{id}}
+- create_connection_point {{equipment, direction (inlet/outlet/bidirectional), medium, label?, paired_with?, maps_to?}}
+- update_connection_point {{id, fields...}}; delete_connection_point {{id}}
 Terms are prefixed names like {examples}.
 """
 
@@ -107,12 +124,14 @@ Rules:
   establish. If the request is ambiguous or you lack information, return a proposal with no
   operations and ask your questions.
 - Keep the explanation short and in plain language (no RDF jargon).
-- Review issues have ids in [brackets]. When an issue does not reflect a real problem (for
-  example the validator flags behaviour that is expected, and the person confirms it or the
-  evidence shows it), propose dismissing it with dismiss_issues: [{{"id": "...", "reason": "..."}}].
-  Dismissing does not change the model; the person applies it like any proposal. Never dismiss
-  an issue you could fix with operations, and only dismiss issues listed with an id. Describe
-  issues in words in the explanation; the person does not see the ids.
+- Review issues have ids in [brackets]. A violation of the vocabulary's rules is a real
+  problem even when the physical layout looks right: fix it with operations. Dismiss an
+  issue only when the person says the flagged behaviour is expected or the evidence shows
+  it, with dismiss_issues: [{{"id": "...", "reason": "..."}}]. If you cannot fix an issue with
+  the operations available, or need information you do not have, say so and ask; do not
+  dismiss it. Dismissing does not change the model; the person applies it like any
+  proposal. Only dismiss issues listed with an id. Describe issues in words in the
+  explanation; the person does not see the ids.
   When replying to a proposal, withdraw_dismissals: ["<id>"] removes one it would dismiss.
 
 Each reply is one JSON object. Start it with "thought": one or two sentences on what you
@@ -170,7 +189,8 @@ def operation_schema() -> dict:
     variants = []
     for model in (ops_mod.CreateEquipment, ops_mod.UpdateEquipment, ops_mod.DeleteEquipment,
                   ops_mod.CreatePoint, ops_mod.UpdatePoint, ops_mod.DeletePoint,
-                  ops_mod.CreateConnection, ops_mod.UpdateConnection, ops_mod.DeleteConnection):
+                  ops_mod.CreateConnection, ops_mod.UpdateConnection, ops_mod.DeleteConnection,
+                  ops_mod.CreateConnectionPoint, ops_mod.UpdateConnectionPoint, ops_mod.DeleteConnectionPoint):
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
         sch["properties"]["op"] = {"type": "string", "enum": [name]}
@@ -228,6 +248,8 @@ FIELD_PHRASES = {
     "point_kind": "point kinds", "sensor_type": "sensor types", "label": "names", "type": "types",
     "process": "treatment processes", "medium": "media", "from_equipment": "upstream ends",
     "to_equipment": "downstream ends", "contained_in": "containers", "substance": "substances",
+    "direction": "directions", "paired_with": "pairings", "maps_to": "container mappings",
+    "from_point": "upstream connection points", "to_point": "downstream connection points",
 }
 
 
@@ -241,7 +263,7 @@ def describe_selection(project: Project, rid: str, sel: SelectionScope) -> str:
             kinds[r.kind] = kinds.get(r.kind, 0) + 1
     if not kinds:
         return "the whole model" if not sel.source_regions else "a source region"
-    noun = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in kinds.items())
+    noun = ", ".join(f"{n} {k.replace('_', ' ')}{'s' if n != 1 else ''}" for k, n in kinds.items())
     if sel.field_ids:
         phrases = [FIELD_PHRASES.get(f, f.replace("_", " ")) for f in sel.field_ids]
         fields = ", ".join([phrases[0][:1].upper() + phrases[0][1:], *phrases[1:]])
@@ -264,13 +286,23 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
                 if p.equipment and p.equipment.id == r.id:
                     related[p.id] = p
         if r.kind == "connection":
-            for end in (r.from_equipment, r.to_equipment):
+            for end in (r.from_equipment, r.to_equipment, r.from_point, r.to_point):
                 if end:
                     related[end.id] = rows.get(end.id)
+        if r.kind == "connection_point":
+            for ref in (r.equipment, r.connection, r.paired_with, r.maps_to, r.mapped_from):
+                if ref:
+                    related[ref.id] = rows.get(ref.id)
     for c in view.connections:
         ends = {c.from_equipment.id if c.from_equipment else None, c.to_equipment.id if c.to_equipment else None}
         if ends & sel_ids:
             related[c.id] = c
+    # Connection points of the selected equipment and of its containers (for boundary mapping).
+    near = {r.id for r in selected if r.kind == "equipment"}
+    near |= {r.contained_in.id for r in selected if r.kind == "equipment" and r.contained_in}
+    for cp in view.connection_points:
+        if cp.equipment and cp.equipment.id in near:
+            related[cp.id] = cp
     evidence: list[EvidenceRef] = []
     lines = [f"Base revision: {rid}", "", f"Selected ({describe_selection(project, rid, sel)}):"]
     for r in selected:
@@ -293,12 +325,15 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
         lines.append("  (nothing selected: the request may concern the whole model)")
     rel = [v for k, v in related.items() if v is not None and k not in sel_ids]
     if rel:
-        lines += ["", "Related objects:"] + ["  " + entity_line(vocab, r) for r in rel[:40]]
+        lines += ["", "Related objects:"] + ["  " + entity_line(vocab, r) for r in rel[:60]]
     lines += ["", f"All equipment ({len(view.equipment)}):"]
     lines += ["  " + entity_line(vocab, e) for e in view.equipment[:200]]
     if not selected:
         lines += ["", f"All points ({len(view.points)}):"] + ["  " + entity_line(vocab, p) for p in view.points[:150]]
         lines += ["", "Connections:"] + ["  " + entity_line(vocab, c) for c in view.connections[:100]]
+        if view.connection_points:
+            lines += ["", f"Connection points ({len(view.connection_points)}):"] + [
+                "  " + entity_line(vocab, c) for c in view.connection_points[:150]]
     issues = [i for i in project.issues(rid)
               if i.resolution_state == "open" and i.severity != "suggestion"
               and (not sel_ids or set(i.affected_ids) & (sel_ids | set(related)))]
@@ -643,6 +678,9 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             continue
         progress("validated", f"Validated candidate: {cand.summary.violations} violation(s)",
                  {"conforms": cand.summary.conforms})
+        # An issue the change resolves needs no dismissal.
+        still_found = {i.id for i in cand.issues}
+        dismissals = [d for d in dismissals if d.id in still_found]
         gate = project.gate(cand) if cand.diff.added or cand.diff.removed else None
         introduced = [v for v in (gate or {}).get("introduced", []) if v not in inherited]
         if introduced and not gate_checked and step < MAX_STEPS + MAX_REPAIRS - 1:

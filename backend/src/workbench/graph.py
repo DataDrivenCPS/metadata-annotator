@@ -5,7 +5,8 @@ application bookkeeping about model nodes that must travel with each revision bu
 not part of the exported model:
 
 * ``wb:id`` - the application-managed stable identifier of a top-level entity
-  (equipment, point, connection). Entities minted by the app use ``<ns><id>`` as their
+  (equipment, point, connection, connection point; see ``projection.port_id`` for
+  connection points that predate their ids). Entities minted by the app use ``<ns><id>`` as their
   IRI; imported entities keep their original IRI and get an id here.
 * ``wb:locked`` - a field a person has set or confirmed; later extraction must not
   silently overwrite it (see ``operations.LOCKABLE_FIELDS``).
@@ -28,7 +29,7 @@ WB = Namespace("urn:workbench:ann#")
 MODEL_GRAPH = URIRef("urn:workbench:graph:model")
 ANN_GRAPH = URIRef("urn:workbench:graph:annotations")
 
-ID_PREFIX = {"equipment": "eq", "point": "pt", "connection": "cx"}
+ID_PREFIX = {"equipment": "eq", "point": "pt", "connection": "cx", "connection_point": "cp"}
 
 
 def new_id(kind: str) -> str:

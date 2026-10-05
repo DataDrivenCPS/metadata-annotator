@@ -12,10 +12,14 @@ Domain mapping (223P):
   a SCADA/BMS point reports or commands.
 * **Connection** - an ``s223:Connection`` (pipe, duct, wire) whose ``s223:cnx``
   connection points belong to equipment; direction comes from outlet -> inlet.
+* **Connection point** - an inlet, outlet or bidirectional ``s223:ConnectionPoint`` of a
+  piece of equipment, with its medium, the connection that joins it, the point it is paired
+  with (``s223:pairedConnectionPoint``) and the container's point it maps to (``s223:mapsTo``).
 """
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass, field
 
 from rdflib import URIRef
@@ -38,6 +42,11 @@ POINT_KIND_LABELS = {
     "alarm": "Alarm",
     "parameter": "Parameter",
     "other": "Other property",
+}
+PORT_CLASSES = {
+    "inlet": S223.InletConnectionPoint,
+    "outlet": S223.OutletConnectionPoint,
+    "bidirectional": S223.BidirectionalConnectionPoint,
 }
 OBSERVABLE_KINDS = {"measurement", "status"}
 ACTUATABLE_KINDS = {"setpoint", "command"}
@@ -105,7 +114,26 @@ class ConnectionRow:
     directed: bool
     locked: list[str]
     evidence: list[str]
+    from_point: EntityRef | None = None
+    to_point: EntityRef | None = None
     kind: str = "connection"
+
+
+@dataclass
+class ConnectionPointRow:
+    id: str
+    iri: str
+    label: str
+    equipment: EntityRef | None
+    direction: str  # inlet / outlet / bidirectional
+    medium: TermRef | None
+    connection: EntityRef | None
+    paired_with: EntityRef | None
+    maps_to: EntityRef | None  # the containing equipment's connection point
+    mapped_from: EntityRef | None  # a contained equipment's connection point mapping to this one
+    locked: list[str]
+    evidence: list[str]
+    kind: str = "connection_point"
 
 
 @dataclass
@@ -113,11 +141,12 @@ class ModelView:
     equipment: list[EquipmentRow] = field(default_factory=list)
     points: list[PointRow] = field(default_factory=list)
     connections: list[ConnectionRow] = field(default_factory=list)
+    connection_points: list[ConnectionPointRow] = field(default_factory=list)
     # containment edges: (container id, contained id)
     containment: list[tuple[str, str]] = field(default_factory=list)
 
     def rows(self) -> dict[str, object]:
-        return {r.id: r for r in [*self.equipment, *self.points, *self.connections]}
+        return {r.id: r for r in [*self.equipment, *self.points, *self.connections, *self.connection_points]}
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -167,6 +196,80 @@ def owner_of_port(pg: ProjectGraph, port) -> URIRef | None:
     return owner
 
 
+def ports(pg: ProjectGraph) -> set[URIRef]:
+    """Every connection point in the model, however it is attached."""
+    g = pg.model
+    found = {o for o in g.objects(None, S223.hasConnectionPoint)}
+    found |= {s for s in g.subjects(S223.isConnectionPointOf, None)}
+    for cls in PORT_CLASSES.values():
+        found |= set(g.subjects(RDF.type, cls))
+    return {p for p in found if isinstance(p, URIRef)}
+
+
+def is_port(pg: ProjectGraph, node) -> bool:
+    g = pg.model
+    return ((None, S223.hasConnectionPoint, node) in g or (node, S223.isConnectionPointOf, None) in g
+            or any((node, RDF.type, cls) in g for cls in PORT_CLASSES.values()))
+
+
+def port_id(pg: ProjectGraph, port) -> str:
+    """A connection point's stable id. Ports minted before connection points had ids (and
+    imported ones) are not registered; their id is derived from the IRI, so it is the same
+    in every revision, and an operation that touches the port registers it under that id."""
+    return pg.id_of(port) or "cp-" + hashlib.sha1(str(port).encode()).hexdigest()[:6]
+
+
+def port_iri(pg: ProjectGraph, cp_id: str) -> URIRef | None:
+    iri = pg.iri(cp_id)
+    if iri is not None:
+        return iri
+    if not cp_id.startswith("cp-"):
+        return None
+    return next((p for p in ports(pg) if port_id(pg, p) == cp_id), None)
+
+
+def entity_iri(pg: ProjectGraph, eid: str) -> URIRef | None:
+    """The node for any entity id, including a connection point's derived id."""
+    return pg.iri(eid) or (port_iri(pg, eid) if eid.startswith("cp-") else None)
+
+
+def port_direction(pg: ProjectGraph, port) -> str:
+    types = set(pg.model.objects(port, RDF.type))
+    return next((d for d, cls in PORT_CLASSES.items() if cls in types), "bidirectional")
+
+
+def port_connections(pg: ProjectGraph, port) -> list[URIRef]:
+    g = pg.model
+    found = set(g.subjects(S223.cnx, port)) | set(g.objects(port, S223.connectsThrough))
+    return sorted((c for c in found if isinstance(c, URIRef) and not is_port(pg, c)), key=str)
+
+
+def paired_port(pg: ProjectGraph, port) -> URIRef | None:
+    g = pg.model
+    return _first(g, port, S223.pairedConnectionPoint) or next(iter(g.subjects(S223.pairedConnectionPoint, port)), None)
+
+
+def port_label(pg: ProjectGraph, vocab: Vocabulary, port) -> str:
+    """Its own label, else "<equipment> inlet from <upstream> (water)" and the like."""
+    g = pg.model
+    own = _first(g, port, RDFS.label)
+    if own is not None:
+        return str(own)
+
+    def name(node) -> str:
+        return str(_first(g, node, RDFS.label) or local_name(node)) if node is not None else "unattached"
+
+    direction = port_direction(pg, port)
+    text = f"{name(owner_of_port(pg, port))} {direction}"
+    cx = next(iter(port_connections(pg, port)), None)
+    if cx is not None:
+        far = [o for p, o, _ in connection_ends(pg, cx)[0] if p != port]
+        if far:
+            text += f" {'from' if direction == 'inlet' else 'to' if direction == 'outlet' else 'with'} {name(far[0])}"
+    medium = _first(g, port, S223.hasMedium)
+    return text + (f" ({vocab.label(str(medium)).lower()})" if medium is not None else "")
+
+
 def point_owner(pg: ProjectGraph, point) -> URIRef | None:
     """Equipment a point belongs to: hasProperty/actuatedByProperty, else its sensor's location."""
     g = pg.model
@@ -205,9 +308,11 @@ def entity_kind(pg: ProjectGraph, vocab: Vocabulary, eid: str) -> str | None:
         from . import brick
 
         return brick.entity_kind(pg, vocab, eid)
-    node = pg.iri(eid)
-    if node is None or (node, None, None) not in pg.model:
+    node = entity_iri(pg, eid)
+    if node is None or ((node, None, None) not in pg.model and (None, None, node) not in pg.model):
         return None
+    if is_port(pg, node):
+        return "connection_point"
     return Classifier(vocab).kind(pg, node)
 
 
@@ -230,6 +335,9 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
 
     def label(node) -> str:
         return str(_first(g, node, RDFS.label) or local_name(node))
+
+    def port_ref(port) -> EntityRef | None:
+        return None if port is None else EntityRef(port_id(pg, port), port_label(pg, vocab, port))
 
     point_counts: dict[str, int] = {}
     for eid in pg.entity_ids():
@@ -280,6 +388,10 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
             ins = [o for _, o, d in ends if d == "in"] or [o for _, o, d in ends if d == "bi"][1:]
             if not directed and len(ends) >= 2:
                 outs, ins = [ends[0][1]], [ends[1][1]]
+            out_ports = [p for p, _, d in ends if d == "out"] or [p for p, _, d in ends if d == "bi"]
+            in_ports = [p for p, _, d in ends if d == "in"] or [p for p, _, d in ends if d == "bi"][1:]
+            if not directed and len(ends) >= 2:
+                out_ports, in_ports = [ends[0][0]], [ends[1][0]]
             view.connections.append(ConnectionRow(
                 **common,
                 type=TermRef.of(vocab, most_specific(vocab, cls.types(pg, node), "connection")),
@@ -287,12 +399,29 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
                 to_equipment=ref(ins[0]) if ins else None,
                 medium=TermRef.of(vocab, _first(g, node, S223.hasMedium)),
                 directed=directed,
+                from_point=port_ref(out_ports[0]) if out_ports else None,
+                to_point=port_ref(in_ports[0]) if in_ports else None,
             ))
+    for port in ports(pg):
+        cx = next(iter(port_connections(pg, port)), None)
+        maps_to = _first(g, port, S223.mapsTo)
+        view.connection_points.append(ConnectionPointRow(
+            id=port_id(pg, port), iri=str(port), label=port_label(pg, vocab, port),
+            equipment=ref(owner_of_port(pg, port)),
+            direction=port_direction(pg, port),
+            medium=TermRef.of(vocab, _first(g, port, S223.hasMedium)),
+            connection=ref(cx) if cx is not None else None,
+            paired_with=port_ref(paired_port(pg, port)),
+            maps_to=port_ref(maps_to) if isinstance(maps_to, URIRef) else None,
+            mapped_from=port_ref(next(iter(g.subjects(S223.mapsTo, port)), None)),
+            locked=sorted(pg.locked_fields(port)), evidence=pg.evidence(port),
+        ))
     for row in view.equipment:
         row.point_count = point_counts.get(row.id, 0)
     view.equipment.sort(key=lambda r: r.label.lower())
     view.points.sort(key=lambda r: r.label.lower())
     view.connections.sort(key=lambda r: r.label.lower())
+    view.connection_points.sort(key=lambda r: ((r.equipment.label.lower() if r.equipment else "~"), r.label.lower()))
     return view
 
 

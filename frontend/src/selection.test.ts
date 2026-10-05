@@ -55,6 +55,12 @@ describe('selection by stable id', () => {
     expect(summarize(sel, byId)).toBe('Equipment assignments for 2 points')
   })
 
+  it('names connection points in plain words', () => {
+    const cp = { kind: 'connection_point', id: 'cp-1', label: 'HX inlet' } as unknown as Row
+    const sel = { ...emptySelection(), entity_ids: ['cp-1'], field_ids: ['paired_with'] }
+    expect(summarize(sel, new Map([['cp-1', cp]]))).toBe('Pairings for 1 connection point')
+  })
+
   it('keeps entity and relationship selections separate', () => {
     let sel = applyClick(emptySelection(), { id: 'eq-1' }, none, [], null)
     sel = applyClick(sel, { id: 'cx-1', relationship: true }, { ctrl: true, shift: false }, [], null)

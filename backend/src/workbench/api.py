@@ -24,7 +24,7 @@ from .events import EventBus
 from .llm import LLMError, make_client
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
-from .projection import POINT_KIND_LABELS, sensors_of
+from .projection import POINT_KIND_LABELS, entity_iri, sensors_of
 from .runs import ProviderUnavailable, RunManager
 from .schemas import CsvImportConfig, SelectionScope
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
@@ -309,7 +309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rid = rev_or_head(p, revision)
         pg = p.graph(rid)
         vocab = p.vocab
-        node = pg.iri(eid)
+        node = entity_iri(pg, eid)
         if node is None or (node, None, None) not in pg.model:
             raise HTTPException(404, f"No entity {eid} in {rid}")
         row = p.view(rid).rows().get(eid)

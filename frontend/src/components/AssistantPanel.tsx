@@ -72,6 +72,7 @@ function Composer() {
   const setNewRequest = useStore((s) => s.setAssistantNewRequest)
   const [sending, setSending] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const viewing = useStore((s) => s.viewing)
   const issues = useStore((s) => s.model?.issues)
   const startAutofix = useStore((s) => s.startAutofix)
   const autofixing = useStore((s) => !!s.autofix)
@@ -93,7 +94,7 @@ function Composer() {
   const { selection: about, source } = effectiveSelection(next, selection, thread, proposal)
   const summary = summarize(about, rows)
   const chosen = [...about.entity_ids, ...about.relationship_ids].map((id) => rows.get(id)).filter(Boolean)
-  const fixable = source === 'current' && !autofixing ? issuesOnSelection(issues ?? [], selection) : []
+  const fixable = source === 'current' && !autofixing && !viewing ? issuesOnSelection(issues ?? [], selection) : []
 
   const send = async () => {
     if (!text.trim() || running || sending) return
@@ -132,7 +133,9 @@ function Composer() {
       </div>}
       <textarea
         ref={textareaRef}
-        placeholder={next?.kind === 'proposal' ? 'Tell the assistant what to revise, e.g. “A2 is also a VAV.”'
+        disabled={!!viewing}
+        placeholder={viewing ? `Viewing ${viewing} (read-only). Go back to the current model to ask for changes.`
+          : next?.kind === 'proposal' ? 'Tell the assistant what to revise, e.g. “A2 is also a VAV.”'
           : next?.kind === 'questions' ? 'Answer the assistant’s questions…'
             : chosen.length ? 'Describe a change, e.g. “These belong to RO-1.”'
               : 'Select items in a table or the graph, then describe a change.'}
@@ -143,7 +146,7 @@ function Composer() {
       />
       <div className="assist-actions">
         <span className="muted small">Enter to send · Shift+Enter for a new line</span>
-        <button className="primary" disabled={!text.trim() || running || sending} onClick={() => void send()}
+        <button className="primary" disabled={!!viewing || !text.trim() || running || sending} onClick={() => void send()}
           title="Enter to send · Shift+Enter for a new line">
           {next?.kind === 'proposal' ? 'Send reply' : 'Send'}
         </button>
@@ -440,6 +443,7 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
   const inspect = useStore((s) => s.inspect)
   const busy = useStore((s) => s.busy)
   const head = useStore((s) => s.model?.head)
+  const viewing = useStore((s) => s.viewing)
   const [allLines, setAllLines] = useState(false)
   const [allFixes, setAllFixes] = useState(false)
   const v = proposal.validation
@@ -587,10 +591,11 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
           {proposal.status === 'stale' && <span className="warn-text">
             The model is now at {head}. Applying replays these operations and may overwrite newer values.
           </span>}
-          <button className="primary" disabled={busy || running || (proposal.operations.length === 0 && !dismissals.length)}
+          <button className="primary" disabled={!!viewing || busy || running || (proposal.operations.length === 0 && !dismissals.length)}
+            title={viewing ? 'Go back to the current model to apply it' : undefined}
             onClick={() => void applyProposal()}>{proposal.operations.length ? 'Apply as proposed'
               : `Dismiss ${dismissals.length} issue(s)`}</button>
-          <button disabled={busy || running} onClick={() => void regenerate()}>Refresh on latest</button>
+          <button disabled={!!viewing || busy || running} onClick={() => void regenerate()}>Refresh on latest</button>
           <button disabled={busy || running} onClick={() => void dismissProposal()}>Discard</button>
         </>}
         {proposal.status === 'applied' && <span className="ok-text">{proposal.operations.length

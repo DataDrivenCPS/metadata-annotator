@@ -41,6 +41,8 @@ interface State {
   sourcesOpen: boolean
   /** Working through issues one at a time; every change still needs the person's approval. */
   autofix: AutofixState | null
+  /** An earlier revision being browsed read-only; null = the current model. */
+  viewing: string | null
 
   toggleSources: () => void
   loadStatus: () => Promise<void>
@@ -76,6 +78,7 @@ interface State {
   autofixNext: () => Promise<void>
   skipAutofixIssue: () => Promise<void>
   stopAutofix: () => void
+  viewRevision: (revision: string | null) => Promise<void>
 }
 
 const indexRows = (m: ModelResponse | null) => {
@@ -111,6 +114,7 @@ export const useStore = create<State>((set, get) => ({
   sourcesVersion: 0,
   sourcesOpen: false,
   autofix: null,
+  viewing: null,
 
   // Remembered per project once toggled; until then the tray opens only if the project has sources.
   toggleSources: () => {
@@ -129,7 +133,7 @@ export const useStore = create<State>((set, get) => ({
   openProject: async (id) => {
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
           runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantNewRequest: false,
-          autofix: null })
+          autofix: null, viewing: null })
     if (id) {
       localStorage.setItem('workbench.project', id)
       const stored = localStorage.getItem(`workbench.sourcesOpen.${id}`)
@@ -157,7 +161,9 @@ export const useStore = create<State>((set, get) => ({
   reload: async () => {
     const pid = get().projectId
     if (!pid) return
-    const model = await api.model(pid)
+    const viewing = get().viewing
+    const model = await api.model(pid, viewing ?? undefined)
+    if (viewing && viewing === model.head) set({ viewing: null })  // browsing the head is just the current model
     const rows = indexRows(model)
     const live = new Set(rows.keys())
     let proposal = get().proposal
@@ -166,10 +172,10 @@ export const useStore = create<State>((set, get) => ({
     }
     set({ model, rows, selection: pruneSelection(get().selection, live), proposal,
           inspectId: get().inspectId && live.has(get().inspectId!) ? get().inspectId : null })
-    if (get().repairs?.revision !== model.head) {
-      const revision = model.head
+    if (get().repairs?.revision !== model.revision.id) {
+      const revision = model.revision.id
       void api.repairs(pid, revision).then((byIssue) => {
-        if (get().projectId === pid && get().model?.head === revision) set({ repairs: { revision, byIssue } })
+        if (get().projectId === pid && get().model?.revision.id === revision) set({ repairs: { revision, byIssue } })
       }).catch(() => {})
     }
   },
@@ -199,6 +205,7 @@ export const useStore = create<State>((set, get) => ({
   inspect: (inspectId) => set({ inspectId }),
 
   edit: async (ops, summary) => {
+    if (readOnly()) return false
     const { projectId, model } = get()
     if (!projectId || !model) return false
     set({ busy: true })
@@ -221,6 +228,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   undo: async () => {
+    if (readOnly()) return
     const pid = get().projectId
     if (!pid) return
     try {
@@ -230,6 +238,7 @@ export const useStore = create<State>((set, get) => ({
     } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
   },
   redo: async () => {
+    if (readOnly()) return
     const pid = get().projectId
     if (!pid) return
     try {
@@ -247,6 +256,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   assist: async (instruction, parentRunId) => {
+    if (readOnly()) return false
     const { projectId, model, selection, provider } = get()
     if (!projectId || !model) return false
     try {
@@ -262,6 +272,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   replyToProposal: async (instruction, parentRunId) => {
+    if (readOnly()) return false
     const { projectId, proposal, provider } = get()
     if (!projectId || !proposal || proposal.status !== 'pending') return false
     try {
@@ -277,6 +288,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   startBuild: async (sourceIds, instruction, sourcePages) => {
+    if (readOnly()) return false
     const { projectId, model, provider } = get()
     if (!projectId || !model) return false
     try {
@@ -298,6 +310,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   applyProposal: async () => {
+    if (readOnly()) return
     const { projectId, proposal } = get()
     if (!projectId || !proposal) return
     set({ busy: true })
@@ -344,6 +357,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   regenerate: async () => {
+    if (readOnly()) return
     const { projectId, proposal, provider } = get()
     if (!projectId || !proposal) return
     try {
@@ -388,6 +402,7 @@ export const useStore = create<State>((set, get) => ({
   notify: (toast) => set({ toast }),
 
   startAutofix: async (issues) => {
+    if (readOnly()) return
     if (!issues.length) return
     set({ autofix: { queue: issues.map((i) => ({ id: i.id, explanation: i.explanation })), total: issues.length,
                      current: null, results: [], paused: null } })
@@ -428,7 +443,20 @@ export const useStore = create<State>((set, get) => ({
   },
 
   stopAutofix: () => set({ autofix: null }),
+
+  viewRevision: async (viewing) => {
+    if (viewing && get().autofix) set({ autofix: null })
+    set({ viewing })
+    await get().reload()
+  },
 }))
+
+/** True (with a notice) while an earlier revision is being browsed: nothing may change then. */
+function readOnly() {
+  const { viewing, notify } = useStore.getState()
+  if (viewing) notify({ kind: 'info', text: `You are viewing ${viewing}, which is read-only. Go back to the current model to make changes.` })
+  return !!viewing
+}
 
 /** Add a run to the current auto-fix issue's conversation. */
 function trackAutofixRun(runId: string) {

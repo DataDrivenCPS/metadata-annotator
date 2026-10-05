@@ -65,6 +65,8 @@ export function Workspace() {
   const handleEvent = useStore((s) => s.handleEvent)
   const openProject = useStore((s) => s.openProject)
   const undo = useStore((s) => s.undo)
+  const viewing = useStore((s) => s.viewing)
+  const viewRevision = useStore((s) => s.viewRevision)
   const redo = useStore((s) => s.redo)
   const reload = useStore((s) => s.reload)
   const notify = useStore((s) => s.notify)
@@ -115,8 +117,8 @@ export function Workspace() {
         <span className={`profile-badge ${model.info.family}`} title={`Target vocabulary: ${model.info.profile_label}`}>
           {model.info.profile_label.split(' (')[0]}</span>
         <button className="rev" onClick={() => setDrawerTab('history')}
-          title={`${model.head}, saved ${new Date(model.revision.created_at).toLocaleString()}: ${model.revision.summary}\nClick to see the full history.`}>
-          <span className="rev-id">{model.head}</span>
+          title={`${model.revision.id}, saved ${new Date(model.revision.created_at).toLocaleString()}: ${model.revision.summary}\nClick to see the full history.`}>
+          <span className="rev-id">{model.revision.id}</span>
           <span className="rev-summary">{model.revision.summary}</span>
         </button>
         {v && <button className={`health ${openViolations ? 'bad' : 'good'}`}
@@ -126,12 +128,12 @@ export function Workspace() {
           {dismissedCount > 0 && <span className="muted"> · {dismissedCount} dismissed</span>}
         </button>}
         <span className="spacer" />
-        <button onClick={() => void undo()} disabled={!model.info.can_undo} title="Undo (Ctrl+Z)">Undo</button>
-        <button onClick={() => void redo()} disabled={!model.info.can_redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
+        <button onClick={() => void undo()} disabled={!!viewing || !model.info.can_undo} title="Undo (Ctrl+Z)">Undo</button>
+        <button onClick={() => void redo()} disabled={!!viewing || !model.info.can_redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
         <FileMenu onImport={() => fileInput.current?.click()} items={[
-          { label: 'Export Turtle (.ttl)', hint: `The model at ${model.head}`, href: api.exportUrl(projectId, model.head, 'ttl') },
-          { label: 'Export point table (.csv)', hint: 'Points with measurement, unit, equipment and sensor type',
-            href: api.exportUrl(projectId, model.head, 'csv') },
+          { label: 'Export Turtle (.ttl)', hint: `The model at ${model.revision.id}`, href: api.exportUrl(projectId, model.revision.id, 'ttl') },
+          { label: 'Export point table (.csv)', hint: `Points at ${model.revision.id}, with measurement, unit, equipment and sensor type`,
+            href: api.exportUrl(projectId, model.revision.id, 'csv') },
         ]} />
         <input ref={fileInput} type="file" accept=".ttl,.turtle" hidden onChange={async (e) => {
           const f = e.target.files?.[0]
@@ -141,6 +143,13 @@ export function Workspace() {
           catch (err) { notify({ kind: 'error', text: `Import failed: ${(err as Error).message}` }) }
         }} />
       </header>
+      {viewing && <div className="viewing-banner">
+        <span><strong>Viewing {model.revision.id}</strong> from {new Date(model.revision.created_at).toLocaleString()}
+          {' '}· {model.revision.summary} — read-only</span>
+        <span className="spacer" />
+        <a href={api.exportUrl(projectId, model.revision.id, 'ttl')} download>Download .ttl</a>
+        <button className="primary" onClick={() => void viewRevision(null)}>Back to current ({model.head})</button>
+      </div>}
       <main className="panes" style={{ gridTemplateColumns: [
         ...(sourcesOpen ? [`${sourcesWidth}px`, `${HANDLE}px`] : []), 'minmax(0, 1fr)', `${HANDLE}px`, `${assistantWidth}px`,
       ].join(' ') }}>

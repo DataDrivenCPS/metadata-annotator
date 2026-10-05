@@ -18,6 +18,7 @@ export function IssuesView() {
   const repairs = useStore((s) => s.repairs?.byIssue)
   const startAutofix = useStore((s) => s.startAutofix)
   const autofixing = useStore((s) => !!s.autofix)
+  const viewing = useStore((s) => s.viewing)
   const running = useStore((s) => Object.values(s.runs).some(isActive))
   const [showAll, setShowAll] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
@@ -65,7 +66,7 @@ export function IssuesView() {
         {selectedIssues.length > 0 && <button className="link" onClick={() => setSelectedIds(new Set())}>Clear</button>}
         {(() => {
           const queue = autofixCandidates(issues, selectedIds)
-          return <button disabled={!queue.length || autofixing || running}
+          return !viewing && <button disabled={!queue.length || autofixing || running}
             title={autofixing ? 'Auto-fix is already running' : running ? 'Wait for the assistant to finish'
               : 'The assistant works through these one at a time; you approve, skip or answer each proposal'}
             onClick={() => { setSelectedIds(new Set()); void startAutofix(queue) }}>
@@ -90,13 +91,13 @@ export function IssuesView() {
               {i.dismissal && <DismissalNote dismissal={i.dismissal} />}
             </span>
             <span className="issue-actions">
-              <button className="link" onClick={() => addToPrompt([i])}
-                title="Add this issue to the assistant prompt and select its objects">add to chat</button>
+              {!viewing && <button className="link" onClick={() => addToPrompt([i])}
+                title="Add this issue to the assistant prompt and select its objects">add to chat</button>}
               {i.affected_ids.some((id) => rows.has(id)) && <button className="link" onClick={() => showInTable(i)}>show in table</button>}
-              <button className="link" onClick={() => void api.setIssueState(projectId, i.id,
+              {!viewing && <button className="link" onClick={() => void api.setIssueState(projectId, i.id,
                 i.resolution_state === 'dismissed' ? 'open' : 'dismissed').then(reload)}>
                 {i.resolution_state === 'dismissed' ? 'reopen' : 'dismiss'}
-              </button>
+              </button>}
             </span>
           </li>
         ))}

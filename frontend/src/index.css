@@ -417,3 +417,9 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .autofix-outcome { font-size: 10px; text-transform: uppercase; padding: 0 5px; border-radius: 6px; background: #eef1f4; }
 .autofix-outcome.applied, .autofix-outcome.resolved { background: #e6f4ea; color: var(--ok); }
 .autofix-outcome.failed { background: #fdecea; color: var(--bad); }
+
+/* browsing an earlier revision */
+.viewing-banner { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #fff4d6; border-bottom: 1px solid #e8d49a; font-size: 13px; }
+.viewing-banner .spacer { flex: 1; }
+.revisions li.shown { background: #fff4d6; }
+.revision-actions { display: inline-flex; gap: 10px; margin-left: 8px; font-size: 12px; }

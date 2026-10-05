@@ -35,6 +35,7 @@ export function Drawer() {
 function useEntityDetail() {
   const projectId = useStore((s) => s.projectId)!
   const head = useStore((s) => s.model?.head)
+  const viewing = useStore((s) => s.viewing)
   const inspectId = useStore((s) => s.inspectId)
   const [detail, setDetail] = useState<EntityDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -43,8 +44,8 @@ function useEntityDetail() {
   useEffect(() => {
     if (!inspectId) { setDetail(null); return }
     setError(null)
-    api.entity(projectId, inspectId).then(setDetail).catch((e) => { setDetail(null); setError(String(e.message ?? e)) })
-  }, [projectId, inspectId, head, version])
+    api.entity(projectId, inspectId, viewing ?? undefined).then(setDetail).catch((e) => { setDetail(null); setError(String(e.message ?? e)) })
+  }, [projectId, inspectId, head, viewing, version])
 
   return { inspectId, detail, error, refresh: () => setVersion((v) => v + 1) }
 }
@@ -167,16 +168,24 @@ const fmtJson = (s: string) => { try { const v = JSON.parse(s); return v === nul
 function History() {
   const projectId = useStore((s) => s.projectId)!
   const head = useStore((s) => s.model?.head)
+  const shown = useStore((s) => s.model?.revision.id)
+  const viewRevision = useStore((s) => s.viewRevision)
   const [revs, setRevs] = useState<Revision[]>([])
   useEffect(() => { api.revisions(projectId).then(setRevs) }, [projectId, head])
   return (
     <ul className="revisions">
       {revs.map((r) => (
-        <li key={r.id} className={r.id === head ? 'current' : ''}>
+        <li key={r.id} className={`${r.id === head ? 'current' : ''} ${r.id === shown ? 'shown' : ''}`}>
           <code>{r.id}</code> <span className={`author ${r.author}`}>{r.author}</span> {r.summary}
           <span className="muted"> · {new Date(r.created_at).toLocaleString()}
             {r.validation ? ` · ${r.validation.violations} problem(s)` : ''}</span>
           {r.id === head && <span className="badge">current</span>}
+          {r.id === shown && r.id !== head && <span className="badge">viewing</span>}
+          <span className="revision-actions">
+            {r.id !== shown && <button className="link" onClick={() => void viewRevision(r.id === head ? null : r.id)}
+              title={r.id === head ? 'Back to the current model' : 'Browse this revision read-only'}>{r.id === head ? 'back to current' : 'view'}</button>}
+            <a href={api.exportUrl(projectId, r.id, 'ttl')} download title={`Download the model at ${r.id} as Turtle`}>.ttl</a>
+          </span>
         </li>
       ))}
     </ul>

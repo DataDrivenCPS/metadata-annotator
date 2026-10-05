@@ -20,6 +20,7 @@ export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R
   const issues = useStore((s) => s.model?.issues)
   const startAutofix = useStore((s) => s.startAutofix)
   const autofixing = useStore((s) => !!s.autofix)
+  const viewing = useStore((s) => s.viewing)
   const running = useStore((s) => Object.values(s.runs).some(isActive))
   const [filter, setFilter] = useState('')
   const [sort, setSort] = useState<SortState>(null)
@@ -43,14 +44,14 @@ export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R
           {filter && selectedHere > shown.filter((r) => isSelected(selection, r.id)).length ? ' (some hidden by filter)' : ''}
         </span>
         {(() => {
-          const fixable = selectedHere && !autofixing ? issuesOnSelection(issues ?? [], selection) : []
+          const fixable = selectedHere && !autofixing && !viewing ? issuesOnSelection(issues ?? [], selection) : []
           return fixable.length > 0 && <button className="link" disabled={running}
             title={running ? 'Wait for the assistant to finish'
               : 'The assistant works through the selection’s issues one at a time; you approve, skip or answer each proposal'}
             onClick={() => void startAutofix(fixable)}>Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>
         })()}
         <span className="spacer" />
-        {p.toolbar}
+        {(viewing ? null : p.toolbar)}
       </div>
       <div className="table-scroll">
         <table className="data">
@@ -83,7 +84,7 @@ export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R
                       <td key={c.key}
                         className={`${fieldSel ? 'field-selected' : ''} ${c.field ? 'editable' : ''}`}
                         onClick={(e) => onCell(e, row, c)}
-                        onDoubleClick={() => c.field && setEditing({ id: row.id, key: c.key })}
+                        onDoubleClick={() => c.field && !viewing && setEditing({ id: row.id, key: c.key })}
                         title={c.field ? 'Click to select · double-click to edit' : undefined}>
                         {isEditing ? p.editor(row, c, () => setEditing(null)) : (
                           <>

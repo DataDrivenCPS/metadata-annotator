@@ -44,7 +44,7 @@ export function IssuesView() {
 
   if (!issues.length) return <p className="muted pad">No issues: the model passes validation against the loaded vocabulary.</p>
   return (
-    <div>
+    <div className="issues-view">
       {validation && (() => {
         const fromValidation = issues.filter((i) => i.origin === 'validation')
         const count = (severity: string) => fromValidation.filter((i) => i.severity === severity).length

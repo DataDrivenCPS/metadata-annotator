@@ -14,6 +14,10 @@ Domain mapping (223P):
   connection points belong to equipment; direction comes from outlet -> inlet.
 * **Space** - an ``s223:PhysicalSpace``; spaces nest with ``parent s223:contains child`` and
   equipment is placed with ``s223:hasPhysicalLocation``.
+* **Entity** - an instance of any other ontology class (a zone, a system, a wall...).
+* **Relationship** - any other triple between entities (or from an entity to a vocabulary
+  term) whose predicate is a relation of the loaded ontologies. Predicates that the typed
+  editors own (``OWNED``) are not relationships; their fields edit them.
 * **Connection point** - an inlet, outlet or bidirectional ``s223:ConnectionPoint`` of a
   piece of equipment, with its medium, the connection that joins it, the point it is paired
   with (``s223:pairedConnectionPoint``) and the container's point it maps to (``s223:mapsTo``).
@@ -28,7 +32,9 @@ from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
 from .graph import ProjectGraph
-from .vocabulary import QUDT, S223, Vocabulary, local_name
+from .vocabulary import BRICK, QUDT, REC, S223, Vocabulary, local_name
+
+BRICK_NS, REC_NS = str(BRICK), str(REC)
 
 POINT_KINDS = {
     "measurement": S223.QuantifiableObservableProperty,
@@ -153,18 +159,47 @@ class ConnectionPointRow:
 
 
 @dataclass
+class EntityRow:
+    id: str
+    iri: str
+    label: str
+    type: TermRef | None
+    relation_count: int
+    locked: list[str]
+    evidence: list[str]
+    kind: str = "entity"
+
+
+@dataclass
+class RelationshipRow:
+    id: str
+    label: str
+    subject: EntityRef
+    relation: TermRef
+    object: EntityRef | None  # another entity...
+    value: TermRef | None  # ...or a vocabulary term (e.g. an enumeration value)
+    symmetric: bool
+    iri: str = ""
+    locked: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    kind: str = "relationship"
+
+
+@dataclass
 class ModelView:
     equipment: list[EquipmentRow] = field(default_factory=list)
     points: list[PointRow] = field(default_factory=list)
     connections: list[ConnectionRow] = field(default_factory=list)
     connection_points: list[ConnectionPointRow] = field(default_factory=list)
     spaces: list[SpaceRow] = field(default_factory=list)
+    entities: list[EntityRow] = field(default_factory=list)
+    relationships: list[RelationshipRow] = field(default_factory=list)
     # containment edges: (container id, contained id)
     containment: list[tuple[str, str]] = field(default_factory=list)
 
     def rows(self) -> dict[str, object]:
         return {r.id: r for r in [*self.equipment, *self.points, *self.connections, *self.connection_points,
-                                  *self.spaces]}
+                                  *self.spaces, *self.entities, *self.relationships]}
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -194,9 +229,9 @@ class Classifier:
 
     def kind(self, pg: ProjectGraph, node) -> str | None:
         kinds = {self.vocab.kind_of(t) for t in self.types(pg, node)}
-        for k in ("sensor", "connection", "location", "equipment", "property"):
+        for k in ("sensor", "connection", "location", "equipment", "property", "class"):
             if k in kinds:
-                return {"property": "point", "location": "space"}.get(k, k)
+                return {"property": "point", "location": "space", "class": "entity"}.get(k, k)
         return None
 
     def point_kind(self, pg: ProjectGraph, node) -> str:
@@ -322,6 +357,8 @@ def connection_ends(pg: ProjectGraph, cx) -> tuple[list[tuple[URIRef, URIRef | N
 
 def entity_kind(pg: ProjectGraph, vocab: Vocabulary, eid: str) -> str | None:
     """equipment / point / connection for an existing entity id, else None."""
+    if eid.startswith("rl-"):
+        return "relationship" if find_relationship(pg, vocab, eid) else None
     if vocab.family == "brick":
         from . import brick
 
@@ -383,6 +420,9 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
                 located[pg.id_of(place)] = located.get(pg.id_of(place), 0) + 1  # type: ignore[index]
             if parent is not None and pg.id_of(parent):
                 view.containment.append((pg.id_of(parent), eid))  # type: ignore[arg-type]
+        elif kind == "entity":
+            view.entities.append(EntityRow(
+                **common, type=TermRef.of(vocab, most_specific(vocab, cls.types(pg, node), "class")), relation_count=0))
         elif kind == "space":
             parent = next((p for p in g.subjects(S223.contains, node) if cls.kind(pg, p) == "space"), None)
             view.spaces.append(SpaceRow(
@@ -453,6 +493,7 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> ModelView:
     view.points.sort(key=lambda r: r.label.lower())
     view.connections.sort(key=lambda r: r.label.lower())
     view.connection_points.sort(key=lambda r: ((r.equipment.label.lower() if r.equipment else "~"), r.label.lower()))
+    add_relationships(pg, vocab, view)
     return view
 
 
@@ -472,7 +513,117 @@ def ensure_ids(pg: ProjectGraph, vocab: Vocabulary) -> int:
         if pg.id_of(node) is not None:
             continue
         kind = cls.kind(pg, node)
-        if kind in ("equipment", "point", "connection", "space"):
+        if kind in ("equipment", "point", "connection", "space", "entity"):
             pg.register(new_id(kind), node)
             added += 1
     return added
+
+
+# ------------------------------------------------------------- relationships
+
+QUDT_NS = "http://qudt.org/schema/qudt/"
+# Predicates a typed editor owns: predicate -> (subject kinds, or None for any; what edits it instead).
+OWNED: dict[str, dict[str, tuple[set[str] | None, str]]] = {
+    "s223": {
+        **{str(S223[p]): (None, "a connection point (create_connection_point / its fields)") for p in (
+            "hasConnectionPoint", "isConnectionPointOf", "cnx", "connectsThrough", "connectsAt", "mapsTo",
+            "pairedConnectionPoint")},
+        **{str(S223[p]): (None, "a connection (create_connection)") for p in (
+            "connected", "connectedTo", "connectedFrom", "connectedThrough")},
+        **{str(S223[p]): (None, "a point (create_point / its fields)") for p in (
+            "hasProperty", "actuatedByProperty", "observes", "hasObservationLocation", "ofMedium", "ofSubstance",
+            "hasEnumerationKind")},
+        str(S223.contains): ({"equipment", "space"}, "contained_in (equipment) or part_of (spaces)"),
+        str(S223.hasPhysicalLocation): (None, "the equipment's location"),
+        str(S223.hasMedium): ({"connection", "connection_point"}, "the connection's or connection point's medium"),
+        QUDT_NS + "hasQuantityKind": (None, "the point's quantity kind"),
+        QUDT_NS + "hasUnit": (None, "the point's unit"),
+    },
+    "brick": {
+        **{BRICK_NS + p: (None, "the point's equipment") for p in ("hasPoint", "isPointOf")},
+        **{BRICK_NS + p: (None, "a connection (create_connection)") for p in ("feeds", "isFedBy")},
+        **{BRICK_NS + p: ({"equipment", "space"}, "contained_in (equipment) or part_of (spaces)")
+           for p in ("hasPart", "isPartOf")},
+        **{REC_NS + p: ({"space"}, "the space's part_of") for p in ("isPartOf", "hasPart")},
+        **{BRICK_NS + p: (None, "the equipment's location") for p in ("hasLocation", "isLocationOf")},
+        BRICK_NS + "hasUnit": (None, "the point's unit"),
+        REC_NS + "adjacentElement": ({"space"}, "adjacency between spaces (make_adjacent)"),
+    },
+}
+
+
+def owned_hint(vocab: Vocabulary, predicate: str, subject_kind: str | None) -> str | None:
+    """What edits this predicate instead, when a typed editor owns it for this kind of subject."""
+    watr = vocab.namespaces.get("watr")
+    if watr and predicate == watr + "hasProcess":
+        return "the equipment's treatment process"
+    rule = OWNED.get(vocab.family, {}).get(predicate)
+    if rule is None:
+        return None
+    kinds, hint = rule
+    return hint if kinds is None or subject_kind in kinds else None
+
+
+def relationship_key(vocab: Vocabulary, s, p, o) -> tuple[str, str, str]:
+    """One key for a fact however it is stated: symmetric pairs and inverse pairs coincide."""
+    t = vocab.term(str(p))
+    if t is not None and t.inverse and str(p) > t.inverse:
+        s, p, o = o, URIRef(t.inverse), s
+        t = vocab.term(str(p))
+    if t is not None and t.symmetric and str(o) < str(s):
+        s, o = o, s
+    return str(s), str(p), str(o)
+
+
+def relationship_id(key: tuple[str, str, str]) -> str:
+    return "rl-" + hashlib.sha1("|".join(key).encode()).hexdigest()[:8]
+
+
+def find_relationship(pg: ProjectGraph, vocab: Vocabulary, rid: str) -> tuple[URIRef, URIRef, URIRef] | None:
+    """A stored triple behind a relationship id."""
+    for s, p, o in pg.model:
+        if isinstance(s, URIRef) and isinstance(o, URIRef) and vocab.kind_of(str(p)) == "relation":
+            if relationship_id(relationship_key(vocab, s, p, o)) == rid:
+                return s, p, o  # type: ignore[return-value]
+    return None
+
+
+def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> None:
+    """Every non-owned ontology relation between the view's entities (or to a vocabulary term)."""
+    g = pg.model
+    nodes: dict[str, tuple[str, str, str]] = {}  # iri -> (id, kind, label)
+    for row in view.rows().values():
+        iri = getattr(row, "iri", "")
+        if iri and row.kind != "relationship":  # type: ignore[attr-defined]
+            nodes[iri] = (row.id, row.kind, row.label)  # type: ignore[attr-defined]
+    seen: set[tuple[str, str, str]] = set()
+    counts: dict[str, int] = {}
+    for s, p, o in g:
+        if str(s) not in nodes or not isinstance(o, URIRef) or vocab.kind_of(str(p)) != "relation":
+            continue
+        sid, skind, slabel = nodes[str(s)]
+        if owned_hint(vocab, str(p), skind):
+            continue
+        obj = nodes.get(str(o))
+        value = None if obj else (TermRef.of(vocab, o) if vocab.term(str(o)) else None)
+        if obj is None and value is None:
+            continue
+        key = relationship_key(vocab, s, p, o)
+        if key in seen:
+            continue
+        seen.add(key)
+        term = vocab.term(str(p))
+        rel = TermRef.of(vocab, p)
+        target = obj[2] if obj else value.label  # type: ignore[union-attr]
+        view.relationships.append(RelationshipRow(
+            id=relationship_id(key), label=f"{slabel} {rel.label} {target}",  # type: ignore[union-attr]
+            subject=EntityRef(sid, slabel), relation=rel,  # type: ignore[arg-type]
+            object=EntityRef(obj[0], obj[2]) if obj else None, value=value,
+            symmetric=bool(term and term.symmetric)))
+        for eid in (sid, obj[0] if obj else None):
+            if eid:
+                counts[eid] = counts.get(eid, 0) + 1
+    for e in view.entities:
+        e.relation_count = counts.get(e.id, 0)
+    view.entities.sort(key=lambda r: r.label.lower())
+    view.relationships.sort(key=lambda r: r.label.lower())

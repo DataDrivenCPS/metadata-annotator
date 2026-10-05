@@ -25,6 +25,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
 from .graph import WB, ProjectGraph, new_id
+from .operations import GenericOps
 from .vocabulary import BRICK, REC, Vocabulary, local_name
 
 if TYPE_CHECKING:
@@ -64,6 +65,8 @@ def node_kind(pg: ProjectGraph, vocab: Vocabulary, node) -> str | None:
         return "equipment"
     if "location" in kinds:
         return "space"
+    if "class" in kinds:
+        return "entity"
     return None
 
 
@@ -147,7 +150,8 @@ def point_owner(pg: ProjectGraph, point) -> URIRef | None:
 
 def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
     from .projection import (
-        ConnectionRow, EntityRef, EquipmentRow, ModelView, PointRow, SpaceRow, TermRef, most_specific,
+        ConnectionRow, EntityRef, EntityRow, EquipmentRow, ModelView, PointRow, SpaceRow, TermRef, add_relationships,
+        most_specific,
     )
 
     g = pg.model
@@ -191,6 +195,10 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
                 process=None, contained_in=parent_ref, point_count=0, location=place))
             if parent_ref:
                 view.containment.append((parent_ref.id, eid))
+        elif kind == "entity":
+            view.entities.append(EntityRow(
+                **common, label=label(node), type=TermRef.of(vocab, most_specific(vocab, types(pg, node), "class")),
+                relation_count=0))
         elif kind == "space":
             parent = space_parent(pg, node)
             view.spaces.append(SpaceRow(
@@ -216,6 +224,7 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
         space.equipment_count = located.get(space.id, 0)
     view.spaces.sort(key=lambda r: r.label.lower())
     view.equipment.sort(key=lambda r: r.label.lower())
+    add_relationships(pg, vocab, view)
     view.points.sort(key=lambda r: r.label.lower())
     view.connections.sort(key=lambda r: r.label.lower())
     return view
@@ -223,10 +232,11 @@ def project(pg: ProjectGraph, vocab: Vocabulary) -> "ModelView":
 
 # -------------------------------------------------------------- compiling
 
-class BrickCompiler:
+class BrickCompiler(GenericOps):
     def __init__(self, pg: ProjectGraph, vocab: Vocabulary, result: "ApplyResult"):
         self.pg, self.vocab, self.r = pg, vocab, result
         self.g = pg.model
+        self.relations: list[tuple] = []
 
     def node(self, eid: str) -> URIRef:
         n = self.pg.iri(eid)

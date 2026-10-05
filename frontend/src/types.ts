@@ -33,12 +33,24 @@ export interface ConnectionPointRow {
   connection: EntityRef | null; paired_with: EntityRef | null
   maps_to: EntityRef | null; mapped_from: EntityRef | null; locked: string[]; evidence: string[]
 }
-export type Row = EquipmentRow | PointRow | ConnectionRow | ConnectionPointRow | SpaceRow
+/** An instance of any other ontology class (a wall, a zone, a system...). */
+export interface EntityRow {
+  kind: 'entity'; id: string; iri: string; label: string
+  type: TermRef | null; relation_count: number; locked: string[]; evidence: string[]
+}
+/** Any other ontology relation between entities (or from an entity to a vocabulary term). */
+export interface RelationshipRow {
+  kind: 'relationship'; id: string; iri: string; label: string
+  subject: EntityRef; relation: TermRef; object: EntityRef | null; value: TermRef | null
+  symmetric: boolean; locked: string[]; evidence: string[]
+}
+export type Row = EquipmentRow | PointRow | ConnectionRow | ConnectionPointRow | SpaceRow | EntityRow | RelationshipRow
 
 export interface ModelView {
   equipment: EquipmentRow[]; points: PointRow[]; connections: ConnectionRow[]
   connection_points: ConnectionPointRow[]
   spaces: SpaceRow[]
+  entities: EntityRow[]; relationships: RelationshipRow[]
   containment: [string, string][]
 }
 

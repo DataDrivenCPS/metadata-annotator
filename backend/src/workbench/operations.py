@@ -36,6 +36,8 @@ from .projection import (
     connection_ends,
     entity_iri,
     entity_kind,
+    find_relationship,
+    owned_hint,
     owner_of_port,
     paired_port,
     point_owner,
@@ -44,6 +46,8 @@ from .projection import (
     port_id,
     port_iri,
     port_label,
+    relationship_id,
+    relationship_key,
     sensors_of,
 )
 from .vocabulary import QUDT, S223, Vocabulary
@@ -181,6 +185,38 @@ class DeleteSpace(_Op):
     id: str
 
 
+class CreateEntity(_Op):
+    op: Literal["create_entity"] = "create_entity"
+    id: str | None = Field(None, description="Omit, or 'new:<name>' to reference it from later operations")
+    label: str
+    type: str = Field(description="Any ontology class without its own editor, e.g. rec:Wall, s223:Zone")
+    evidence: list[str] | None = None
+
+
+class UpdateEntity(_Op):
+    op: Literal["update_entity"] = "update_entity"
+    id: str
+    label: str | None = None
+    type: str | None = None
+
+
+class DeleteEntity(_Op):
+    op: Literal["delete_entity"] = "delete_entity"
+    id: str
+
+
+class Relate(_Op):
+    op: Literal["relate"] = "relate"
+    subject: str = Field(description="Id of the entity the relation starts from (any kind)")
+    relation: str = Field(description="A relation of the loaded ontologies, e.g. s223:hasDomainSpace")
+    object: str = Field(description="Id of the related entity, or a vocabulary term (e.g. s223:Domain-HVAC)")
+
+
+class Unrelate(_Op):
+    op: Literal["unrelate"] = "unrelate"
+    id: str = Field(description="Relationship id (rl-...)")
+
+
 Direction = Literal["inlet", "outlet", "bidirectional"]
 
 
@@ -219,6 +255,7 @@ Operation = Annotated[
         CreateConnection, UpdateConnection, DeleteConnection,
         CreateConnectionPoint, UpdateConnectionPoint, DeleteConnectionPoint,
         CreateSpace, UpdateSpace, DeleteSpace,
+        CreateEntity, UpdateEntity, DeleteEntity, Relate, Unrelate,
     ],
     Field(discriminator="op"),
 ]
@@ -228,6 +265,7 @@ OperationList = TypeAdapter(list[Operation])
 LOCKABLE_FIELDS = {
     "equipment": {"label", "type", "process", "contained_in", "location"},
     "space": {"label", "type", "part_of"},
+    "entity": {"label", "type"},
     "point": {"label", "point_kind", "point_type", "quantity_kind", "unit", "equipment", "medium",
               "substance", "sensor_type", "enumeration_kind"},
     "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type"},
@@ -251,12 +289,16 @@ FAMILY_FIELDS = {
     "brick": {
         "equipment": {"label", "type", "contained_in", "location", "evidence"},
         "space": {"label", "type", "part_of", "evidence"},
+        "entity": {"label", "type", "evidence"},
+        "relationship": {"subject", "relation", "object"},
         "point": {"label", "point_kind", "point_type", "unit", "equipment", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "evidence"},
     },
     "s223": {
         "equipment": {"label", "type", "process", "contained_in", "location", "evidence"},
         "space": {"label", "type", "part_of", "evidence"},
+        "entity": {"label", "type", "evidence"},
+        "relationship": {"subject", "relation", "object"},
         "point": {"label", "point_kind", "quantity_kind", "unit", "equipment", "medium", "substance",
                   "sensor_type", "enumeration_kind", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type",
@@ -293,7 +335,15 @@ class ApplyResult:
 
 
 def entity_kind_of_op(op) -> str:
+    if op.op in ("relate", "unrelate"):
+        return "relationship"
     return op.op.split("_", 1)[1]  # create_connection_point -> connection_point
+
+
+# What to use instead when a class has its own editor (create_entity is for everything else).
+TYPED_CREATE = {"equipment": "create_equipment", "location": "create_space", "point_class": "create_point",
+                "property": "create_point", "sensor": "create_point (sensor_type)", "connection": "create_connection",
+                "port": "create_connection_point"}
 
 
 def expand_term(vocab: Vocabulary, value: str) -> str:
@@ -362,6 +412,40 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
         if op.op == "create_connection" and not (data.get("to_equipment") or data.get("to_point")):
             problems.append(f"{where}: give to_equipment" + (" or to_point" if vocab.family == "s223" else ""))
             continue
+        if kind == "relationship":
+            if op.op == "unrelate":
+                if data["id"] in deleted or entity_kind(pg, vocab, data["id"]) != "relationship":
+                    problems.append(f"{where}: no relationship with id {data['id']!r}")
+                    continue
+                deleted.add(data["id"])
+                out.append(type(op).model_validate(data))
+                continue
+            subj = placeholders.get(data["subject"], data["subject"])
+            skind = created.get(subj) or (None if subj in deleted else entity_kind(pg, vocab, subj))
+            if skind in (None, "relationship"):
+                problems.append(f"{where}: subject {subj!r} is not an entity in the model")
+                continue
+            rel = expand_term(vocab, data["relation"])
+            t = vocab.term(rel)
+            if t is None or t.kind != "relation":
+                problems.append(f"{where}: {data['relation']!r} is not a relation in the loaded vocabulary")
+                unknown_terms.append(("relation", rel, "relation"))
+                continue
+            hint = owned_hint(vocab, rel, skind)
+            if hint:
+                problems.append(f"{where}: {vocab.curie(rel)} is edited through {hint}, not relate")
+                continue
+            obj = placeholders.get(data["object"], data["object"])
+            okind = created.get(obj) or (None if obj in deleted else entity_kind(pg, vocab, obj))
+            if okind is None or okind == "relationship":
+                term = expand_term(vocab, obj)
+                if vocab.term(term) is None:
+                    problems.append(f"{where}: object {obj!r} is neither an entity id nor a vocabulary term")
+                    continue
+                obj = term
+            data.update(subject=subj, relation=rel, object=obj)
+            out.append(type(op).model_validate(data))
+            continue
         if vocab.family == "s223" and "process" in data and not vocab.namespaces.get("watr"):
             problems.append(f"{where}: treatment processes are only available in WaTr models")
             continue
@@ -402,13 +486,16 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             if fname in data and data[fname] is not None:
                 iri = expand_term(vocab, data[fname])
                 data[fname] = iri
-                expected = term_kind or {"equipment": "equipment", "connection": "connection", "space": "location"}.get(kind)
+                expected = term_kind or {"equipment": "equipment", "connection": "connection", "space": "location",
+                                         "entity": "class"}.get(kind)
                 t = vocab.term(iri)
                 if t is None:
                     problems.append(f"{where}: {fname} {iri!r} is not a term in the loaded vocabulary")
                     unknown_terms.append((fname, iri, expected))
                 elif expected and t.kind != expected:
-                    problems.append(f"{where}: {fname} {iri!r} is a {t.kind}, expected a {expected}")
+                    instead = TYPED_CREATE.get(t.kind) if kind == "entity" else None
+                    problems.append(f"{where}: {fname} {iri!r} is a {t.kind}, expected a {expected}"
+                                    + (f"; it has its own editor: use {instead}" if instead else ""))
                 elif t.abstract:
                     problems.append(f"{where}: {fname} {t.label!r} is abstract and cannot be instantiated")
 
@@ -423,7 +510,115 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
     return out
 
 
-class _Compiler:
+class GenericOps:
+    """Entities of any ontology class and relationships through any ontology relation; shared by
+    the 223P and Brick compilers. Shape constraints are checked after all operations apply."""
+
+    pg: ProjectGraph
+    vocab: Vocabulary
+    r: ApplyResult
+
+    def any_node(self, eid: str) -> URIRef:
+        n = entity_iri(self.pg, eid)
+        if n is None:
+            raise OperationError([f"{eid} no longer exists when this operation runs "
+                                  "(an earlier operation in the proposal removed it)"])
+        return n
+
+    def _types(self, n) -> list[str]:
+        return [str(t) for t in self.pg.model.objects(n, RDF.type) if isinstance(t, URIRef)]
+
+    def _name(self, n) -> str:
+        return str(self.pg.model.value(n, RDFS.label) or self.vocab.curie(str(n)))
+
+    def create_entity(self, op: CreateEntity) -> None:
+        n = self.pg.register(op.id)  # type: ignore[arg-type]
+        self.pg.model.add((n, RDF.type, URIRef(op.type)))
+        self.pg.model.add((n, RDFS.label, RDFLiteral(op.label)))
+        self.pg.add_evidence(n, op.evidence or [])
+        self.r.touch(op.id, "created", *op.provided())  # type: ignore[arg-type]
+
+    def update_entity(self, op: UpdateEntity) -> None:
+        n = self.any_node(op.id)
+        g = self.pg.model
+        fields = op.provided()
+        if "label" in fields:
+            g.remove((n, RDFS.label, None))
+            g.add((n, RDFS.label, RDFLiteral(op.label or "")))
+        if "type" in fields and op.type:
+            for t in list(g.objects(n, RDF.type)):
+                if self.vocab.kind_of(str(t)) == "class":
+                    g.remove((n, RDF.type, t))
+            g.add((n, RDF.type, URIRef(op.type)))
+        self.r.touch(op.id, *fields)
+
+    def delete_entity(self, op: DeleteEntity) -> None:
+        n = self.any_node(op.id)
+        self.pg.model.remove((n, None, None))
+        self.pg.model.remove((None, None, n))
+        self.pg.unregister(op.id)
+        self.r.touch(op.id, "deleted")
+
+    def relate(self, op: Relate) -> None:
+        g = self.pg.model
+        s = self.any_node(op.subject)
+        o = URIRef(op.object) if (":" in op.object) else self.any_node(op.object)
+        p = URIRef(op.relation)
+        allowed = {r["relation"]: r for r in self.vocab.relations_for(self._types(s))}
+        if allowed.get(str(p), {}).get("max") == 1:  # one value: relating replaces it
+            for old in list(g.objects(s, p)):
+                self._drop(s, p, old)
+        g.add((s, p, o))
+        t = self.vocab.term(str(p))
+        if t is not None and t.symmetric:
+            g.add((o, p, s))
+        self.relations.append((s, p, o))
+        self.r.touch(relationship_id(relationship_key(self.vocab, s, p, o)), "created")
+
+    def _drop(self, s, p, o) -> None:
+        g = self.pg.model
+        g.remove((s, p, o))
+        t = self.vocab.term(str(p))
+        if t is not None and t.symmetric:
+            g.remove((o, p, s))
+        if t is not None and t.inverse:
+            g.remove((o, URIRef(t.inverse), s))
+        self.r.touch(relationship_id(relationship_key(self.vocab, s, p, o)), "deleted")
+
+    def unrelate(self, op: Unrelate) -> None:
+        found = find_relationship(self.pg, self.vocab, op.id)
+        if found is not None:  # already gone (e.g. its entity was deleted earlier) is fine
+            self._drop(*found)
+
+    def check_relations(self) -> list[str]:
+        """Each new relation must suit its subject's and object's classes, per the vocabulary's shapes."""
+        problems, g, v = [], self.pg.model, self.vocab
+        for s, p, o in getattr(self, "relations", []):
+            if (s, p, o) not in g:
+                continue
+            t = v.term(str(p))
+            stypes = self._types(s)
+            allowed = {r["relation"]: r for r in v.relations_for(stypes)}
+            if t is not None and t.shapes and str(p) not in allowed:
+                users = sorted({v.label(sh["subject"]) for sh in t.shapes})[:6]
+                problems.append(f"{self._name(s)}: {v.curie(str(p))} is not used for "
+                                f"{', '.join(v.label(c) for c in stypes) or 'untyped things'} in the vocabulary "
+                                f"(it is for: {', '.join(users)})")
+                continue
+            objects = allowed.get(str(p), {}).get("objects") or []
+            if not objects:
+                if t is not None and not t.shapes:
+                    self.r.notes.append(f"{v.curie(str(p))} has no constraints in the vocabulary, so validation "
+                                        "cannot check how it is used")
+                continue
+            otypes = self._types(o) if self.pg.id_of(o) or (o, RDF.type, None) in g else [str(o)]
+            if not any(v.is_a(ot, oc) for ot in otypes for oc in objects):
+                problems.append(f"{self._name(s)} {v.curie(str(p))} expects {', '.join(v.curie(c) for c in objects)}, "
+                                f"but {self._name(o)} is {', '.join(v.curie(c) for c in otypes) or 'untyped'}")
+        return problems
+
+
+class _Compiler(GenericOps):
     def __init__(self, pg: ProjectGraph, vocab: Vocabulary, result: ApplyResult):
         self.pg, self.vocab, self.r = pg, vocab, result
         self.g = pg.model
@@ -431,6 +626,7 @@ class _Compiler:
         self.has_process = URIRef(watr + "hasProcess") if watr else None
         self.touched_ports: set[URIRef] = set()  # checked against 223P's port rules after all ops
         self.named_ports: set[str] = set()  # connection point ids the operations refer to; kept
+        self.relations: list[tuple] = []  # added by relate, checked after all operations
         self.problems: list[str] = []
 
     def node(self, eid: str) -> URIRef:
@@ -968,6 +1164,7 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
     if isinstance(comp, _Compiler):
         comp.check_ports()
         problems = comp.problems
+    problems += comp.check_relations()
     problems += containment_cycles(pg, vocab, [eid for eid, f in result.changes.items()
                                                if "contained_in" in f or "part_of" in f])
     if problems:

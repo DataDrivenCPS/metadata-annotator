@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rdflib import BNode, Graph, Literal, Namespace, URIRef
+from rdflib.collection import Collection
 from rdflib.namespace import OWL, RDF, RDFS, SH, SKOS
 
 log = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ QUDT = Namespace("http://qudt.org/schema/qudt/")
 QK = Namespace("http://qudt.org/vocab/quantitykind/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")
 
-CATALOG_VERSION = 12
+CATALOG_VERSION = 14
 
 # Resolve one closure at a time (each downloads its sources and imports).
 _RESOLVE_LOCK = threading.Lock()
@@ -75,6 +76,11 @@ class Term:
     abstract: bool = False
     # deprecated terms: the term that replaces it (brick:isReplacedBy), if any
     replaced_by: str = ""
+    # relations only: owl:inverseOf, symmetric, and the SHACL property shapes that use it:
+    # [{"subject": class, "objects": [classes], "min": n|None, "max": n|None}]
+    inverse: str = ""
+    symmetric: bool = False
+    shapes: list[dict] = field(default_factory=list)
     # units only: quantity kinds the unit applies to; symbol
     quantity_kinds: list[str] = field(default_factory=list)
     symbol: str = ""
@@ -347,9 +353,18 @@ class Vocabulary:
             }
             if watr:
                 groups["process"] = descendants(URIRef(watr + "Process")) | {watr + "Process"}
+        if self.family != "brick":
+            # Connection point classes belong to the connection point editor, not generic entities.
+            groups["port"] = descendants(S223.ConnectionPoint) | {str(S223.ConnectionPoint)}
         for kind, members in groups.items():
             for iri in members:
                 add(iri, kind)
+
+        # Every other class in the ontologies (walls, zones, systems...): generic entities.
+        for iri in sorted({*parents, *children}):
+            if not _meta(iri):
+                add(iri, "class")
+        self._catalog_relations(g, terms, add, parents)
 
         qk_broader: dict[str, list[str]] = {}
         for qk in set(g.subjects(RDF.type, QUDT.QuantityKind)):
@@ -373,6 +388,84 @@ class Vocabulary:
                           if terms[iri]["kind"] not in ("unit", "quantity_kind")},
             "qk_broader": qk_broader,
         }
+
+    def _catalog_relations(self, g: Graph, terms: dict, add, parents: dict) -> None:
+        """Object relations, and which classes use them with which object classes.
+
+        None of the loaded vocabularies declares rdfs:domain/range; what a class may relate to
+        lives in its SHACL property shapes (sh:path + sh:class / sh:or / sh:node /
+        sh:qualifiedValueShape, sh:targetClass or the class itself as the shape)."""
+        is_class = lambda n: isinstance(n, URIRef) and (str(n) in parents or (None, RDFS.subClassOf, n) in g)  # noqa: E731
+        declared = set()
+        for t in (OWL.ObjectProperty, RDF.Property, S223.Relation, OWL.SymmetricProperty, S223.SymmetricRelation):
+            declared |= {str(p) for p in g.subjects(RDF.type, t) if isinstance(p, URIRef) and not _meta(str(p))}
+        datatype = {str(p) for p in g.subjects(RDF.type, OWL.DatatypeProperty)}
+
+        def classes_in(shape) -> set[str]:
+            out = {str(c) for c in g.objects(shape, SH["class"]) if isinstance(c, URIRef)}
+            out |= {str(c) for c in g.objects(shape, SH.node) if is_class(c)}
+            for lst in g.objects(shape, SH["or"]):
+                try:
+                    for item in Collection(g, lst):
+                        out |= classes_in(item)
+                except Exception:  # noqa: BLE001 - a malformed list is just not a constraint
+                    pass
+            for q in g.objects(shape, SH.qualifiedValueShape):
+                out |= classes_in(q)
+            return out
+
+        shapes: dict[str, list[dict]] = defaultdict(list)
+        literal_paths: set[str] = set()
+        for owner, ps in g.subject_objects(SH.property):
+            subjects = ({str(owner)} if is_class(owner) else set()) | {
+                str(c) for c in g.objects(owner, SH.targetClass) if isinstance(c, URIRef)}
+            path = g.value(ps, SH.path)
+            inverse = g.value(path, SH.inversePath) if isinstance(path, BNode) else None
+            pred = path if isinstance(path, URIRef) else inverse
+            if not isinstance(pred, URIRef) or _meta(str(pred)) or not subjects:
+                continue
+            if (ps, SH.datatype, None) in g or g.value(ps, SH.nodeKind) == SH.Literal:
+                literal_paths.add(str(pred))
+                continue
+            objects = classes_in(ps)
+            if objects and all(o.startswith(_VALUE_SHAPES) for o in objects):
+                literal_paths.add(str(pred))  # Brick entity properties (area, azimuth...): values, not relations
+                continue
+            count = lambda p: int(v) if (v := g.value(ps, p)) is not None else None  # noqa: E731
+            if inverse is not None:  # "^p has class C" on S: C p S
+                for o in objects:
+                    shapes[str(pred)].append({"subject": o, "objects": sorted(subjects), "min": None, "max": None})
+            else:
+                for subj in subjects:
+                    shapes[str(pred)].append({"subject": subj, "objects": sorted(objects),
+                                              "min": count(SH.minCount), "max": count(SH.maxCount)})
+        for iri in sorted((declared | set(shapes)) - datatype - (literal_paths - set(shapes))):
+            if iri in terms:
+                continue
+            add(iri, "relation")
+            rel = URIRef(iri)
+            terms[iri]["inverse"] = str(g.value(rel, OWL.inverseOf) or next(g.subjects(OWL.inverseOf, rel), "") or "")
+            terms[iri]["symmetric"] = any((rel, RDF.type, t) in g for t in (OWL.SymmetricProperty, S223.SymmetricRelation))
+            seen, unique = set(), []
+            for sh_ in shapes.get(iri, []):
+                key = json.dumps(sh_, sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(sh_)
+            terms[iri]["shapes"] = unique
+
+    def relations_for(self, types: list[str]) -> list[dict]:
+        """Relations the vocabulary's shapes give an entity of these classes, with object classes."""
+        out: dict[str, dict] = {}
+        for t in self.by_kind.get("relation", []):
+            term = self.terms[t]
+            for sh_ in term.shapes:
+                if any(self.is_a(c, sh_["subject"]) for c in types):
+                    cur = out.setdefault(t, {"relation": t, "objects": set(), "max": sh_["max"]})
+                    cur["objects"] |= set(sh_["objects"])
+                    if sh_["max"] is not None:
+                        cur["max"] = sh_["max"] if cur["max"] is None else min(cur["max"], sh_["max"])
+        return [{**v, "objects": sorted(v["objects"])} for v in sorted(out.values(), key=lambda v: self.label(v["relation"]).lower())]
 
     def _install_catalog(self, data: dict) -> None:
         self.terms = {iri: Term(**t) for iri, t in data["terms"].items()}
@@ -626,6 +719,19 @@ def _search_tokens(iri: str, t: Term) -> tuple[set[str], str]:
     if len(label_tokens) > 2:  # initials, so "AHU" finds "Air handling unit"
         tokens.add("".join(w[0] for w in label_tokens))
     return tokens, f"{t.label} {name}".lower()
+
+
+_META = ("http://qudt.org/", "http://www.w3.org/", "http://datashapes.org/", "http://topbraid.org/",
+         "http://www.linkedmodel.org/", "http://purl.org/", "http://spinrdf.org/", "https://si-digital-framework.org/",
+         "dtmi:", "http://voag.linkedmodel.org/", "https://schema.org/", "http://schema.org/")
+
+
+_VALUE_SHAPES = ("https://brickschema.org/schema/BrickShape#",)
+
+
+def _meta(iri: str) -> bool:
+    """Schema-language and units/quantities namespaces: never model classes or relations."""
+    return iri.startswith(_META)
 
 
 def _tokens(text: str) -> list[str]:

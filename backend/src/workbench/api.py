@@ -24,7 +24,7 @@ from .events import EventBus
 from .llm import LLMError, make_client
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
-from .projection import POINT_KIND_LABELS, entity_iri, sensors_of
+from .projection import POINT_KIND_LABELS, entity_iri, owned_hint, sensors_of
 from .runs import ProviderUnavailable, RunManager
 from .schemas import CsvImportConfig, SelectionScope
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
@@ -328,6 +328,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "evidence": [e for e in evidence if e],
                 "issues": [i.model_dump() for i in p.issues(rid) if eid in i.affected_ids],
                 "history": p.corrections(eid)[:50]}
+
+    @app.get("/api/projects/{pid}/entities/{eid}/relations")
+    def entity_relations(pid: str, eid: str, revision: str | None = None):
+        """What the vocabulary lets this entity relate to (from its classes' shapes), and its relations."""
+        p = project(pid)
+        rid = rev_or_head(p, revision)
+        pg, vocab = p.graph(rid), p.vocab
+        node = entity_iri(pg, eid)
+        row = p.view(rid).rows().get(eid)
+        if node is None or row is None:
+            raise HTTPException(404, f"No entity {eid} in {rid}")
+        types = [str(t) for t in pg.model.objects(node, RDF.type)]
+
+        def term(iri: str) -> dict:
+            return {"iri": iri, "curie": vocab.curie(iri), "label": vocab.label(iri)}
+
+        allowed = []
+        for r in vocab.relations_for(types):
+            if owned_hint(vocab, r["relation"], row.kind):  # type: ignore[attr-defined]
+                continue
+            t = vocab.term(r["relation"])
+            allowed.append({**term(r["relation"]), "objects": [term(o) for o in r["objects"]], "max": r["max"],
+                            "symmetric": bool(t and t.symmetric)})
+        current = [asdict(r) for r in p.view(rid).relationships
+                   if r.subject.id == eid or (r.object is not None and r.object.id == eid)]
+        return {"allowed": allowed, "relationships": current}
 
     # ------------------------------------------------------------ sources
 

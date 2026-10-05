@@ -84,7 +84,8 @@ interface State {
 const indexRows = (m: ModelResponse | null) => {
   const map = new Map<string, Row>()
   if (!m) return map
-  for (const r of [...m.view.equipment, ...m.view.points, ...m.view.connections, ...(m.view.connection_points ?? []), ...(m.view.spaces ?? [])]) map.set(r.id, r)
+  for (const r of [...m.view.equipment, ...m.view.points, ...m.view.connections, ...(m.view.connection_points ?? []), ...(m.view.spaces ?? []),
+    ...(m.view.entities ?? []), ...(m.view.relationships ?? [])]) map.set(r.id, r)
   return map
 }
 

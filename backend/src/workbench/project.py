@@ -88,6 +88,15 @@ DISPLAY_FIELDS = {
         ("type", lambda r: r.type.label if r.type else None),
         ("part_of", lambda r: r.part_of.label if r.part_of else None),
     ],
+    "entity": [
+        ("label", lambda r: r.label),
+        ("type", lambda r: r.type.label if r.type else None),
+    ],
+    "relationship": [
+        ("subject", lambda r: r.subject.label),
+        ("relation", lambda r: r.relation.label),
+        ("object", lambda r: r.object.label if r.object else (r.value.label if r.value else None)),
+    ],
     "point": [
         ("label", lambda r: r.label),
         ("point_kind", lambda r: r.point_kind_label),

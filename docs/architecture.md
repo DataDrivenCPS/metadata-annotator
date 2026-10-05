@@ -95,6 +95,27 @@ differs from the previewed diff**.
 Malformed operations (unknown ids/terms, wrong kinds) cannot be applied. An incomplete model
 (validation findings) is still a valid saved draft; findings become review issues.
 
+### Generic entities and relationships
+
+Anything the typed editors don't cover is still modelable, using only what the loaded
+ontologies define:
+
+- **Entities** (`en-…`): an instance of any other ontology class (`rec:Wall`, `s223:Zone`,
+  `brick:System`…), created with `create_entity`; classes with their own editor are refused
+  with a pointer to it (`create_space`, `create_equipment`…).
+- **Relationships** (`rl-…`, derived from the triple like connection point ids, so stable without
+  a registry): `relate {subject, relation, object}` / `unrelate {id}` for any relation of the
+  loaded ontologies; the object is an entity or a vocabulary term (e.g. `s223:Domain-HVAC`).
+  Symmetric and inverse statements are one fact.
+- **What may relate to what** comes from SHACL property shapes — none of the vocabularies
+  declares `rdfs:domain`/`range`. The catalog records each relation's shapes (subject class,
+  object classes from `sh:class`/`sh:or`/`sh:node`/`sh:qualifiedValueShape`, `sh:maxCount`);
+  `relations_for(types)` serves `GET /entities/{id}/relations`, `relate` checks object classes
+  after all operations apply, and `maxCount 1` relations replace their value.
+- **Owned predicates** (`projection.OWNED`): relations a typed editor manages (`hasPoint`,
+  `cnx`, `contains`, `hasLocation`, `rec:isPartOf` between spaces…) are refused by `relate` with
+  the field to use, and are not listed as relationships, so each fact has one editor.
+
 ## Revisions, undo, stale proposals
 
 - `publish` runs under the project lock: check the base is still the head, write the snapshot

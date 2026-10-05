@@ -105,7 +105,7 @@ export function Workspace() {
   const problems = model.issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion').length
   const counts = { points: model.view.points.length, equipment: model.view.equipment.length, spaces: model.view.spaces.length,
                    connections: model.view.connections.length, connection_points: model.view.connection_points.length,
-                   graph: model.view.equipment.length, issues: problems }
+                   graph: model.view.equipment.length + model.view.spaces.length, issues: problems }
   // Brick has no connection points.
   const tabs = model.info.family === 'brick' ? TABS.filter(([id]) => id !== 'connection_points') : TABS
 

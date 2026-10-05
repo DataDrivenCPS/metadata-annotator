@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { isSelected } from '../selection'
 import { useStore } from '../store'
-import type { EquipmentRow } from '../types'
+import type { EquipmentRow, SpaceRow } from '../types'
 
 const W = 190
 const H = 64
@@ -27,7 +27,21 @@ function EquipmentNode({ data, selected }: NodeProps<Node<EqNodeData>>) {
     </div>
   )
 }
-const nodeTypes = { equipment: EquipmentNode }
+type SpaceNodeData = { row: SpaceRow; issues: number; proposed: boolean }
+
+function SpaceNode({ data, selected }: NodeProps<Node<SpaceNodeData>>) {
+  const { row, issues, proposed } = data
+  return (
+    <div className={`space-node ${selected ? 'selected' : ''} ${proposed ? 'proposed' : ''}`}>
+      <Handle type="target" position={Position.Left} />
+      <div className="eq-label">{row.label}</div>
+      <div className="eq-type">{row.type?.label ?? 'Space'}{row.equipment_count ? ` · ${row.equipment_count} equipment` : ''}</div>
+      {issues > 0 && <span className="badge warn eq-badge" title="Open issues">{issues}</span>}
+      <Handle type="source" position={Position.Right} />
+    </div>
+  )
+}
+const nodeTypes = { equipment: EquipmentNode, space: SpaceNode }
 
 /** A curved edge bent sideways by ``offset`` so parallel connections stay distinguishable. */
 function ParallelEdge(props: EdgeProps<Edge<{ offset: number }>>) {
@@ -123,11 +137,22 @@ export function GraphView() {
   const clearSelection = useStore((s) => s.clearSelection)
   const [positions, setPositions] = useState<Record<string, [number, number]>>(model.layout)
   const savedRef = useRef(model.layout)
+  const spaces = useMemo(() => model.view.spaces ?? [], [model])
+  const [showSpaces, setShowSpaces] = useState(true)
+  const withSpaces = showSpaces && spaces.length > 0
 
-  const eqIds = useMemo(() => model.view.equipment.map((e) => e.id), [model])
-  const edgePairs = useMemo(() => model.view.connections
-    .filter((c) => c.from_equipment && c.to_equipment)
-    .map((c) => [c.from_equipment!.id, c.to_equipment!.id] as [string, string]), [model])
+  // Spaces sit left of what they contain: parent space -> inner space -> equipment located there.
+  const spaceLinks = useMemo(() => withSpaces ? [
+    ...spaces.filter((s) => s.part_of).map((s) => ['part_of', s.part_of!.id, s.id] as const),
+    ...model.view.equipment.filter((e) => e.location).map((e) => ['location', e.location!.id, e.id] as const),
+  ] : [], [model, withSpaces, spaces])
+  const eqIds = useMemo(() => [...model.view.equipment.map((e) => e.id), ...(withSpaces ? spaces.map((s) => s.id) : [])],
+    [model, withSpaces, spaces])
+  const edgePairs = useMemo(() => [
+    ...model.view.connections.filter((c) => c.from_equipment && c.to_equipment)
+      .map((c) => [c.from_equipment!.id, c.to_equipment!.id] as [string, string]),
+    ...spaceLinks.map(([, a, b]) => [a, b] as [string, string]),
+  ], [model, spaceLinks])
 
   useEffect(() => {
     const saved = { ...savedRef.current, ...model.layout }
@@ -146,11 +171,19 @@ export function GraphView() {
   }, [model])
   const proposed = useMemo(() => new Set(proposal?.status === 'pending' ? proposal.changes.map((c) => c.entity_id) : []), [proposal])
 
-  const nodes: Node<EqNodeData>[] = model.view.equipment.map((row) => ({
-    id: row.id, type: 'equipment', position: { x: positions[row.id]?.[0] ?? 0, y: positions[row.id]?.[1] ?? 0 },
-    data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
-    selected: isSelected(selection, row.id),
-  }))
+  const at = (id: string) => ({ x: positions[id]?.[0] ?? 0, y: positions[id]?.[1] ?? 0 })
+  const nodes: Node<EqNodeData | SpaceNodeData>[] = [
+    ...model.view.equipment.map((row) => ({
+      id: row.id, type: 'equipment', position: at(row.id),
+      data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
+      selected: isSelected(selection, row.id),
+    })),
+    ...(withSpaces ? spaces.map((row) => ({
+      id: row.id, type: 'space', position: at(row.id),
+      data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
+      selected: isSelected(selection, row.id),
+    })) : []),
+  ]
   const drawn = model.view.connections.filter((c) => c.from_equipment && c.to_equipment)
   const offsets = parallelOffsets(drawn.map((c) => ({ id: c.id, a: c.from_equipment!.id, b: c.to_equipment!.id })))
   const edges: Edge[] = [
@@ -167,6 +200,10 @@ export function GraphView() {
       id: `contains:${parent}>${child}`, source: parent, target: child, selectable: false,
       style: { strokeDasharray: '4 4' }, label: 'contains',
     })),
+    ...spaceLinks.map(([kind, space, inner]) => ({
+      id: `${kind}:${space}>${inner}`, source: space, target: inner, selectable: false,
+      className: `space-edge ${kind}`, label: kind === 'part_of' ? 'contains' : 'in',
+    })),
   ]
 
   const unassigned = model.view.points.filter((p) => !p.equipment).length
@@ -174,11 +211,14 @@ export function GraphView() {
   return (
     <div className="graph-wrap">
       {unassigned > 0 && <div className="graph-note">{unassigned} point(s) are not assigned to equipment — see the Points tab.</div>}
+      {spaces.length > 0 && <label className="graph-toggle">
+        <input type="checkbox" checked={showSpaces} onChange={(e) => setShowSpaces(e.target.checked)} /> Show spaces ({spaces.length})
+      </label>}
       <ReactFlow
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} fitView minZoom={0.2}
         nodesConnectable={false} elementsSelectable
         onNodeClick={(e, n) => click({ id: n.id }, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }, eqIds)}
-        onEdgeClick={(e, ed) => { if (!ed.id.startsWith('contains:'))
+        onEdgeClick={(e, ed) => { if (!/^(contains|part_of|location):/.test(ed.id))
           click({ id: ed.id, relationship: true }, { ctrl: e.ctrlKey || e.metaKey, shift: false }, []) }}
         onPaneClick={() => clearSelection()}
         onNodesChange={(changes) => {

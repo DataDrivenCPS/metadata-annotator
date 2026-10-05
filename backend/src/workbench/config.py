@@ -67,9 +67,13 @@ DEFAULT_PROFILES = {
     "brick": {
         "label": "Brick",
         "family": "brick",
-        # BuildingMOTIF's builtin copy, loaded the way the skill prescribes.
-        "sources": ["brick/Brick.ttl"],
-        "description": "Building systems and BMS points: equipment, typed points, feeds relationships.",
+        # The Brick nightly (1.5.x), which carries RealEstateCore (rec:) for spaces and assets;
+        # Brick 1.4 already deprecated its own location classes in favour of REC's. The nightly is
+        # fetched once and cached under its URL; delete cache/*brick* to pick up a newer build.
+        # (BuildingMOTIF's builtin copy is "brick/Brick.ttl".)
+        "sources": ["https://github.com/BrickSchema/Brick/releases/download/nightly/Brick.ttl"],
+        "description": "Building systems and BMS points: equipment, typed points, feeds relationships; "
+                       "RealEstateCore spaces and assets.",
     },
 }
 

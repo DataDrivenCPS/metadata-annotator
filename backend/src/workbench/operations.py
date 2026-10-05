@@ -887,7 +887,9 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
             value = getattr(op, fname, None)
             t = vocab.term(value) if isinstance(value, str) else None
             if t is not None and t.deprecated:
-                result.notes.append(f"{t.label} ({value}) is deprecated or superseded in the loaded vocabulary")
+                instead = vocab.term(t.replaced_by) if t.replaced_by else None
+                result.notes.append(f"{t.label} ({vocab.curie(value)}) is deprecated or superseded in the loaded vocabulary"
+                                    + (f"; use {instead.label} ({vocab.curie(instead.iri)}) instead" if instead else ""))
         getattr(comp, op.op)(op)
     problems = list(getattr(comp, "problems", []))
     if isinstance(comp, _Compiler):

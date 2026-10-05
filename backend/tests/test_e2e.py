@@ -99,9 +99,12 @@ def test_assistant_and_review_flow(live, page):
     from playwright.sync_api import expect
 
     base, llm = live
-    pid = httpx.post(f"{base}/api/projects", json={"name": "Smoke"}).json()["id"]
+    # The other vocabularies keep loading in the background (a cold Brick resolve takes ~20 s
+    # of parsing), which can slow these first requests past httpx's 5 s default.
+    pid = httpx.post(f"{base}/api/projects", json={"name": "Smoke"}, timeout=120).json()["id"]
     with open(SAMPLES / "model.ttl", "rb") as f:
-        httpx.post(f"{base}/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")}).raise_for_status()
+        httpx.post(f"{base}/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")},
+                   timeout=120).raise_for_status()
 
     question = "Is the medium change across RO-1 expected?"
 

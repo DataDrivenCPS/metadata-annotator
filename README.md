@@ -167,7 +167,7 @@ that token in one proposal.
 | BuildingMOTIF | `gtf-buildingmotif@78b304aa`, pyshifty 0.4.4, ontoenv 0.6.4 | validation 0.5–0.7 s per revision |
 | WaTr | open223.info `223p.ttl` + watermetadata.org `watr-0.2.ttl` | 18 graphs, 174,512 triples |
 | 223P | open223.info `223p.ttl` | 5 graphs |
-| Brick | BuildingMOTIF builtin `brick/Brick.ttl` (1.4.1) | 21 graphs; 6 imports not published online (BACnet, Brick `ref`, REC helpers, QUDT usertest/datatype) are skipped |
+| Brick | Brick nightly `Brick.ttl` from GitHub releases (1.5.0, includes RealEstateCore) | 15 graphs, 185,577 triples; 3 imports not published online (BACnet, Brick `ref`, REC `recimports`) are skipped |
 | Remote model | OpenRouter `google/gemma-4-31b-it` (OpenAI-compatible adapter) | all walkthrough corrections proposed correctly, 15–20 s, 2–3 steps |
 | Local model | llama.cpp `llama-server` `b11295` CPU build, Qwen2.5-1.5B-Instruct Q4_K_M | protocol verified (grammar-constrained JSON, streaming, usage); model too small — invalid terms rejected, ended with questions |
 | Anthropic adapter | `claude-opus-5-5` | **not run** (no API key available) |

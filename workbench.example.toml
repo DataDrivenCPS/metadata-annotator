@@ -11,7 +11,7 @@
 # default_vocabulary = "watr"          # (in [workbench])
 #
 # [vocabularies.brick]
-# sources = ["brick/Brick.ttl"]        # BuildingMOTIF builtin, or a URL / local path
+# sources = ["brick/Brick.ttl"]        # pin BuildingMOTIF's builtin 1.4 instead of the nightly; or a URL / local path
 #
 # [vocabularies.mysite]                # an additional profile
 # label = "My site extensions"

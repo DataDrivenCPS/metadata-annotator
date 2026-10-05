@@ -46,7 +46,7 @@ and connections are written into RDF, and an ordered list of sources:
 |---|---|---|
 | `watr` | `s223` | `https://open223.info/223p.ttl`, then `https://watermetadata.org/watr-0.2.ttl` |
 | `223p` | `s223` | `https://open223.info/223p.ttl` |
-| `brick` | `brick` | BuildingMOTIF builtin `brick/Brick.ttl` |
+| `brick` | `brick` | Brick nightly `https://github.com/BrickSchema/Brick/releases/download/nightly/Brick.ttl` (1.5.x, with RealEstateCore); cached once under its URL — delete `cache/*brick*` to refresh |
 
 Families share the operations API, the projection types and the UI; `projection.py` and
 `operations.py` dispatch on the family, with the Brick implementation in `brick.py`.
@@ -110,7 +110,10 @@ once; the two must persist together (see branch-report.md). The merged closure i
 `workbench-data/cache/closure-<profile>-<key>.ttl`, with its prefixes and missing imports in
 `meta-…json`. A term catalog
 (equipment/sensor/process/medium classes, quantity kinds, units with their quantity kinds and
-`skos:broader` lineage, deprecation/superseded flags) is cached alongside. Validation uses a
+`skos:broader` lineage, deprecation/superseded flags and `brick:isReplacedBy` replacements) is
+cached alongside. For Brick, RealEstateCore's `rec:Space` subtree is indexed as locations and
+`rec:Asset` as equipment (Brick deprecates its own location classes in favour of REC's); a
+search that matches a deprecated term returns its replacement. Validation uses a
 `shifty.PreparedValidator` over the cached shapes in `union` graph mode: ~0.5–0.7 s per run.
 `issues.py` maps each finding's focus node to the owning entity (port → equipment, sensor →
 point); connection points named by a finding are added to its `affected_ids` after the owner,

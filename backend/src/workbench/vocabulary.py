@@ -39,11 +39,12 @@ if TYPE_CHECKING:
 
 S223 = Namespace("http://data.ashrae.org/standard223#")
 BRICK = Namespace("https://brickschema.org/schema/Brick#")
+REC = Namespace("https://w3id.org/rec#")  # RealEstateCore, part of Brick since 1.4
 QUDT = Namespace("http://qudt.org/schema/qudt/")
 QK = Namespace("http://qudt.org/vocab/quantitykind/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")
 
-CATALOG_VERSION = 10
+CATALOG_VERSION = 11
 
 # Resolve one closure at a time (each downloads its sources and imports).
 _RESOLVE_LOCK = threading.Lock()
@@ -72,6 +73,8 @@ class Term:
     comment: str = ""
     deprecated: bool = False
     abstract: bool = False
+    # deprecated terms: the term that replaces it (brick:isReplacedBy), if any
+    replaced_by: str = ""
     # units only: quantity kinds the unit applies to; symbol
     quantity_kinds: list[str] = field(default_factory=list)
     symbol: str = ""
@@ -315,14 +318,17 @@ class Vocabulary:
                 comment=(text(iri, RDFS.comment, SKOS.definition, QUDT.plainTextDescription) or "")[:400],
                 deprecated=deprecated,
                 abstract=truthy(iri, S223.abstract),
+                replaced_by=str(next(iter(g.objects(URIRef(iri), BRICK.isReplacedBy)), "")) if deprecated else "",
             ))
 
         # Order matters: a term lands in the first group that claims it.
         if self.family == "brick":
+            # Brick deprecates its own locations in favour of REC spaces (rec:Room, rec:Level...);
+            # REC assets (furniture, AV, ICT...) are equipment-like things placed in them.
             groups = {
                 "point_class": descendants(BRICK.Point) | {str(BRICK.Point)},
-                "equipment": descendants(BRICK.Equipment) | {str(BRICK.Equipment)},
-                "location": descendants(BRICK.Location) | {str(BRICK.Location)},
+                "equipment": descendants(BRICK.Equipment) | {str(BRICK.Equipment)} | descendants(REC.Asset),
+                "location": descendants(BRICK.Location) | {str(BRICK.Location)} | descendants(REC.Space),
             }
         else:
             # Sensors are s223:Equipment subclasses in 223P, and media are substances.
@@ -426,8 +432,14 @@ class Vocabulary:
         for iri, t in self.terms.items():
             if kinds and t.kind not in kinds:
                 continue
-            if (t.deprecated and not include_deprecated) or t.abstract or (exact and t is exact[0]):
+            if t.abstract or (exact and t is exact[0]):
                 continue
+            hit = t
+            if t.deprecated and not include_deprecated:
+                # A deprecated term that matches stands for its replacement ("floor" -> rec:Level).
+                hit = self.terms.get(t.replaced_by) if t.replaced_by else None
+                if hit is None or hit.deprecated or (kinds and hit.kind not in kinds):
+                    continue
             name = local_name(iri)
             tokens, label_text = self._search_index.get(iri) or _search_tokens(iri, t)
             score = 0.0
@@ -452,9 +464,16 @@ class Vocabulary:
             if joined in (t.label.lower(), name.lower().replace("_", " "), t.symbol.lower()):
                 score += 10
             score -= len(tokens) / 50  # prefer the more general of equally good matches
-            scored.append((score, t))
+            if hit is not t:
+                score -= 0.5  # a term's own match ranks above a match through a replaced term
+            scored.append((score, hit))
         scored.sort(key=lambda st: -st[0])
-        return (exact + [t for _, t in scored])[:limit]
+        out, seen = [], set()
+        for t in exact + [t for _, t in scored]:
+            if t.iri not in seen:
+                seen.add(t.iri)
+                out.append(t)
+        return out[:limit]
 
     def qk_lineage(self, quantity_kind: str) -> set[str]:
         """The quantity kind and everything broader than it (skos:broader*)."""

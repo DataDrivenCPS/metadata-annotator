@@ -125,3 +125,19 @@ def test_updating_a_feed_removed_with_its_equipment_is_an_error_not_a_crash(bric
                                         {"op": "update_connection", "id": cx.id, "label": "x"}))
     # deleting it again is a no-op
     p.build_candidate(p.head(), ops({"op": "delete_equipment", "id": eq.id}, {"op": "delete_connection", "id": cx.id}))
+
+
+def test_realestatecore_spaces_and_assets_are_indexed(brick_project):
+    vocab = brick_project.vocab
+    assert vocab.search("room", ["location"], 1)[0].iri == "https://w3id.org/rec#Room"
+    assert vocab.search("chair", ["equipment"], 1)[0].iri == "https://w3id.org/rec#Chair"
+    # Brick deprecates its own locations; a search that matches one finds its REC replacement.
+    room = vocab.term(str(BRICK.Room))
+    assert room.deprecated and room.replaced_by == "https://w3id.org/rec#Room"
+    assert [t.iri for t in vocab.search("floor", ["location"], 1)] == ["https://w3id.org/rec#Level"]
+
+
+def test_using_a_deprecated_class_names_its_replacement(brick_project):
+    p = brick_project
+    cand = p.build_candidate(p.head(), ops({"op": "create_equipment", "label": "Old", "type": "rec:Server"}))
+    assert any("(rec:Server) is deprecated" in n and "(brick:Server) instead" in n for n in cand.result.notes)

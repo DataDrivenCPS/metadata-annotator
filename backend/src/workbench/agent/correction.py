@@ -760,6 +760,10 @@ def suggest_terms(project: Project, unknown: list[tuple[str, str, str | None]]) 
     for fname, value, kind in unknown:
         text = re.sub(r"^.*[#/:]", "", value).replace("-", " ").replace("_", " ")
         text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+        t = project.vocab.term(value)
+        if t is not None and t.replaced_by:  # deprecated: the vocabulary names its replacement
+            out.append(f"for {fname} {value!r}, use {curie(project.vocab, t.replaced_by)} instead (it replaces it)")
+            continue
         hits = project.vocab.search(text, [kind] if kind else None, 5)
         if not hits and kind:
             words = [w for w in text.split() if len(w) > 2]

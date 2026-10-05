@@ -4,8 +4,8 @@ Uses the sample project (`samples/ro-train/model.ttl`): a brackish-water RO trai
 deliberate mistakes. Start the app (see README), open <http://127.0.0.1:8765>, and choose
 **Open sample project**.
 
-The header shows `rev-2 · saved` and the open violations; click it (or the **Issues** tab) to
-list them. Each issue is the validator's own message, e.g. "CT-201: s223: Inconsistent
+The header shows the current revision with its summary (`rev-2 …`; click it for the history)
+and the open violations; click the violations (or the **Issues** tab) to list them. Each issue is the validator's own message, e.g. "CT-201: s223: Inconsistent
 dimensionalities among the `Property`'s `Unit` and `Property`'s `QuantityKind`", with the repair
 engine's summary under it, e.g. "s223:hasConnectionPoint: have 0, need 1" for TK-301. Clicking an
 issue inspects its object below without leaving the list; **show in table** jumps to its row.
@@ -50,8 +50,8 @@ records.
 
 ## Build from uploaded records
 
-For a new project, choose WaTr, ASHRAE 223P or Brick before uploading a point list. In
-**Sources**, upload a CSV and confirm the detected row or column layout. The **Records** view
+For a new project, choose WaTr, ASHRAE 223P or Brick before uploading a point list. Open
+**▸ Sources** at the left of the tabs (it starts closed until a project has sources), upload a CSV and confirm the detected row or column layout. The **Records** view
 shows the confirmed source rows. Select **Build model from these records**, optionally add a
 hint about site names, and start the run. Watch progress in the assistant panel.
 
@@ -82,8 +82,8 @@ and **Discard**. Applying a stale proposal is refused by the server (HTTP 409).
 ## 7. Reopen and export
 
 Reload the page or restart the server: the project reopens at the same revision with all
-corrections, locks, history and layout. **Export Turtle** downloads exactly the displayed
-revision (the response carries `X-Revision`); **Export point table** downloads a CSV of points
+corrections, locks, history and layout. **File ▸ Export Turtle** downloads exactly the displayed
+revision (the response carries `X-Revision`); **File ▸ Export point table** downloads a CSV of points
 with measurement, unit, equipment and sensor type.
 
 ## Scripted check (no UI)

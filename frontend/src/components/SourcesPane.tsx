@@ -45,16 +45,21 @@ export function SourcesPane() {
       <div className="pane-head">
         <h2>Sources</h2>
         <span className="spacer" />
-        <button className="primary" disabled={uploading} onClick={() => input.current?.click()}>
+        {sources.length > 0 && <button className="primary" disabled={uploading} onClick={() => input.current?.click()}>
           {uploading ? 'Uploading…' : 'Upload…'}
-        </button>
+        </button>}
         <input ref={input} type="file" multiple hidden accept=".csv,.tsv,.txt,.md,.json,.yaml,.yml,.log,.docx,.pdf,.png,.jpg,.jpeg,.webp"
           onChange={(e) => { void upload(e.target.files); e.target.value = '' }} />
       </div>
       {sources.length === 0 ? (
         <div className="drop-hint">
-          Upload CSV/TSV, images, PDFs, Word (.docx), or text documents, or drop files here.
-          <br /><span className="muted">To start from an existing Turtle model, use “Import model…” above.</span>
+          <p>Add the documents this model is built from: point lists (CSV/TSV), drawings and P&amp;IDs (images, PDF),
+            Word or text files.</p>
+          <button className="primary" disabled={uploading} onClick={() => input.current?.click()}>
+            {uploading ? 'Uploading…' : 'Upload files…'}
+          </button>
+          <p className="muted small">or drop files here. To start from an existing Turtle model, use File ▸ Import
+            Turtle model.</p>
         </div>
       ) : (
         <ul className="source-list">

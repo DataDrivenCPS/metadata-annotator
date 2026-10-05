@@ -100,11 +100,13 @@ export const useStore = create<State>((set, get) => ({
   toast: null,
   busy: false,
   sourcesVersion: 0,
-  sourcesOpen: localStorage.getItem('workbench.sourcesOpen') !== 'false',
+  sourcesOpen: false,
 
+  // Remembered per project once toggled; until then the tray opens only if the project has sources.
   toggleSources: () => {
     const sourcesOpen = !get().sourcesOpen
-    localStorage.setItem('workbench.sourcesOpen', String(sourcesOpen))
+    const pid = get().projectId
+    if (pid) localStorage.setItem(`workbench.sourcesOpen.${pid}`, String(sourcesOpen))
     set({ sourcesOpen })
   },
 
@@ -119,6 +121,13 @@ export const useStore = create<State>((set, get) => ({
           runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantNewRequest: false })
     if (id) {
       localStorage.setItem('workbench.project', id)
+      const stored = localStorage.getItem(`workbench.sourcesOpen.${id}`)
+      set({ sourcesOpen: stored === 'true' })
+      if (stored === null) void api.sources(id).then((list) => {
+        if (get().projectId === id && localStorage.getItem(`workbench.sourcesOpen.${id}`) === null) {
+          set({ sourcesOpen: list.length > 0 })
+        }
+      }).catch(() => {})
       await get().reload()
       // restore the conversation and the latest pending proposal, if any
       const [proposals, runs] = await Promise.all([api.proposals(id), api.runs(id).catch(() => [] as AgentRun[])])

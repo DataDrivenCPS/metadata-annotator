@@ -26,6 +26,32 @@ function usePaneSize(key: string, fallback: number, min: number, max: () => numb
   return [size, (delta: number) => update((current) => current + delta), () => update(() => fallback)] as const
 }
 
+/** Import and export, out of the way of the project status in the top bar. */
+function FileMenu({ onImport, items }: { onImport: () => void; items: { label: string; hint: string; href: string }[] }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const outside = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false) }
+    const escape = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', outside)
+    document.addEventListener('keydown', escape)
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape) }
+  }, [open])
+  return <div className="menu" ref={ref}>
+    <button aria-haspopup="menu" aria-expanded={open} className={open ? 'active' : ''} onClick={() => setOpen(!open)}>File ▾</button>
+    {open && <div className="menu-list" role="menu">
+      <button role="menuitem" onClick={() => { setOpen(false); onImport() }}>
+        Import Turtle model…<span className="menu-hint">Merge a .ttl file into this project</span>
+      </button>
+      <hr />
+      {items.map((item) => <a key={item.label} role="menuitem" href={item.href} download onClick={() => setOpen(false)}>
+        {item.label}<span className="menu-hint">{item.hint}</span>
+      </a>)}
+    </div>}
+  </div>
+}
+
 const TABS: [Tab, string][] = [
   ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'], ['graph', 'Graph'], ['issues', 'Issues'],
 ]
@@ -43,6 +69,7 @@ export function Workspace() {
   const notify = useStore((s) => s.notify)
   const sourcesOpen = useStore((s) => s.sourcesOpen)
   const toggleSources = useStore((s) => s.toggleSources)
+  const setDrawerTab = useStore((s) => s.setDrawerTab)
   const fileInput = useRef<HTMLInputElement>(null)
   const [drawerHeight, resizeDrawer, resetDrawer] = usePaneSize('workbench.drawerHeight', 240, 120,
     () => window.innerHeight - 220)
@@ -83,9 +110,11 @@ export function Workspace() {
         <h1>{model.info.name}</h1>
         <span className={`profile-badge ${model.info.family}`} title={`Target vocabulary: ${model.info.profile_label}`}>
           {model.info.profile_label.split(' (')[0]}</span>
-        <span className="rev" title={model.revision.summary}>
-          {model.head} · saved
-        </span>
+        <button className="rev" onClick={() => setDrawerTab('history')}
+          title={`${model.head}, saved ${new Date(model.revision.created_at).toLocaleString()}: ${model.revision.summary}\nClick to see the full history.`}>
+          <span className="rev-id">{model.head}</span>
+          <span className="rev-summary">{model.revision.summary}</span>
+        </button>
         {v && <button className={`health ${openViolations ? 'bad' : 'good'}`}
           title={`Validated in ${v.duration_s}s: ${openViolations} open violation(s)${dismissedCount ? `, ${dismissedCount} dismissed issue(s)` : ''}. Click to open Issues, which also includes warnings and source findings.`}
           onClick={() => setTab('issues')}>
@@ -95,7 +124,11 @@ export function Workspace() {
         <span className="spacer" />
         <button onClick={() => void undo()} disabled={!model.info.can_undo} title="Undo (Ctrl+Z)">Undo</button>
         <button onClick={() => void redo()} disabled={!model.info.can_redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
-        <button onClick={() => fileInput.current?.click()} title="Merge an existing Turtle model into this project">Import model…</button>
+        <FileMenu onImport={() => fileInput.current?.click()} items={[
+          { label: 'Export Turtle (.ttl)', hint: `The model at ${model.head}`, href: api.exportUrl(projectId, model.head, 'ttl') },
+          { label: 'Export point table (.csv)', hint: 'Points with measurement, unit, equipment and sensor type',
+            href: api.exportUrl(projectId, model.head, 'csv') },
+        ]} />
         <input ref={fileInput} type="file" accept=".ttl,.turtle" hidden onChange={async (e) => {
           const f = e.target.files?.[0]
           e.target.value = ''
@@ -103,8 +136,6 @@ export function Workspace() {
           try { const r = await api.importModel(projectId, f); await reload(); notify({ kind: 'success', text: r.summary }) }
           catch (err) { notify({ kind: 'error', text: `Import failed: ${(err as Error).message}` }) }
         }} />
-        <a className="button" href={api.exportUrl(projectId, model.head, 'ttl')} download>Export Turtle</a>
-        <a className="button" href={api.exportUrl(projectId, model.head, 'csv')} download>Export point table</a>
       </header>
       <main className="panes" style={{ gridTemplateColumns: [
         ...(sourcesOpen ? [`${sourcesWidth}px`, `${HANDLE}px`] : []), 'minmax(0, 1fr)', `${HANDLE}px`, `${assistantWidth}px`,

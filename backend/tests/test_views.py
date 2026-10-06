@@ -55,7 +55,8 @@ def test_zone_view_follows_paths_and_offers_edits(zoned):
     out = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), spec)
     cols = {c["key"]: c for c in out["columns"]}
     assert cols["domain_spaces"]["editor"] == "relation" and cols["spaces"]["editor"] == "relation"
-    assert [c["label"] for c in cols["spaces"]["candidates"]] == ["Office 1"]  # physical spaces only
+    assert [c["label"] for c in cols["spaces"]["candidates"] if c["fits"]] == ["Office 1"]  # physical spaces fit
+    assert cols["spaces"]["candidates"][0]["label"] == "Office 1"  # first; the rest are offered after
     assert any(c["label"] == "Office 1 HVAC" for c in cols["domain_spaces"]["candidates"])
     assert any(c.get("curie") == "s223:Domain-Lighting" for c in cols["domain"]["candidates"])
     (row,) = out["rows"]

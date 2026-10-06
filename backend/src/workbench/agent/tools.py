@@ -11,7 +11,7 @@ from typing import Any
 
 from ..project import Project
 from ..projection import (
-    ConnectionPointRow, ConnectionRow, EntityRow, EquipmentRow, PointRow, RelationshipRow, SpaceRow, owned_hint,
+    ConnectionPointRow, ConnectionRow, EntityRow, EquipmentRow, PointRow, RelationshipRow, SpaceRow, typed_field,
 )
 from ..vocabulary import S223, Vocabulary
 from .guidance import FAMILY_TOPICS, SkillGuidance
@@ -153,8 +153,8 @@ class AgentTools:
         types = [str(t) for t in pg.model.objects(URIRef(row.iri), RDF.type)]  # type: ignore[attr-defined]
         allowed = [f"{curie(self.vocab, r['relation'])} -> {', '.join(curie(self.vocab, o) for o in r['objects']) or 'anything'}"
                    + (" (one value)" if r["max"] == 1 else "")
-                   for r in self.vocab.relations_for(types)
-                   if not owned_hint(self.vocab, r["relation"], row.kind)]  # type: ignore[attr-defined]
+                   + (f" (also shown as {hint})" if (hint := typed_field(self.vocab, r["relation"])) else "")
+                   for r in self.vocab.relations_for(types)]
         current = [entity_line(self.vocab, r) for r in view.relationships
                    if r.subject.id == entity_id or (r.object and r.object.id == entity_id)]
         return {"entity": entity_line(self.vocab, row), "allowed_relations": allowed, "current": current}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
 import { emptySelection, type EntityDetail, type EntityRelations, type Revision, type ReviewIssue } from '../types'
+import { CandidateOptions } from './cells'
 import { DismissalNote, RepairDetail } from './IssuesView'
 import { shortIri } from './TermPicker'
 
@@ -173,7 +174,8 @@ function RelationsPanel({ eid }: { eid: string }) {
             <button className="link" onClick={() => setAdding({ ...adding, relation: a.iri })}
               title={a.objects.length ? `Points to: ${a.objects.map((o) => o.curie).join(', ')}` : 'Unconstrained'}>
               {a.label} <code>{a.curie}</code></button>
-            <span className="muted small"> → {a.objects.map((o) => o.label).join(' / ') || 'anything'}{a.max === 1 ? ' (one)' : ''}</span>
+            <span className="muted small"> → {a.objects.map((o) => o.label).join(' / ') || 'anything'}{a.max === 1 ? ' (one)' : ''}
+              {a.typed_field ? ` · also shown as ${a.typed_field}` : ''}</span>
           </li>)}</ul>
         </> : <>
           <div><span className="rel-name">{chosen.label}</span> → {chosen.objects.map((o) => o.label).join(' / ') || 'anything'}</div>
@@ -184,9 +186,9 @@ function RelationsPanel({ eid }: { eid: string }) {
             void edit([{ op: 'relate', subject: eid, relation: chosen.iri, object: c.id ?? c.curie ?? c.iri }])
           }}>
             <option value="" disabled>choose…</option>
-            {chosen.candidates.map((c, i) => <option key={i} value={i}>{c.label}{c.kind === 'value' ? ` (${c.curie})` : ` · ${c.kind.replace('_', ' ')}`}</option>)}
-          </select> : <p className="muted small">Nothing in the model is a {chosen.objects.map((o) => o.label).join(' or ')} yet;
-            create one first (or ask the assistant).</p>}
+            <CandidateOptions candidates={chosen.candidates}
+              describe={(c) => `${c.label}${c.kind === 'value' ? ` (${c.curie})` : ` · ${(c.kind ?? '').replace('_', ' ')}`}`} />
+          </select> : <p className="muted small">Nothing else in the model to relate yet; create it first (or ask the assistant).</p>}
         </>}
         <button className="link" onClick={() => setAdding(null)}>cancel</button>
       </div>)}

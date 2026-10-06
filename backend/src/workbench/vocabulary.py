@@ -45,7 +45,7 @@ QUDT = Namespace("http://qudt.org/schema/qudt/")
 QK = Namespace("http://qudt.org/vocab/quantitykind/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")
 
-CATALOG_VERSION = 14
+CATALOG_VERSION = 15
 
 # Resolve one closure at a time (each downloads its sources and imports).
 _RESOLVE_LOCK = threading.Lock()
@@ -368,7 +368,7 @@ class Vocabulary:
 
         # Every other class in the ontologies (walls, zones, systems...): generic entities.
         for iri in sorted({*parents, *children}):
-            if not _meta(iri):
+            if not _meta(iri) and not iri.startswith(_VALUE_SHAPES):
                 add(iri, "class")
         self._catalog_relations(g, terms, add, parents)
 
@@ -520,6 +520,8 @@ class Vocabulary:
         A prefixed name or IRI that names a term directly returns that term first.
         """
         q = query.strip()
+        if kinds and "class" in kinds:  # any class, whichever editor it has
+            kinds = [*kinds, *CLASS_KINDS]
         exact: list[Term] = []
         if ":" in q and " " not in q:
             prefix, _, local = q.partition(":")
@@ -739,6 +741,8 @@ _META = ("http://qudt.org/", "http://www.w3.org/", "http://datashapes.org/", "ht
 _VALUE_SHAPES = ("https://brickschema.org/schema/BrickShape#",)
 # Term kinds that are values a relation can point at (enumeration members, media...), not classes.
 VALUE_KINDS = {"enumeration", "medium", "role", "substance", "process"}
+# Term kinds that are classes an entity can have ("class" is every class without its own editor).
+CLASS_KINDS = {"class", "equipment", "location", "point_class", "property", "sensor", "connection", "port"}
 
 
 def _meta(iri: str) -> bool:

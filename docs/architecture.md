@@ -100,26 +100,34 @@ Malformed operations (unknown ids/terms, wrong kinds) cannot be applied. An inco
 Anything the typed editors don't cover is still modelable, using only what the loaded
 ontologies define:
 
-- **Entities** (`en-…`): an instance of any other ontology class (`rec:Wall`, `s223:Zone`,
-  `brick:System`…), created with `create_entity`; classes with their own editor are refused
-  with a pointer to it (`create_space`, `create_equipment`…).
+- **Entities** (`en-…`): an instance of any ontology class, created with `create_entity`
+  (`rec:Wall`, `s223:Zone`, `brick:System`, but also a `rec:HVACZone` or a piece of equipment).
+  The node is whatever its class makes it (a space, equipment…), so later operations and the
+  typed tables treat it that way; the typed operations remain shortcuts that also write the
+  parts a pattern needs (a 223P point's sensor, connection points…). `update_entity` /
+  `delete_entity` work on any node.
 - **Relationships** (`rl-…`, derived from the triple like connection point ids, so stable without
   a registry): `relate {subject, relation, object}` / `unrelate {id}` for any relation of the
-  loaded ontologies; the object is an entity or a vocabulary term (e.g. `s223:Domain-HVAC`).
-  Symmetric and inverse statements are one fact.
-- **What may relate to what** comes from SHACL property shapes — none of the vocabularies
-  declares `rdfs:domain`/`range`. The catalog records each relation's shapes (subject class,
-  object classes from `sh:class`/`sh:or`/`sh:node`/`sh:qualifiedValueShape`, `sh:maxCount`);
-  `relations_for(types)` serves `GET /entities/{id}/relations`, `relate` checks object classes
-  after all operations apply, and `maxCount 1` relations replace their value.
-- **Owned predicates** (`projection.OWNED`): relations a typed editor manages (`hasPoint`,
-  `cnx`, `contains`, `hasLocation`, `rec:isPartOf` between spaces…) are refused by `relate` with
-  the field to use, and are not listed as relationships, so each fact has one editor.
-- The inspector's **Relationships** panel lists an entity's relations and adds one the
-  vocabulary allows (with candidate objects already in the model, or vocabulary values for
-  enumerations). The assistant has the same operations and a `relations_for(entity_id)` tool;
-  a refused object class comes with a vocabulary-derived bridge ("Office 1 reaches a
-  s223:DomainSpace through s223:encloses").
+  loaded ontologies between any two entities, or to a vocabulary term (e.g. `s223:Domain-HVAC`).
+  Symmetric and inverse statements are one fact. Only the relation itself must exist in the
+  vocabulary.
+- **Connect anything, validate after.** What may relate to what comes from SHACL property
+  shapes (none of the vocabularies declares `rdfs:domain`/`range`); the catalog records each
+  relation's shapes (subject class, object classes from `sh:class`/`sh:or`/`sh:node`/
+  `sh:qualifiedValueShape`, `sh:maxCount`) and `relations_for(types)` lists them. They guide,
+  never refuse: pickers offer fitting objects first (`fits`) and everything else after; a
+  relation that does not fit gets a note on the proposal (with a bridge such as "Office 1
+  reaches a s223:DomainSpace through s223:encloses"), the assistant sees those notes once, and
+  SHACL validation reports actual violations. A `maxCount 1` relation replaces its value, with
+  a note.
+- **Typed fields** (`projection.TYPED_FIELDS`): relations the typed tables show as fields
+  (`hasPoint`, `feeds`, `contains`, `hasLocation`, `rec:isPartOf`…). Display only: a fact is
+  listed as a relationship unless a typed row already shows that pair (`shown_pairs`), so a
+  room's second parent or a VAV feeding a zone appear as relationships while the room's level
+  stays its `part_of`.
+- The inspector's **Relationships** panel lists an entity's relations and adds any relation
+  the vocabulary has for it. The assistant has the same operations and a `relations_for(entity_id)`
+  tool.
 
 ### Virtual relations (`relations.py`)
 
@@ -158,7 +166,7 @@ Tables beyond the typed ones are declarative views: rows are instances of ontolo
 virtual relations such as `virtual:serves_space`; specials `label`, `type`, `relations`). A
 single-step (possibly inverse, possibly virtual) `relation` column is edited
 with relate/unrelate — each cell value carries its relationship id, and the column lists
-candidate objects from the shapes; owned relations stay read-only. A view with `builtin` adds
+candidate objects (those the shapes expect first). A view with `builtin` adds
 its columns to a typed table (points, equipment, spaces, connections, connection_points); all
 such views for one table are merged (`views.for_project`).
 Curated views ship in `views.toml` (Building elements for Brick; Zones and Domain spaces for

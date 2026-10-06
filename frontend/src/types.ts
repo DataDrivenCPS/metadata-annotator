@@ -203,9 +203,10 @@ export interface Observation {
 
 /** GET /entities/{id}/relations: what the vocabulary's shapes allow, with candidates in the model. */
 export interface VocabTermRef { iri: string; curie: string; label: string }
-export interface RelationCandidate { id?: string; iri?: string; curie?: string; label: string; kind: string }
+export interface RelationCandidate { id?: string; iri?: string; curie?: string; label: string; kind: string; fits?: boolean }
 export interface AllowedRelation extends VocabTermRef {
   objects: VocabTermRef[]; max: number | null; symmetric: boolean; candidates: RelationCandidate[]
+  typed_field?: string | null  // a typed field that also shows this relation
 }
 export interface EntityRelations { allowed: AllowedRelation[]; relationships: RelationshipRow[] }
 
@@ -214,6 +215,7 @@ export interface ViewInfo { id: string; label: string; builtin: string | null; e
 export interface ViewCellItem {
   id?: string; iri?: string; curie?: string; label: string; kind?: string
   relationship?: string  // the rl- id behind the value, for removing it
+  fits?: boolean  // candidates: what the vocabulary's shapes expect (others are allowed; validation checks)
 }
 export interface ViewColumn {
   key: string; label: string; editor: 'label' | 'type' | 'relation' | 'none'

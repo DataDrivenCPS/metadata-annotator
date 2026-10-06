@@ -10,8 +10,7 @@ set adds its columns to one of the typed tables (points, equipment, spaces, conn
 connection_points) instead of being a table of its own.
 
 A ``relation`` column (a single step, forward or inverse, stored or virtual) is edited through
-relate/unrelate; other columns are read-only, as are relations a typed editor owns (see
-projection.OWNED).
+relate/unrelate; other columns are read-only.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDF
 
 from .graph import ProjectGraph
-from .projection import ModelView, owned_hint
+from .projection import ModelView
 from .relations import Path, PathError, relationship_id, relationship_key
 from .vocabulary import VALUE_KINDS, Vocabulary, expand_term
 
@@ -136,11 +135,9 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
             step = path.single_step
             if col.editor == "relation" and step is not None:
                 pred, inverse = step
-                kinds = {r.kind for r in rows}  # type: ignore[attr-defined]
-                if inverse or not any(owned_hint(vocab, pred, k) for k in kinds):
-                    meta.update(editor="relation", relation=pred, inverse=inverse,
-                                relation_label=vocab.label(pred), relation_curie=vocab.curie(pred),
-                                candidates=_candidates(pg, vocab, entities, row_types, pred, inverse))
+                meta.update(editor="relation", relation=pred, inverse=inverse,
+                            relation_label=vocab.label(pred), relation_curie=vocab.curie(pred),
+                            candidates=_candidates(pg, vocab, entities, row_types, pred, inverse))
         columns.append(meta)
 
     out_rows = []
@@ -189,7 +186,7 @@ def _values(pg: ProjectGraph, vocab: Vocabulary, entities: dict, node, path: Pat
 
 def _candidates(pg: ProjectGraph, vocab: Vocabulary, entities: dict, row_types: list[str], pred: str,
                 inverse: bool) -> list[dict]:
-    """Entities (or vocabulary values) a relation column can point at, per the shapes."""
+    """Entities (or vocabulary values) a relation column can point at; ``fits`` per the shapes."""
     def objects(subject_types: list[str]) -> list[str] | None:
         """The relation's object classes for such a subject ([] = anything), None if it has no such relation."""
         return next((r["objects"] for r in vocab.relations_for(subject_types) if r["relation"] == pred), None)
@@ -199,12 +196,12 @@ def _candidates(pg: ProjectGraph, vocab: Vocabulary, entities: dict, row_types: 
 
     forward = objects(row_types)
     out = []
-    for row in entities.values():
+    for row in entities.values():  # every entity; validation reports misfits, so fitting ones come first
         types = _types(pg, URIRef(row.iri))
-        if fits(row_types, objects(types)) if inverse else fits(types, forward):
-            out.append({"id": row.id, "label": row.label, "kind": row.kind})
+        ok = fits(row_types, objects(types)) if inverse else fits(types, forward)
+        out.append({"id": row.id, "label": row.label, "kind": row.kind, "fits": ok})
     if not inverse and forward:
-        out += [{"iri": t.iri, "label": t.label, "curie": vocab.curie(t.iri), "kind": "value"}
+        out += [{"iri": t.iri, "label": t.label, "curie": vocab.curie(t.iri), "kind": "value", "fits": True}
                 for t in vocab.terms.values() if t.kind in VALUE_KINDS and not t.deprecated
                 and any(vocab.is_a(t.iri, o) for o in forward)][:200]
-    return sorted(out, key=lambda i: i["label"].lower())
+    return sorted(out, key=lambda i: (not i["fits"], i["label"].lower()))

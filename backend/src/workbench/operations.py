@@ -36,7 +36,6 @@ from .projection import (
     connection_ends,
     entity_iri,
     entity_kind,
-    owned_hint,
     owner_of_port,
     paired_port,
     point_owner,
@@ -49,7 +48,7 @@ from .projection import (
 )
 from .relations import expand, relationship_id, relationship_key
 from .relations import find as find_relationship
-from .vocabulary import QUDT, S223, Vocabulary, expand_term
+from .vocabulary import CLASS_KINDS, QUDT, S223, Vocabulary, expand_term
 
 PLACEHOLDER = "new:"
 
@@ -340,10 +339,9 @@ def entity_kind_of_op(op) -> str:
     return op.op.split("_", 1)[1]  # create_connection_point -> connection_point
 
 
-# What to use instead when a class has its own editor (create_entity is for everything else).
-TYPED_CREATE = {"equipment": "create_equipment", "location": "create_space", "point_class": "create_point",
-                "property": "create_point", "sensor": "create_point (sensor_type)", "connection": "create_connection",
-                "port": "create_connection_point"}
+# The row kind a node of a catalogued class kind projects as (create_entity takes any of them).
+ROW_KIND_OF_TERM = {"equipment": "equipment", "location": "space", "point_class": "point", "property": "point",
+                    "connection": "connection", "port": "connection_point", "class": "entity"}
 
 
 def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
@@ -365,6 +363,11 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
     def exists(eid: str, kind: str) -> bool:
         if eid in deleted:
             return False
+        if kind == "entity":  # the generic operations take any node (not relationships, not Brick feeds edges)
+            if eid in created:
+                return created[eid] != "relationship"
+            n = entity_iri(pg, eid)
+            return n is not None and (n, None, None) in pg.model and entity_kind(pg, vocab, eid) not in (None, "relationship")
         if eid in created:
             return created[eid] == kind
         return entity_kind(pg, vocab, eid) == kind
@@ -418,10 +421,6 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                 problems.append(f"{where}: {data['relation']!r} is not a relation in the loaded vocabulary")
                 unknown_terms.append(("relation", rel, "relation"))
                 continue
-            hint = owned_hint(vocab, rel, skind)
-            if hint:
-                problems.append(f"{where}: {vocab.curie(rel)} is edited through {hint}, not relate")
-                continue
             obj = placeholders.get(data["object"], data["object"])
             okind = created.get(obj) or (None if obj in deleted else entity_kind(pg, vocab, obj))
             if okind is None or okind == "relationship":
@@ -449,7 +448,9 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                 if raw:
                     placeholders[raw] = eid
             data["id"] = eid
-            created[eid] = kind
+            # create_entity takes any class; later operations treat the node as what its class makes it
+            created[eid] = (ROW_KIND_OF_TERM.get(vocab.kind_of(expand_term(vocab, data.get("type") or "")) or "", "entity")
+                            if kind == "entity" else kind)
         else:
             eid = placeholders.get(data["id"], data["id"])
             data["id"] = eid
@@ -479,13 +480,10 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                 if t is None:
                     problems.append(f"{where}: {fname} {iri!r} is not a term in the loaded vocabulary")
                     unknown_terms.append((fname, iri, expected))
-                elif expected and t.kind != expected:
-                    instead = TYPED_CREATE.get(t.kind) if kind == "entity" else None
-                    generic = t.kind == "class" and kind != "entity"
+                elif expected and t.kind != expected and not (kind == "entity" and t.kind in CLASS_KINDS):
+                    generic = t.kind in CLASS_KINDS
                     problems.append(f"{where}: {fname} {vocab.curie(iri)} is a {t.kind}, expected a {expected}"
-                                    + (f"; it has its own editor: use {instead}" if instead else "")
-                                    + (f"; a {vocab.curie(iri)} is a separate entity: create_entity, then relate it"
-                                       if generic else ""))
+                                    + (f"; to make a {vocab.curie(iri)}, use create_entity" if generic else ""))
                 elif t.abstract:
                     problems.append(f"{where}: {fname} {t.label!r} is abstract and cannot be instantiated")
 
@@ -537,7 +535,7 @@ class GenericOps:
             g.add((n, RDFS.label, RDFLiteral(op.label or "")))
         if "type" in fields and op.type:
             for t in list(g.objects(n, RDF.type)):
-                if self.vocab.kind_of(str(t)) == "class":
+                if self.vocab.kind_of(str(t)) in CLASS_KINDS:
                     g.remove((n, RDF.type, t))
             g.add((n, RDF.type, URIRef(op.type)))
         self.r.touch(op.id, *fields)
@@ -557,6 +555,9 @@ class GenericOps:
         allowed = {r["relation"]: r for r in self.vocab.relations_for(self._types(s))}
         if allowed.get(str(p), {}).get("max") == 1:  # one value: relating replaces it
             for old in list(g.objects(s, p)):
+                if old != o:
+                    self.r.notes.append(f"{self._name(s)} {self.vocab.curie(str(p))} takes one value in the "
+                                        f"vocabulary, so {self._name(old)} was replaced by {self._name(o)}")
                 self._drop(s, p, old)
         g.add((s, p, o))
         t = self.vocab.term(str(p))
@@ -581,8 +582,9 @@ class GenericOps:
             self._drop(*found)
 
     def check_relations(self) -> list[str]:
-        """Each new relation must suit its subject's and object's classes, per the vocabulary's shapes."""
-        problems, g, v = [], self.pg.model, self.vocab
+        """Notes where a new relation does not fit its subject's or object's classes per the
+        vocabulary's shapes. Never refused: SHACL validation reports what is actually wrong."""
+        problems, g, v = self.r.notes, self.pg.model, self.vocab
         for s, p, o in getattr(self, "relations", []):
             if (s, p, o) not in g:
                 continue
@@ -611,7 +613,7 @@ class GenericOps:
                 problems.append(f"{self._name(s)} {v.curie(str(p))} expects {', '.join(v.curie(c) for c in objects)}, "
                                 f"but {self._name(o)} is {', '.join(v.curie(c) for c in otypes) or 'untyped'}"
                                 + (f" (relate to a {v.curie(objects[0])} instead: {'; '.join(bridges)})" if bridges else ""))
-        return problems
+        return []
 
 
 class _Compiler(GenericOps):

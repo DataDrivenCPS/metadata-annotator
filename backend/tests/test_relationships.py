@@ -61,31 +61,40 @@ def test_entities_and_relationships_round_trip(zones):
     assert [c.change for c in cand.changes if c.entity_id == rid] == ["deleted"]
 
 
-def test_one_valued_relations_replace_and_wrong_objects_are_refused(zones):
+def test_one_valued_relations_replace_and_misfits_are_notes(zones):
     p = zones
     v = p.view(p.head())
     zone, office = by_label(v.entities, "Zone A"), by_label(v.entities, "Office 1 HVAC")
-    rev, _ = p.edit(p.head(), ops({"op": "relate", "subject": zone.id, "relation": "s223:hasDomain",
-                                    "object": "s223:Domain-Lighting"}))
+    rev, cand = p.edit(p.head(), ops({"op": "relate", "subject": zone.id, "relation": "s223:hasDomain",
+                                      "object": "s223:Domain-Lighting"}))
     assert [r.value.iri for r in rel(p.view(rev.id), "hasDomain", "Zone A")] == [str(S223["Domain-Lighting"])]
-    with pytest.raises(OperationError, match="expects s223:DomainSpace"):
-        p.build_candidate(rev.id, ops({"op": "relate", "subject": zone.id, "relation": "s223:hasDomainSpace",
-                                       "object": zone.id}))
-    with pytest.raises(OperationError, match="not used for"):
-        p.build_candidate(rev.id, ops({"op": "relate", "subject": office.id, "relation": "s223:hasDomainSpace",
-                                       "object": office.id}))
-    with pytest.raises(OperationError, match="not a relation"):
+    assert any("was replaced by" in n for n in cand.result.notes)
+    # Relations that do not fit the shapes are allowed, with a note; validation reports the rest.
+    cand = p.build_candidate(rev.id, ops({"op": "relate", "subject": zone.id, "relation": "s223:hasDomainSpace",
+                                          "object": zone.id}))
+    assert any("expects s223:DomainSpace" in n for n in cand.result.notes)
+    cand = p.build_candidate(rev.id, ops({"op": "relate", "subject": office.id, "relation": "s223:hasDomainSpace",
+                                          "object": office.id}))
+    assert any("not used for" in n for n in cand.result.notes)
+    with pytest.raises(OperationError, match="not a relation"):  # but only relations the vocabulary defines
         p.build_candidate(rev.id, ops({"op": "relate", "subject": zone.id, "relation": "s223:likes", "object": office.id}))
 
 
-def test_typed_editors_keep_their_relations(zones, workspace):
+def test_any_relation_and_any_class(zones):
     p = zones
     zone = by_label(p.view(p.head()).entities, "Zone A")
-    with pytest.raises(OperationError, match="edited through"):
-        p.build_candidate(p.head(), ops({"op": "relate", "subject": zone.id, "relation": "s223:hasProperty",
-                                         "object": zone.id}))
-    with pytest.raises(OperationError, match="use create_space"):
-        p.build_candidate(p.head(), ops({"op": "create_entity", "label": "Room", "type": "s223:PhysicalSpace"}))
+    # a relation a typed field also shows is fine through relate
+    p.build_candidate(p.head(), ops({"op": "relate", "subject": zone.id, "relation": "s223:hasProperty",
+                                     "object": zone.id}))
+    # create_entity makes any class; the node is what its class makes it
+    rev, _ = p.edit(p.head(), ops({"op": "create_entity", "id": "new:r", "label": "Room", "type": "s223:PhysicalSpace"},
+                                  {"op": "create_equipment", "label": "Fan", "type": "s223:Fan", "location": "new:r"}))
+    v = p.view(rev.id)
+    assert by_label(v.equipment, "Fan").location.label == "Room"
+    room = by_label(v.spaces, "Room")
+    rev2, _ = p.edit(rev.id, ops({"op": "update_entity", "id": room.id, "label": "Room 1"},
+                                 {"op": "delete_entity", "id": by_label(v.equipment, "Fan").id}))
+    assert [s.label for s in p.view(rev2.id).spaces] == ["Room 1"] and not p.view(rev2.id).equipment
 
 
 def test_symmetric_and_inverse_statements_are_one_fact(registry):
@@ -131,5 +140,5 @@ def test_relations_endpoint_lists_allowed_and_current(zones, tmp_path):
     body = client.get(f"/api/projects/{p.id}/entities/{zone.id}/relations").json()
     allowed = {a["curie"]: a for a in body["allowed"]}
     assert "s223:hasDomainSpace" in allowed and allowed["s223:hasDomain"]["max"] == 1
-    assert "s223:hasProperty" not in allowed  # owned by the point editor
+    assert allowed["s223:hasProperty"]["typed_field"] == "points"  # listed, with the field that also shows it
     assert len(body["relationships"]) == 3

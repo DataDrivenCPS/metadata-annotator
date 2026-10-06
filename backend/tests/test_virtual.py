@@ -133,7 +133,7 @@ def test_spaces_table_column_edits_adjacency(floor):
     out = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), spec)
     (col,) = out["columns"]
     assert col["editor"] == "relation" and col["relation_curie"] == ADJ
-    assert {c["label"] for c in col["candidates"]} == {"Room 101", "Room 102", "Room 103"}
+    assert {c["label"] for c in col["candidates"] if c["fits"]} == {"Room 101", "Room 102", "Room 103"}
     rev, _ = p.edit(p.head(), ops(adjacent(a.id, b.id)))
     out = views.evaluate(p.graph(rev.id), p.vocab, p.view(rev.id), spec)
     cells = {r["label"]: r["cells"]["adjacent"] for r in out["rows"]}
@@ -181,3 +181,36 @@ def test_relations_for_lists_virtual_relations(registry):
     zone = {r["relation"]: r for r in watr.relations_for([str(S223.Zone)])}
     assert zone["urn:workbench:virtual#serves_space"]["objects"] == [str(S223.PhysicalSpace)]
     assert not brick.virtual_errors and not watr.virtual_errors
+
+
+# --------------------------------------------------------------- Brick HVAC zones
+
+def test_brick_hvac_zone_fed_by_a_vav_holding_rooms(floor):
+    # Relations the typed fields also show (feeds, part of) can be stated wherever a field
+    # cannot say them: a VAV feeding a zone, a room in a level and a zone.
+    p = floor
+    a, b, _ = rooms(p)
+    rev, cand = p.edit(p.head(), ops(
+        {"op": "create_space", "id": "new:l", "label": "Level 1", "type": "rec:Level"},
+        {"op": "update_space", "id": a.id, "part_of": "new:l"},
+        {"op": "create_equipment", "id": "new:v", "label": "VAV-1", "type": "brick:Variable_Air_Volume_Box"},
+        {"op": "create_entity", "id": "new:z", "label": "Zone 1", "type": "rec:HVACZone"},
+        {"op": "relate", "subject": "new:v", "relation": "brick:feeds", "object": "new:z"},
+        {"op": "relate", "subject": "new:z", "relation": "rec:hasPart", "object": a.id},
+        {"op": "relate", "subject": "new:z", "relation": "rec:hasPart", "object": b.id},
+    ))
+    v = p.view(rev.id)
+    assert by_label(v.spaces, "Zone 1")  # a zone is a space, whichever operation made it
+    assert by_label(v.spaces, "Room 101").part_of.label == "Level 1"  # the typed field keeps the level...
+    listed = {(r.subject.label, r.object.label) for r in v.relationships if not r.virtual}
+    assert {("VAV-1", "Zone 1"), ("Zone 1", "Room 101")} <= listed  # ...the rest is listed
+    assert by_label(v.spaces, "Room 102").part_of.label == "Zone 1"  # Room 102 has no level: its part_of shows it
+    assert not listed & {("Room 101", "Level 1"), ("Level 1", "Room 101"), ("Zone 1", "Room 102")}
+    before = {i.explanation for i in p.issues(rev.parent_id) if i.severity == "violation"}
+    after = {i.explanation for i in p.issues(rev.id) if i.severity == "violation"}
+    assert after <= before, after - before
+    # The deprecated Brick class is allowed too; the note and the validator say what to change.
+    cand = p.build_candidate(rev.id, ops({"op": "create_space", "id": "new:z2", "label": "Zone 2", "type": "brick:HVAC_Zone"},
+                                         {"op": "relate", "subject": a.id, "relation": "brick:isPartOf", "object": "new:z2"}))
+    assert any("rec:HVACZone" in n for n in cand.result.notes)
+    assert any("brick:hasPart" in i.explanation for i in cand.issues if i.severity == "violation")

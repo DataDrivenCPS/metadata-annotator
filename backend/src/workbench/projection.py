@@ -15,9 +15,9 @@ Domain mapping (223P):
 * **Space** - an ``s223:PhysicalSpace``; spaces nest with ``parent s223:contains child`` and
   equipment is placed with ``s223:hasPhysicalLocation``.
 * **Entity** - an instance of any other ontology class (a zone, a system, a wall...).
-* **Relationship** - any other triple between entities (or from an entity to a vocabulary
-  term) whose predicate is a relation of the loaded ontologies. Predicates that the typed
-  editors own (``OWNED``) are not relationships; their fields edit them.
+* **Relationship** - any triple between entities (or from an entity to a vocabulary term)
+  whose predicate is a relation of the loaded ontologies, unless a typed field already shows
+  it (``TYPED_FIELDS``, ``shown_pairs``); plus virtual relations (relations.py).
 * **Connection point** - an inlet, outlet or bidirectional ``s223:ConnectionPoint`` of a
   piece of equipment, with its medium, the connection that joins it, the point it is paired
   with (``s223:pairedConnectionPoint``) and the container's point it maps to (``s223:mapsTo``).
@@ -524,50 +524,62 @@ def ensure_ids(pg: ProjectGraph, vocab: Vocabulary) -> int:
 # ------------------------------------------------------------- relationships
 
 QUDT_NS = "http://qudt.org/schema/qudt/"
-# Predicates a typed editor owns: predicate -> (subject kinds, or None for any; what edits it instead).
-OWNED: dict[str, dict[str, tuple[set[str] | None, str]]] = {
+# Relations the typed tables show as fields: predicate -> the field. Display only: relate can
+# write any relation, and a fact is listed as a relationship unless a typed row already shows
+# that pair (see shown_pairs), e.g. a room's second parent or a VAV feeding a zone.
+TYPED_FIELDS: dict[str, dict[str, str]] = {
     "s223": {
-        **{str(S223[p]): (None, "a connection point (create_connection_point / its fields)") for p in (
+        **{str(S223[p]): "connection points" for p in (
             "hasConnectionPoint", "isConnectionPointOf", "cnx", "connectsThrough", "connectsAt", "mapsTo",
             "pairedConnectionPoint")},
-        **{str(S223[p]): (None, "a connection (create_connection)") for p in (
-            "connected", "connectedTo", "connectedFrom", "connectedThrough")},
-        **{str(S223[p]): (None, "a point (create_point / its fields)") for p in (
+        **{str(S223[p]): "connections" for p in ("connected", "connectedTo", "connectedFrom", "connectedThrough")},
+        **{str(S223[p]): "points" for p in (
             "hasProperty", "actuatedByProperty", "observes", "hasObservationLocation", "ofMedium", "ofSubstance",
             "hasEnumerationKind")},
-        str(S223.contains): ({"equipment", "space"}, "contained_in (equipment) or part_of (spaces)"),
-        str(S223.hasPhysicalLocation): (None, "the equipment's location"),
-        str(S223.hasMedium): ({"connection", "connection_point"}, "the connection's or connection point's medium"),
-        QUDT_NS + "hasQuantityKind": (None, "the point's quantity kind"),
-        QUDT_NS + "hasUnit": (None, "the point's unit"),
+        str(S223.contains): "contained_in (equipment) or part_of (spaces)",
+        str(S223.hasPhysicalLocation): "the equipment's location",
+        str(S223.hasMedium): "the connection's or connection point's medium",
+        QUDT_NS + "hasQuantityKind": "the point's quantity kind",
+        QUDT_NS + "hasUnit": "the point's unit",
     },
     "brick": {
-        **{BRICK_NS + p: (None, "the point's equipment") for p in ("hasPoint", "isPointOf")},
-        **{BRICK_NS + p: (None, "a connection (create_connection)") for p in ("feeds", "isFedBy")},
-        **{BRICK_NS + p: ({"equipment", "space"}, "contained_in (equipment) or part_of (spaces)")
-           for p in ("hasPart", "isPartOf")},
-        **{REC_NS + p: ({"space"}, "the space's part_of") for p in ("isPartOf", "hasPart")},
-        **{BRICK_NS + p: (None, "the equipment's location") for p in ("hasLocation", "isLocationOf")},
-        BRICK_NS + "hasUnit": (None, "the point's unit"),
+        **{BRICK_NS + p: "the point's equipment" for p in ("hasPoint", "isPointOf")},
+        **{BRICK_NS + p: "connections" for p in ("feeds", "isFedBy")},
+        **{BRICK_NS + p: "contained_in (equipment) or part_of (spaces)" for p in ("hasPart", "isPartOf")},
+        **{REC_NS + p: "the space's part_of" for p in ("isPartOf", "hasPart")},
+        **{BRICK_NS + p: "the equipment's location" for p in ("hasLocation", "isLocationOf")},
+        BRICK_NS + "hasUnit": "the point's unit",
     },
 }
 
 
-def owned_hint(vocab: Vocabulary, predicate: str, subject_kind: str | None) -> str | None:
-    """What edits this predicate instead, when a typed editor owns it for this kind of subject."""
+def typed_field(vocab: Vocabulary, predicate: str) -> str | None:
+    """The typed field that shows this relation, if any (informational: relate writes any relation)."""
     watr = vocab.namespaces.get("watr")
     if watr and predicate == watr + "hasProcess":
         return "the equipment's treatment process"
-    rule = OWNED.get(vocab.family, {}).get(predicate)
-    if rule is None:
-        return None
-    kinds, hint = rule
-    return hint if kinds is None or subject_kind in kinds else None
+    return TYPED_FIELDS.get(vocab.family, {}).get(predicate)
+
+
+def shown_pairs(view: ModelView) -> set[frozenset[str]]:
+    """Pairs of ids (or id and vocabulary IRI) that a typed row's fields already show."""
+    pairs: set[frozenset[str]] = set()
+    typed = [*view.equipment, *view.points, *view.connections, *view.connection_points, *view.spaces]
+    for row in typed:
+        refs = [v for v in vars(row).values() if isinstance(v, (EntityRef, TermRef))]
+        keys = [v.id if isinstance(v, EntityRef) else v.iri for v in refs]
+        for k in keys:
+            if k:
+                pairs.add(frozenset((row.id, k)))
+        if isinstance(row, ConnectionRow):  # a connection also shows its two ends as connected
+            ends = [r.id for r in (row.from_equipment, row.to_equipment, row.from_point, row.to_point) if r]
+            pairs |= {frozenset((a, b)) for a in ends for b in ends if a != b}
+    return pairs
 
 
 def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> None:
-    """Every non-owned ontology relation between the view's entities (or to a vocabulary term),
-    and every virtual relation between them."""
+    """Every ontology relation between the view's entities (or to a vocabulary term) that no
+    typed field shows, and every virtual relation between them."""
     nodes: dict[str, tuple[str, str, str]] = {}  # iri -> (id, kind, label)
     for row in view.rows().values():
         iri = getattr(row, "iri", "")
@@ -575,16 +587,17 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
             nodes[iri] = (row.id, row.kind, row.label)  # type: ignore[attr-defined]
     seen: set[tuple[str, str, str]] = set()
     counts: dict[str, int] = {}
+    shown = shown_pairs(view)
     for s, p, o in facts(pg, vocab):
         if str(s) not in nodes:
             continue
-        sid, skind, slabel = nodes[str(s)]
-        if owned_hint(vocab, str(p), skind):
-            continue
+        sid, _, slabel = nodes[str(s)]
         obj = nodes.get(str(o))
         value = None if obj else (TermRef.of(vocab, o) if vocab.term(str(o)) else None)
         if obj is None and value is None:
             continue
+        if typed_field(vocab, str(p)) and frozenset((sid, obj[0] if obj else str(o))) in shown:
+            continue  # a typed field shows it
         key = relationship_key(vocab, s, p, o)
         if key in seen:
             continue

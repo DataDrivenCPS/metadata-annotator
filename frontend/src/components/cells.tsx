@@ -1,7 +1,7 @@
 /** Small inline cell editors shared by the model tables and view tables. */
 import { useState } from 'react'
 import { useStore } from '../store'
-import type { ViewCellItem, ViewColumn } from '../types'
+import type { RelationCandidate, ViewCellItem, ViewColumn } from '../types'
 
 export function TextEditor({ initial, onCommit, onCancel }: { initial: string; onCommit: (v: string) => void; onCancel: () => void }) {
   const [v, setV] = useState(initial)
@@ -23,6 +23,22 @@ export function Select({ value, options, onCommit, onCancel }: {
       {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
     </select>
   )
+}
+
+/** Picker options for relation objects: what the vocabulary expects first, then anything else
+ * (allowed; validation reports what does not fit). Option values index into ``candidates``. */
+export function CandidateOptions({ candidates, describe }: {
+  candidates: readonly (RelationCandidate | ViewCellItem)[]; describe: (c: RelationCandidate | ViewCellItem) => string
+}) {
+  const items = candidates.map((c, i) => ({ c, i }))
+  const fit = items.filter(({ c }) => c.fits !== false)
+  const other = items.filter(({ c }) => c.fits === false)
+  const opts = (list: typeof items) => list.map(({ c, i }) => <option key={i} value={i}>{describe(c)}</option>)
+  if (!other.length) return <>{opts(fit)}</>
+  return <>
+    {fit.length > 0 && <optgroup label="Fits the vocabulary">{opts(fit)}</optgroup>}
+    <optgroup label="Anything else (validation will check)">{opts(other)}</optgroup>
+  </>
 }
 
 /** Chips for the current values (× removes the relationship) and a picker for adding one. */
@@ -47,8 +63,8 @@ export function RelationCellEditor({ row, column, items, done }: {
           onMouseDown={(e) => { e.preventDefault(); done(); void edit([{ op: 'unrelate', id: i.relationship }]) }}>×</button>}</span>)}
       <select autoFocus defaultValue="" onBlur={done} onKeyDown={(e) => e.key === 'Escape' && done()}
         onChange={(e) => { const c = options[Number(e.target.value)]; if (c) add(c) }}>
-        <option value="" disabled>{options.length ? `add ${column.relation_label}…` : 'nothing else fits'}</option>
-        {options.map((c, i) => <option key={i} value={i}>{c.label}{c.curie ? ` (${c.curie})` : ''}</option>)}
+        <option value="" disabled>{options.length ? `add ${column.relation_label}…` : 'nothing else to add'}</option>
+        <CandidateOptions candidates={options} describe={(c) => `${c.label}${c.curie ? ` (${c.curie})` : ''}`} />
       </select>
     </span>
   )

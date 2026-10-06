@@ -106,6 +106,9 @@ How the model represents things (from the BuildingMOTIF skill's Brick guidance):
   brick:Floor...) are deprecated: use the rec: class. Spaces nest with part_of (a room part_of
   a level part_of a building). Equipment says which space it is in with location; points
   have no location (they belong to equipment).
+- HVAC zones: a rec:HVACZone is a space (create_space; brick:HVAC_Zone is deprecated). The
+  equipment serving it feeds it (relate VAV brick:feeds zone) and it has its rooms as parts
+  (relate zone rec:hasPart room); a room's own part_of stays its level.
 - Rooms next to each other: relate them with virtual:adjacent (RealEstateCore: both rooms
   rec:adjacentElement one shared rec:Wall, created when they share none).
 
@@ -127,14 +130,17 @@ Refer to entities by their ids (eq-..., pt-..., cx-...). Give a new entity an id
 label) in the later operation, e.g.
   [{{"op": "create_equipment", "id": "new:x1", "label": "Unit 1", "type": "{example_type}"}},
    {{"op": "create_equipment", "label": "Part A", "type": "{example_part}", "contained_in": "new:x1"}}]
-Anything else the vocabulary defines:
+Anything else the vocabulary defines (the operations above are shortcuts for common patterns;
+these reach everything):
 - create_entity {{label, type}}; update_entity {{id, fields...}}; delete_entity {{id}} - an instance of any
-  other class (e.g. a zone, a wall, a system); classes with their own operation above use that one.
-- relate {{subject, relation, object}}; unrelate {{id}} - any relation the vocabulary defines between two
-  entities (any kind, by id), or from an entity to a vocabulary value (e.g. an enumeration member).
-  Prefer the fields above (location, part_of, equipment, contained_in...) where they exist. Call
+  class (e.g. a zone, a wall, a system). For equipment, points and connections prefer their own
+  operations, which also write the parts the vocabulary expects.
+- relate {{subject, relation, object}}; unrelate {{id}} - any relation the vocabulary defines between any
+  two entities (by id), or from an entity to a vocabulary value (e.g. an enumeration member). This
+  includes relations the fields above also show, when a field cannot say it (a second parent, a
+  connection to something that is not equipment). Use the fields where they fit. Call
   relations_for(entity_id) first to see which relations the vocabulary allows and what they point
-  to; never invent a relation. Relationship ids are rl-...
+  to; never invent a relation. Validation reports what does not fit. Relationship ids are rl-...
 {virtual}Terms (types, units, ...) must be real vocabulary terms. If you are not sure a term exists
 or which one fits, use search_terms first. Never invent a term.
 Search with the words a term would be named by ("air handling unit", not "AHU" or
@@ -737,15 +743,19 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         dismissals = [d for d in dismissals if d.id in still_found]
         gate = project.gate(cand) if cand.diff.added or cand.diff.removed else None
         introduced = [v for v in (gate or {}).get("introduced", []) if v not in inherited]
-        if introduced and not gate_checked and step < MAX_STEPS + MAX_REPAIRS - 1:
-            # One chance to respond to the repair engine, as in BuildingMOTIF's gated repair loop.
+        notes = list(cand.result.notes)
+        if (introduced or notes) and not gate_checked and step < MAX_STEPS + MAX_REPAIRS - 1:
+            # One chance to respond to the repair engine (as in BuildingMOTIF's gated repair loop)
+            # and to notes on how the change fits the vocabulary.
             gate_checked = True
-            progress("gated", f"Soundness gate: introduces {len(introduced)} violation(s); "
-                              "asking the model to check", {"introduced": introduced})
+            progress("gated", f"Soundness gate: introduces {len(introduced)} violation(s), {len(notes)} note(s); "
+                              "asking the model to check", {"introduced": introduced, "notes": notes})
             messages.append({"role": "user", "content":
-                             "The repair engine's soundness gate reports that this change introduces violations:\n- "
-                             + "\n- ".join(introduced)
-                             + "\nIf another change would avoid them, propose that instead. If they are expected"
+                             ("The repair engine's soundness gate reports that this change introduces violations:\n- "
+                              + "\n- ".join(introduced) + "\n" if introduced else "")
+                             + ("Notes on how the change fits the vocabulary:\n- " + "\n- ".join(notes) + "\n"
+                                if notes else "")
+                             + "If another change would avoid them, propose that instead. If they are expected"
                                " (for example new equipment that is not connected yet), propose the same"
                                " operations again and say so in the explanation."})
             continue

@@ -25,7 +25,7 @@ from . import views as views_mod
 from .llm import LLMError, make_client
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
-from .projection import POINT_KIND_LABELS, entity_iri, owned_hint, sensors_of
+from .projection import POINT_KIND_LABELS, entity_iri, sensors_of, typed_field
 from .runs import ProviderUnavailable, RunManager
 from .schemas import CsvImportConfig, SelectionScope
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
@@ -352,19 +352,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         values = [t for t in vocab.terms.values() if t.kind in VALUE_KINDS and not t.deprecated]
 
         def candidates(objects: list[str]) -> list[dict]:
+            """Every entity, those the shapes expect first (fits); vocabulary values only when they fit."""
             fits = (lambda ts: any(vocab.is_a(t, o) for t in ts for o in objects)) if objects else (lambda ts: True)
-            out = [{"id": r.id, "label": r.label, "kind": r.kind} for r, ts in nodes if fits(ts)]  # type: ignore[attr-defined]
+            out = sorted(({"id": r.id, "label": r.label, "kind": r.kind, "fits": fits(ts)}  # type: ignore[attr-defined]
+                          for r, ts in nodes), key=lambda c: not c["fits"])
             if objects:
-                out += [{**term(t.iri), "kind": "value"} for t in values if fits([t.iri])][:200]
+                out += [{**term(t.iri), "kind": "value", "fits": True} for t in values if fits([t.iri])][:200]
             return out
 
         allowed = []
         for r in vocab.relations_for(types):
-            if owned_hint(vocab, r["relation"], row.kind):  # type: ignore[attr-defined]
-                continue
             t = vocab.term(r["relation"])
             allowed.append({**term(r["relation"]), "objects": [term(o) for o in r["objects"]], "max": r["max"],
-                            "symmetric": bool(t and t.symmetric), "candidates": candidates(r["objects"])})
+                            "symmetric": bool(t and t.symmetric), "candidates": candidates(r["objects"]),
+                            "typed_field": typed_field(vocab, r["relation"])})
         current = [asdict(r) for r in p.view(rid).relationships
                    if r.subject.id == eid or (r.object is not None and r.object.id == eid)]
         return {"allowed": allowed, "relationships": current}

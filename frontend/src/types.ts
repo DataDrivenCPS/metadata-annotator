@@ -72,7 +72,7 @@ export interface ReviewIssue {
 }
 /** pyshifty's repair witness for an issue, rendered by the backend (the engine's own words). */
 export interface IssueRepair {
-  blocked: boolean; summary: string[]; missing: string[]; offending: string[]; repair: string; shape: string | null
+  blocked: boolean; opaque?: boolean; summary: string[]; missing: string[]; offending: string[]; repair: string; shape: string | null
 }
 export interface IssueDismissalRecord {
   dismissed_by: 'person' | 'assistant'; reason: string | null; proposal_id: string | null
@@ -168,7 +168,7 @@ export interface EntityDetail {
   history: { revision_id: string; field: string; before: string; after: string; origin: string; created_at: string }[]
 }
 
-export interface ProviderHealth { ok: boolean; detail: string; model?: string; model_count?: number }
+export interface ProviderHealth { ok: boolean; detail: string; model?: string; model_count?: number; context_tokens?: number | null }
 
 export interface CsvImportConfig {
   layout: 'header_points' | 'row_points' | 'column_points'

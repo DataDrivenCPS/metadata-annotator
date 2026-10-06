@@ -82,6 +82,39 @@ class LLMClient(Protocol):
         ...
 
 
+# Assumed when neither the provider config nor the endpoint says (llama-server's -c 32768).
+DEFAULT_CONTEXT_TOKENS = 32768
+_windows: dict[tuple[str, str], int] = {}  # (endpoint, model) -> context tokens the endpoint reported
+
+
+def context_window(llm: Any) -> int:
+    """Tokens one request may hold (prompt + reply). Clients may offer ``context_tokens()``:
+    the configured value, else what the endpoint reports."""
+    fn = getattr(llm, "context_tokens", None)
+    return (fn() if callable(fn) else None) or DEFAULT_CONTEXT_TOKENS
+
+
+# Output tokens an agent asks for. Providers count prompt + max_tokens against the window (OpenRouter
+# rejects or reroutes a request that would not fit), so a small window gets a smaller reply.
+REPLY_TOKENS = 8000
+MIN_REPLY_TOKENS = 2048
+
+
+def reply_tokens(window: int) -> int:
+    """``max_tokens`` for one agent reply in a ``window``-token context: an eighth of it, within bounds."""
+    return max(MIN_REPLY_TOKENS, min(REPLY_TOKENS, window // 8))
+
+
+def detected_window(key: tuple[str, str], detect: Callable[[], int | None]) -> int | None:
+    """``detect()`` once per endpoint and model; only an answer is remembered, so an endpoint
+    that was unreachable is asked again next time."""
+    if key not in _windows:
+        n = detect()
+        if n:
+            _windows[key] = n
+    return _windows.get(key)
+
+
 def parse_json_text(text: str) -> dict[str, Any]:
     """Parse model output as a JSON object, tolerating code fences and preamble."""
     t = text.strip()

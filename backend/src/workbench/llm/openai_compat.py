@@ -18,7 +18,10 @@ import httpx
 from urllib.parse import urlparse
 
 from ..config import ProviderConfig
-from .base import CancelToken, ImageInput, LLMError, LLMResult, MalformedOutput, ProgressFn, parse_reply, retry_malformed
+from .base import (
+    CancelToken, ImageInput, LLMError, LLMResult, MalformedOutput, ProgressFn, detected_window, parse_reply,
+    retry_malformed,
+)
 
 
 def unreachable_message(provider: str, base_url: str, exc: object) -> str:
@@ -138,6 +141,37 @@ class OpenAICompatClient:
         return LLMResult(data=parse_reply(text, tokens_in, tokens_out), raw_text=text,
                          input_tokens=tokens_in, output_tokens=tokens_out)
 
+    def context_tokens(self) -> int | None:
+        return self.cfg.context_tokens or detected_window((self.base_url, self.model), self._detect_context)
+
+    def _get_json(self, url: str) -> dict[str, Any]:
+        try:
+            r = httpx.get(url, headers=self._headers(), timeout=5.0)
+            value = r.json() if r.status_code < 400 else {}
+        except (httpx.HTTPError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _detect_context(self) -> int | None:
+        """The context the server runs the model with, from whichever endpoint reports it."""
+        root = self.base_url.removesuffix("/v1")
+        for url in dict.fromkeys([f"{root}/props", f"{self.base_url}/props"]):  # llama-server (per slot)
+            props = self._get_json(url)
+            n = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+            if _positive(n):
+                return n
+        for m in self._get_json(f"{self.base_url}/health").get("all_models_loaded") or []:  # Lemonade
+            n = (m.get("recipe_options") or {}).get("ctx_size")
+            if m.get("model_name") == self.model and _positive(n):
+                return n
+        models = [m for m in self._get_json(f"{self.base_url}/models").get("data") or [] if isinstance(m, dict)]
+        entry = next((m for m in models if m.get("id") == self.model), models[0] if len(models) == 1 else None)
+        # OpenRouter, vLLM, Lemonade (the model's maximum, when it is not loaded yet)
+        for key in ("context_length", "max_model_len", "max_context_window"):
+            if entry and _positive(entry.get(key)):
+                return entry[key]
+        return None
+
     def health(self) -> dict[str, Any]:
         try:
             r = httpx.get(f"{self.base_url}/models", headers=self._headers(), timeout=5.0)
@@ -150,6 +184,10 @@ class OpenAICompatClient:
             if available is False:
                 ok, detail = False, f"'{self.model}' is not offered by {self.base_url}"
             return {"ok": ok, "detail": detail, "model": models[0] if len(models) == 1 else self.model,
-                    "model_count": len(models)}
+                    "model_count": len(models), "context_tokens": self.context_tokens() if ok else None}
         except (httpx.HTTPError, ValueError) as exc:
             return {"ok": False, "detail": unreachable_message(self.provider, self.base_url, exc)}
+
+
+def _positive(n: Any) -> bool:
+    return isinstance(n, int) and not isinstance(n, bool) and n > 0

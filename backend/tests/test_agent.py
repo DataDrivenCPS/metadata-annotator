@@ -357,3 +357,139 @@ def test_malformed_replies_are_retried_once_and_counted():
     always_bad = lambda: (_ for _ in ()).throw(MalformedOutput("[]"))  # noqa: E731
     with pytest.raises(MalformedOutput):
         retry_malformed(always_bad)
+
+
+def test_context_fits_the_budget_by_priority(sample_project):
+    from workbench.agent.correction import build_context
+
+    p = sample_project
+    full, _ = build_context(p, p.head(), SelectionScope(), "fix the issues")
+    assert "not shown" not in full
+    small, _ = build_context(p, p.head(), SelectionScope(), "fix the issues", budget=3000)
+    # Issues outrank the model listing; whatever is left out is counted and can be looked up.
+    assert "Open issues on these objects:" in small and "[val-" in small
+    assert "more points not shown; look them up with find_entities)" in small
+    assert len(small) < len(full) and small.rstrip().endswith("Request: fix the issues")
+
+
+def test_context_budget_leaves_room_for_reply_and_tool_steps():
+    from workbench.agent.correction import CHARS_PER_TOKEN, MIN_CONTEXT_CHARS, context_budget
+
+    # 32k window: an eighth for the reply, a quarter for tool steps, then the system prompt and the rest
+    assert context_budget(32768, "s" * 9000, 1000) == (32768 - 4096 - 8192) * CHARS_PER_TOKEN - 10000
+    assert context_budget(262144, "", 0) > context_budget(32768, "", 0)
+    assert context_budget(8192, "s" * 9000, 0, images=2) == MIN_CONTEXT_CHARS  # the selection still shows
+
+
+def test_context_window_from_config_or_endpoint(monkeypatch):
+    import httpx
+
+    import workbench.llm.openai_compat as oc
+    from workbench.config import ProviderConfig
+    from workbench.llm import context_window
+
+    replies = {
+        # llama-server: per-slot context in /props at the server root
+        "http://llama/props": {"default_generation_settings": {"n_ctx": 16384}},
+        # Lemonade: the loaded model's ctx_size in /health
+        "http://lemon/v1/health": {"all_models_loaded": [
+            {"model_name": "other", "recipe_options": {"ctx_size": 4096}},
+            {"model_name": "gemma", "recipe_options": {"ctx_size": 65536}}]},
+        # OpenRouter: context_length on the model's /models entry
+        "http://router/v1/models": {"data": [{"id": "a/b", "context_length": 8192},
+                                             {"id": "g/gemma", "context_length": 131072}]},
+    }
+    asked: list[str] = []
+
+    def get(url, **kw):
+        asked.append(url)
+        if url in replies:
+            return httpx.Response(200, json=replies[url])
+        return httpx.Response(200, text="<html>app</html>") if url.endswith("/props") else httpx.Response(404)
+
+    monkeypatch.setattr(oc.httpx, "get", get)
+
+    def client(base_url, model, **kw):
+        return oc.OpenAICompatClient(ProviderConfig(name="t", kind="openai", model=model, base_url=base_url, **kw))
+
+    assert context_window(client("http://llama/v1", "local")) == 16384
+    assert context_window(client("http://lemon/v1", "gemma")) == 65536
+    assert context_window(client("http://router/v1", "g/gemma")) == 131072
+    assert context_window(client("http://router/v1", "g/gemma", context_tokens=20000)) == 20000  # config wins
+    asked.clear()
+    assert context_window(client("http://router/v1", "g/gemma")) == 131072 and not asked  # remembered
+    assert context_window(client("http://silent/v1", "m")) == 32768  # nothing reported: the default
+    assert context_window(client("http://silent/v1", "m")) == 32768 and asked.count("http://silent/v1/models") == 2
+
+
+def test_reply_tokens_shrink_with_small_windows():
+    from workbench.llm import reply_tokens
+
+    assert reply_tokens(1_000_000) == 8000 and reply_tokens(32768) == 4096 and reply_tokens(8192) == 2048
+
+
+class SmallWindowLLM(ScriptedLLM):
+    def __init__(self, steps, window):
+        super().__init__(steps)
+        self.window, self.kwargs = window, []
+
+    def context_tokens(self):
+        return self.window
+
+    def complete_json(self, system, messages, schema, **kw):
+        self.kwargs.append(kw)
+        return super().complete_json(system, messages, schema, **kw)
+
+
+def test_small_window_asks_for_a_smaller_reply_and_shortens_old_results(sample_project, guidance):
+    p = sample_project
+    tank = by_label(p.view(p.head()).equipment, "TK-101")
+    searches = [{"action": "read_guidance", "args": {"topic": t}} for t in ("points", "connections", "watr_layers")]
+    llm = SmallWindowLLM([*searches, {"action": "propose", "explanation": "nothing to change", "operations": []}],
+                         window=7000)
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[tank.id]), "check this tank")
+    assert all(kw.get("max_tokens") == 2048 for kw in llm.kwargs)
+    # The first guidance result no longer fits beside the later ones; the latest are kept whole.
+    last = llm.seen[-1]
+    assert "Result of read_guidance(topic='points'), shortened to save room" in last[2]["content"]
+    assert last[-1]["content"].startswith("Result of read_guidance:")
+    assert any(e[0] == "shortened" for e in events)
+
+    big = SmallWindowLLM([{"action": "propose", "explanation": "ok", "operations": []}], window=1_000_000)
+    run(p, big, guidance, SelectionScope(entity_ids=[tank.id]), "check this tank")
+    assert "max_tokens" not in big.kwargs[0]  # a large window keeps the adapter's default
+
+
+def test_long_history_keeps_the_latest_turns_clipped(sample_project, guidance):
+    p = sample_project
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"turn {i} " + "x" * 2000} for i in range(12)]
+    llm = ScriptedLLM([{"action": "propose", "explanation": "ok", "operations": []}])
+    run_correction(p, llm, guidance, p.head(), SelectionScope(), "and now?", None, lambda *a: None, CancelToken(),
+                   history=history)
+    context = llm.seen[0][0]["content"]
+    assert "(4 earlier turns not shown)" in context and "turn 3 " not in context and "turn 11 " in context
+    assert "x" * 801 not in context
+
+
+def test_step_schema_offers_only_what_the_family_accepts(registry):
+    from workbench.agent.correction import step_schema
+
+    def ops(schema):
+        return {v["properties"]["op"]["enum"][0]: set(v["properties"])
+                for v in schema["properties"]["operations"]["items"]["anyOf"]}
+
+    brick = step_schema(registry.get("brick"), token_updates=False, evidence=False)
+    assert "token_updates" not in brick["properties"]
+    b = ops(brick)
+    assert "create_connection_point" not in b and "process" not in b["create_equipment"]
+    assert "point_type" in b["create_point"] and "quantity_kind" not in b["create_point"]
+    assert "medium" not in b["create_connection"] and "evidence" not in b["create_point"]
+    # the choices offer the same operations
+    assert brick["properties"]["choices"]["items"]["properties"]["options"]["items"]["properties"][
+        "operations"]["items"] == brick["properties"]["operations"]["items"]
+
+    s223 = ops(step_schema(registry.get("223p"), evidence=True))
+    assert "create_connection_point" in s223 and "process" not in s223["create_equipment"]
+    assert "evidence" in s223["create_point"] and "point_type" not in s223["create_point"]
+    watr = step_schema(registry.get("watr"))
+    assert "process" in ops(watr)["create_equipment"] and "token_updates" in watr["properties"]

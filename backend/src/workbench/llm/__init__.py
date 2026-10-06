@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from ..config import ProviderConfig
-from .base import Cancelled, CancelToken, ImageInput, LLMClient, LLMError, LLMResult
+from .base import Cancelled, CancelToken, ImageInput, LLMClient, LLMError, LLMResult, context_window, reply_tokens
 
 
 def make_client(cfg: ProviderConfig) -> LLMClient:
@@ -23,4 +23,4 @@ def make_client(cfg: ProviderConfig) -> LLMClient:
     raise ValueError(f"unknown provider kind {cfg.kind!r}")
 
 
-__all__ = ["Cancelled", "CancelToken", "ImageInput", "LLMClient", "LLMError", "LLMResult", "make_client"]
+__all__ = ["Cancelled", "CancelToken", "ImageInput", "LLMClient", "LLMError", "LLMResult", "context_window", "make_client", "reply_tokens"]

@@ -31,6 +31,9 @@ class ProviderConfig:
     # Requests sent at once by work that can run in parallel (a source build's mapping batches).
     # Match a local llama-server's -np; remote providers handle several.
     concurrency: int = 4
+    # Tokens one request may hold (prompt + reply). Unset: asked from the endpoint (llama-server
+    # /props, Lemonade /health, a /models entry, Anthropic's Models API), else a conservative default.
+    context_tokens: int | None = None
 
     @property
     def api_key(self) -> str | None:

@@ -36,15 +36,24 @@ def curie(vocab: Vocabulary, iri: str | None) -> str:
 
 
 def term_ref(vocab: Vocabulary, ref) -> str:
-    return "-" if ref is None else f"{ref.label} [{curie(vocab, ref.iri)}]"
+    """``label [curie]``, or just the curie when the label only respells its name."""
+    if ref is None:
+        return "-"
+    short = curie(vocab, ref.iri)
+    return short if _plain(ref.label) == _plain(short.rsplit(":", 1)[-1]) else f"{ref.label} [{short}]"
+
+
+def _plain(text: str) -> str:
+    return "".join(c for c in text.lower() if c.isalnum())
 
 
 def entity_line(vocab: Vocabulary, row) -> str:
     if isinstance(row, EquipmentRow):
         parent = f" | inside: {row.contained_in.id}" if row.contained_in else ""
         place = f" | in space: {row.location.id} (\"{row.location.label}\")" if row.location else ""
-        return (f"{row.id} | equipment \"{row.label}\" | type: {term_ref(vocab, row.type)} | "
-                f"process: {term_ref(vocab, row.process)} | points: {row.point_count}{parent}{place}")
+        process = f" | process: {term_ref(vocab, row.process)}" if row.process else ""
+        return (f"{row.id} | equipment \"{row.label}\" | type: {term_ref(vocab, row.type)}{process} | "
+                f"points: {row.point_count}{parent}{place}")
     if isinstance(row, EntityRow):
         return f"{row.id} | {term_ref(vocab, row.type)} \"{row.label}\" | relationships: {row.relation_count}"
     if isinstance(row, RelationshipRow):
@@ -62,12 +71,11 @@ def entity_line(vocab: Vocabulary, row) -> str:
         if row.substance:
             extra += f" | substance: {term_ref(vocab, row.substance)}"
         if row.point_type is not None or vocab.family == "brick":
-            eq = f"{row.equipment.id} (\"{row.equipment.label}\")" if row.equipment else "UNASSIGNED"
             return (f"{row.id} | point \"{row.label}\" | type: {term_ref(vocab, row.point_type)} | kind: {row.point_kind} "
                     f"| unit: {term_ref(vocab, row.unit)} | equipment: {eq}")
         return (f"{row.id} | point \"{row.label}\" | kind: {row.point_kind} | measures: "
                 f"{term_ref(vocab, row.quantity_kind)} | unit: {term_ref(vocab, row.unit)} | "
-                f"equipment: {eq} | sensor: {term_ref(vocab, row.sensor_type)}{extra}")
+                f"equipment: {eq}" + (f" | sensor: {term_ref(vocab, row.sensor_type)}" if row.sensor_type else "") + extra)
     if isinstance(row, ConnectionRow):
         a = f"{row.from_equipment.id} (\"{row.from_equipment.label}\")" if row.from_equipment else "?"
         b = f"{row.to_equipment.id} (\"{row.to_equipment.label}\")" if row.to_equipment else "?"

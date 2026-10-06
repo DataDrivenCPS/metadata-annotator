@@ -34,6 +34,10 @@ timeout_s = 600
 # Requests sent at once by parallel work (a source build's mapping batches). Match the
 # server's -np (parallel slots); remote providers default to 4.
 concurrency = 1
+# Tokens one request may hold (prompt + reply); the assistant sizes the model listing it
+# sends to fit. Unset, it is asked from the endpoint (llama-server /props, Lemonade /health,
+# the model's /models entry on OpenRouter/vLLM, Anthropic's Models API), else 32768.
+# context_tokens = 32768
 
 # Any OpenAI-compatible remote endpoint, e.g. OpenRouter
 [llm.providers.openrouter]

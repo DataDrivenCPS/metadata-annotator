@@ -306,6 +306,15 @@ FAMILY_FIELDS = {
     },
 }
 FAMILY_NAMES = {"brick": "Brick", "s223": "223P/WaTr"}
+
+
+def allowed_fields(vocab: Vocabulary) -> dict[str, set[str]]:
+    """The fields ``resolve`` accepts per entity kind in this vocabulary: FAMILY_FIELDS, less
+    treatment processes in 223P without WaTr."""
+    allowed = FAMILY_FIELDS[vocab.family]
+    if vocab.family == "s223" and not vocab.namespaces.get("watr"):
+        allowed = {**allowed, "equipment": allowed["equipment"] - {"process"}}
+    return allowed
 REF_FIELDS = {"contained_in": "equipment", "equipment": "equipment",
               "from_equipment": "equipment", "to_equipment": "equipment",
               "from_point": "connection_point", "to_point": "connection_point",

@@ -33,7 +33,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .. import operations as ops_mod
-from ..llm import CancelToken, LLMClient, LLMError
+from ..llm import CancelToken, LLMClient, LLMError, context_window, reply_tokens
+from ..llm.base import REPLY_TOKENS
 from ..project import Project
 from ..schemas import EvidenceRef, Observation, SelectionScope
 from .correction import TOOL_ACTIONS, _call_tool, _fmt_args, _fmt_result
@@ -205,6 +206,8 @@ class Session:
         self._lock = threading.Lock()  # batches run concurrently
         # Requests the provider can serve at once (a local llama-server matches its -np).
         self.workers = max(1, int(getattr(getattr(llm, "cfg", None), "concurrency", 1)))
+        reply = reply_tokens(context_window(llm))
+        self.llm_options = {"max_tokens": reply} if reply < REPLY_TOKENS else {}  # else the adapter's default
 
     def progress(self, stage: str, message: str, data: dict) -> None:
         with self._lock:
@@ -212,7 +215,7 @@ class Session:
 
     def ask(self, system: str, messages: list[dict], schema: dict) -> dict:
         self.cancel.check()
-        res = self.llm.complete_json(system, messages, schema, cancel=self.cancel)
+        res = self.llm.complete_json(system, messages, schema, cancel=self.cancel, **self.llm_options)
         with self._lock:
             self.outcome.steps += 1
             self.outcome.input_tokens += res.input_tokens

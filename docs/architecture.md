@@ -316,6 +316,28 @@ are marked failed on next open.
   fallbacks on by default (`request_options = { fallbacks = false }` to disable). Not exercised
   in testing (no key was available); see README "Tested configuration".
 
+Each client reports its context window (`context_tokens()`; `llm.context_window` falls back
+to 32768): the provider's `context_tokens` setting, else what the endpoint says (llama-server
+`/props` per-slot `n_ctx`, Lemonade `/health` loaded `ctx_size`, a `/models` entry's
+`context_length`/`max_model_len`/`max_context_window`, Anthropic's `max_input_tokens`),
+remembered per endpoint and model. The correction agent turns it into a character budget for
+the first message (`correction.context_budget`: a quarter of the window for tool steps, room
+for the reply, system prompt, sources, history and images) and `build_context` fills its
+sections by priority — selection, issues, related objects, term hints, equipment, spaces,
+points, connections, connection points, entities, relationships — counting what it leaves out
+so the model can look it up with `find_entities`.
+Within a run, replies ask for `llm.reply_tokens(window)` output tokens (an eighth of a small
+window; adapters keep their own default from 64k up), since providers count prompt +
+`max_tokens` against the window. When the messages outgrow the window, the oldest tool results
+(all but the latest two) are shortened to their first lines and their calls may be made again.
+Follow-ups carry the last eight conversation turns, each clipped. Tool results are compact
+(terms one per line, JSON without indentation), entity lines leave out empty optional fields
+and labels that only respell a term's name, and issue lines leave out the repair engine's note
+when only opaque (SPARQL) constraints failed.
+The reply schema (`correction.step_schema`) offers only the operations and fields `resolve`
+accepts in the project's family (`operations.allowed_fields`), the `evidence` field only in runs
+over sources, and `token_updates` only while revising a source build.
+
 ## Storage layout
 
 ```

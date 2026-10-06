@@ -14,7 +14,9 @@ from typing import Any
 import anthropic
 
 from ..config import ProviderConfig
-from .base import CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, parse_reply, retry_malformed
+from .base import (
+    CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, detected_window, parse_reply, retry_malformed,
+)
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -104,6 +106,15 @@ class AnthropicClient:
             input_tokens=message.usage.input_tokens, output_tokens=message.usage.output_tokens,
             extra={"model": message.model, "request_id": getattr(message, "_request_id", None)},
         )
+
+    def context_tokens(self) -> int | None:
+        return self.cfg.context_tokens or detected_window((self.cfg.base_url or "", self.model), self._detect_context)
+
+    def _detect_context(self) -> int | None:
+        try:  # the Models API reports each model's context window as max_input_tokens
+            return getattr(self.client.models.retrieve(self.model), "max_input_tokens", None)
+        except anthropic.APIError:
+            return None
 
     def health(self) -> dict[str, Any]:
         return {"ok": bool(self.cfg.api_key or self.cfg.api_key_env is None), "detail": ""}

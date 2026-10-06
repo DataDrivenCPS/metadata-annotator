@@ -126,6 +126,8 @@ def render_repair(pg: ProjectGraph, vocab: Vocabulary, w: dict) -> dict:
             missing.append(line)
     return {
         "blocked": w["blocked"],
+        # Only opaque (SPARQL) constraints failed: the engine can say nothing about them.
+        "opaque": bool(w["atoms"]) and all(str(a["kind"]).endswith("Opaque") for a in w["atoms"]),
         "summary": summary,
         "missing": missing,
         "offending": [show(v) for v in dict.fromkeys(w["offending"])],

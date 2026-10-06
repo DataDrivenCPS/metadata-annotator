@@ -365,29 +365,33 @@ def test_json_wrapped_in_a_list_is_accepted():
 def test_a_reply_stuck_on_blank_space_is_abandoned_and_asked_again(monkeypatch):
     # Schema-constrained decoding can emit whitespace until the token limit (seen with gemma on
     # OpenRouter: 244k blank characters). The stream is left early and the request repeated.
-    import json as _json
-
-    import httpx
-
-    import workbench.llm.openai_compat as oc
+    from litellm.types.utils import ModelResponseStream
+    import workbench.llm.litellm_client as lc
     from workbench.config import ProviderConfig
 
     calls = []
 
-    def sse(pieces):
-        body = "".join(f"data: {_json.dumps({'choices': [{'delta': {'content': p}}]})}\n\n" for p in pieces)
-        return body + f"data: {_json.dumps({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})}\n\ndata: [DONE]\n\n"
+    class Stream:
+        closed = False
 
-    def handler(request):
-        calls.append(request)
-        pieces = ['{"action": ', *[" " * 50] * 40, '"x"}'] if len(calls) == 1 else ['{"action": "propose"}']
-        return httpx.Response(200, text=sse(pieces), headers={"content-type": "text/event-stream"})
+        def __iter__(self):
+            for p in self.pieces:
+                yield ModelResponseStream(choices=[{"index": 0, "delta": {"content": p}}])
 
-    real = httpx.Client
-    monkeypatch.setattr(oc.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
-    client = oc.OpenAICompatClient(ProviderConfig(name="t", kind="openai", model="m", base_url="http://x/v1"))
+        async def aclose(self):
+            self.closed = True
+
+    def complete(**params):
+        stream = Stream()
+        calls.append(stream)
+        stream.pieces = ['{"action": ', *[" " * 50] * 40, '"x"}'] if len(calls) == 1 else ['{"action": "propose"}']
+        return stream
+
+    monkeypatch.setattr(lc.litellm, "completion", complete)
+    client = lc.LiteLLMClient(ProviderConfig(name="t", kind="openai", model="m", base_url="http://x/v1"))
     result = client.complete_json("sys", [{"role": "user", "content": "hi"}], {"type": "object"})
     assert result.data == {"action": "propose"} and len(calls) == 2
+    assert all(s.closed for s in calls)
 
 
 def test_malformed_replies_are_retried_once_and_counted():
@@ -425,8 +429,8 @@ def test_context_fits_the_budget_by_priority(sample_project):
 def test_context_budget_leaves_room_for_reply_and_tool_steps():
     from workbench.agent.correction import CHARS_PER_TOKEN, MIN_CONTEXT_CHARS, context_budget
 
-    # 32k window: an eighth for the reply, a quarter for tool steps, then the system prompt and the rest
-    assert context_budget(32768, "s" * 9000, 1000) == (32768 - 4096 - 8192) * CHARS_PER_TOKEN - 10000
+    # 32k window: half for the reply, a quarter for tool steps, then the system prompt and the rest
+    assert context_budget(32768, "s" * 9000, 1000) == (32768 - 16384 - 8192) * CHARS_PER_TOKEN - 10000
     assert context_budget(262144, "", 0) > context_budget(32768, "", 0)
     assert context_budget(8192, "s" * 9000, 0, images=2) == MIN_CONTEXT_CHARS  # the selection still shows
 
@@ -434,7 +438,8 @@ def test_context_budget_leaves_room_for_reply_and_tool_steps():
 def test_context_window_from_config_or_endpoint(monkeypatch):
     import httpx
 
-    import workbench.llm.openai_compat as oc
+    import workbench.llm.endpoint as endpoint
+    from workbench.llm.litellm_client import LiteLLMClient
     from workbench.config import ProviderConfig
     from workbench.llm import context_window
 
@@ -457,10 +462,10 @@ def test_context_window_from_config_or_endpoint(monkeypatch):
             return httpx.Response(200, json=replies[url])
         return httpx.Response(200, text="<html>app</html>") if url.endswith("/props") else httpx.Response(404)
 
-    monkeypatch.setattr(oc.httpx, "get", get)
+    monkeypatch.setattr(endpoint.httpx, "get", get)
 
     def client(base_url, model, **kw):
-        return oc.OpenAICompatClient(ProviderConfig(name="t", kind="openai", model=model, base_url=base_url, **kw))
+        return LiteLLMClient(ProviderConfig(name="t", kind="openai", model=model, base_url=base_url, **kw))
 
     assert context_window(client("http://llama/v1", "local")) == 16384
     assert context_window(client("http://lemon/v1", "gemma")) == 65536
@@ -475,7 +480,7 @@ def test_context_window_from_config_or_endpoint(monkeypatch):
 def test_reply_tokens_shrink_with_small_windows():
     from workbench.llm import reply_tokens
 
-    assert reply_tokens(1_000_000) == 8000 and reply_tokens(32768) == 4096 and reply_tokens(8192) == 2048
+    assert reply_tokens(1_000_000) == 32768 and reply_tokens(32768) == 16384 and reply_tokens(8192) == 4096
 
 
 class SmallWindowLLM(ScriptedLLM):
@@ -498,7 +503,7 @@ def test_small_window_asks_for_a_smaller_reply_and_shortens_old_results(sample_p
     llm = SmallWindowLLM([*searches, {"action": "propose", "explanation": "nothing to change", "operations": []}],
                          window=7000)
     out, events = run(p, llm, guidance, SelectionScope(entity_ids=[tank.id]), "check this tank")
-    assert all(kw.get("max_tokens") == 2048 for kw in llm.kwargs)
+    assert all(kw.get("max_tokens") == 3500 for kw in llm.kwargs)
     # The first guidance result no longer fits beside the later ones; the latest are kept whole.
     last = llm.seen[-1]
     assert "Result of read_guidance(topic='points'), shortened to save room" in last[2]["content"]

@@ -20,13 +20,13 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 @dataclass
 class ProviderConfig:
     name: str
-    kind: Literal["openai", "anthropic"]
+    kind: Literal["openai", "anthropic", "litellm"]
     model: str
     base_url: str | None = None
     api_key_env: str | None = None
     supports_images: bool = False
     timeout_s: float = 300.0
-    # Extra fields merged into every request body (e.g. temperature, top_p).
+    # Provider request fields for legacy kinds; LiteLLM SDK options for kind="litellm".
     request_options: dict = field(default_factory=dict)
     # Requests sent at once by work that can run in parallel (a source build's mapping batches).
     # Match a local llama-server's -np; remote providers handle several.

@@ -23,6 +23,10 @@ class MalformedOutput(LLMError):
         self.input_tokens, self.output_tokens = input_tokens, output_tokens
 
 
+class TruncatedOutput(MalformedOutput):
+    """The provider stopped at its output limit; no partial answer may be used."""
+
+
 class Cancelled(Exception):
     pass
 
@@ -76,7 +80,7 @@ class LLMClient(Protocol):
         images: list[ImageInput] | None = None,
         cancel: CancelToken | None = None,
         on_progress: ProgressFn | None = None,
-        max_tokens: int = 8000,
+        max_tokens: int | None = None,
     ) -> LLMResult:
         """Return a JSON object conforming to ``schema``.
 
@@ -100,13 +104,13 @@ def context_window(llm: Any) -> int:
 
 # Output tokens an agent asks for. Providers count prompt + max_tokens against the window (OpenRouter
 # rejects or reroutes a request that would not fit), so a small window gets a smaller reply.
-REPLY_TOKENS = 8000
+REPLY_TOKENS = 32768
 MIN_REPLY_TOKENS = 2048
 
 
 def reply_tokens(window: int) -> int:
-    """``max_tokens`` for one agent reply in a ``window``-token context: an eighth of it, within bounds."""
-    return max(MIN_REPLY_TOKENS, min(REPLY_TOKENS, window // 8))
+    """Reserve up to half the context for a reply, capped at 32768 output tokens."""
+    return max(MIN_REPLY_TOKENS, min(REPLY_TOKENS, window // 2))
 
 
 def detected_window(key: tuple[str, str], detect: Callable[[], int | None]) -> int | None:
@@ -153,7 +157,7 @@ def parse_reply(text: str, input_tokens: int, output_tokens: int) -> dict[str, A
 
 def retry_malformed(call: Callable[[], LLMResult], attempts: int = 2,
                     on_retry: Callable[[MalformedOutput], None] | None = None) -> LLMResult:
-    """Ask again when a reply is not a usable JSON object, counting every attempt's tokens."""
+    """Ask again for malformed or truncated JSON, counting every attempt's tokens."""
     spent_in = spent_out = 0
     for attempt in range(attempts):
         try:
@@ -173,6 +177,13 @@ def retry_malformed(call: Callable[[], LLMResult], attempts: int = 2,
 
 
 def json_retry_message(exc: MalformedOutput) -> dict[str, str]:
+    if isinstance(exc, TruncatedOutput):
+        return {"role": "user", "content":
+                "Your previous answer reached the output-token limit and was discarded. "
+                "Answer the pending request again with exactly one complete JSON object matching the schema. "
+                "Return the complete answer from the beginning, including every required operation; "
+                "do not continue the truncated reply or omit required operations to save space. "
+                "Use compact JSON without indentation and keep thoughts and explanations brief."}
     return {"role": "user", "content":
             f"Your previous response could not be parsed: {exc}. "
             "Answer the pending request again with exactly one complete JSON object matching the schema. "

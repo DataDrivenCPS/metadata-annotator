@@ -7,10 +7,10 @@ authors = [
 ]
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "anthropic>=1.10.0",
     "buildingmotif",
     "fastapi>=0.142.2",
     "httpx>=0.28.1",
+    "litellm>=1.104.0",
     "pillow>=10",
     "pydantic>=2.13.5",
     "pypdfium2>=4.30",

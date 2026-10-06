@@ -53,12 +53,22 @@ request_options = { provider = { require_parameters = true } }
 # reasoning off made builds several times faster in testing (OpenRouter's unified option).
 # To disable reasoning, add reasoning = { enabled = false } to request_options above.
 
-# Anthropic Messages API (official SDK); reads ANTHROPIC_API_KEY
+# Anthropic Messages API through LiteLLM; reads ANTHROPIC_API_KEY
 [llm.providers.anthropic]
 kind = "anthropic"
 model = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
-# request_options = { effort = "medium", fallbacks = true }
+# request_options = { effort = "medium" }
+
+# Other providers through LiteLLM's native provider/model routes. Existing openai
+# and anthropic entries above keep their configuration format. For kind = litellm,
+# request_options are LiteLLM SDK options; use extra_body for endpoint-specific fields.
+# [llm.providers.gemini]
+# kind = "litellm"
+# model = "gemini/gemini-2.5-flash"
+# api_key_env = "GEMINI_API_KEY"
+# supports_images = true
+# request_options = { temperature = 0.2 }
 
 # Virtual relations (see backend/src/workbench/views.toml for the curated ones): a named path over
 # ontology relations, usable as virtual:<id> wherever a relation is (relate, views, inspector,

@@ -353,13 +353,36 @@ with current run updates. Missing provider usage cannot be inferred.
 
 ## Model providers (`llm/`)
 
-`complete_json(system, messages, schema, images?, cancel?)` behind two adapters:
+`complete_json(system, messages, schema, images?, cancel?)` uses one `LiteLLMClient` adapter.
+LiteLLM handles provider request translation, authentication, streaming and normalized errors.
+No gateway process is required; the application uses its Python SDK directly. Configuration
+supports three kinds:
 
 - `openai` — any OpenAI-compatible `/v1/chat/completions` (llama-server by default,
   `response_format: json_schema`, streamed).
-- `anthropic` — official SDK, `output_config.format` JSON schema, streamed, server-side refusal
-  fallbacks on by default (`request_options = { fallbacks = false }` to disable). The adapter's
-  retry behavior is covered with a stub; live verification requires an Anthropic key.
+- `anthropic` — the native Anthropic API through LiteLLM, with schema translation and streaming.
+  Existing `effort` settings remain effort-only, without implicitly enabling adaptive thinking.
+  The former SDK-specific native refusal-fallback beta is no longer enabled; explicitly setting
+  `request_options.fallbacks = true` is rejected. `false` remains accepted. Model routing
+  fallbacks configured through LiteLLM are a different feature.
+- `litellm` — native provider/model routes, such as `gemini/gemini-2.5-flash` or
+  `bedrock/<model-id>`. Set `api_key_env`, `base_url`, `supports_images` and `context_tokens`
+  as needed for that provider. `request_options` are LiteLLM SDK options; provider-specific
+  body fields belong in `request_options.extra_body`. See the configuration example.
+
+For existing `openai` entries, `request_options` are forwarded as request-body fields through
+LiteLLM's `extra_body`; existing `anthropic` entries pass their native options to LiteLLM.
+The bundled model catalog is used by default so imports work offline. Set
+`LITELLM_LOCAL_MODEL_COST_MAP=False` to opt into LiteLLM's remote catalog behavior.
+The SDK initializes synchronously when the backend imports its model interface, before
+the server event loop and request workers start. `runtime.py` removes SDK logging filters
+if that import fails: LiteLLM installs filters on asyncio, uvicorn and httpx during import,
+and leaving them attached after failure can hide the original error behind repeated
+`KeyError: 'litellm'` exceptions. Successful initialization keeps SDK redaction enabled.
+Fresh-interpreter tests cover failed-import cleanup and uvloop exception reporting.
+`endpoint.py` keeps endpoint health checks and deployment-specific context discovery separate
+from completion transport. Native routes report configured credential readiness; this does
+not test connectivity or guarantee that a model is available.
 
 Provider-specific routing belongs in configuration: the adapter passes `request_options`
 through without selecting behavior by endpoint hostname. The OpenRouter example sets
@@ -371,27 +394,43 @@ schema requirement. Local and other compatible endpoints receive only their conf
 options. Parsing, retry feedback, usage accounting and operation validation are shared across
 providers; routing flags supplement those checks.
 
-Both adapters retry malformed JSON once, adding the parsing error and an instruction to return
+The shared adapter retries malformed or truncated JSON once, adding feedback and an instruction to return
 exactly one complete schema-matching object. Retry messages are local to that call and every
 attempt's reported tokens are counted. Multiple JSON objects remain an error rather than
-silently discarding part of a proposed change. The OpenAI-compatible adapter also abandons
+silently discarding part of a proposed change. It also abandons
 runaway whitespace generation; malformed replies log the provider, model, generation id,
 upstream provider when available, finish reason, character count and output-token count.
 An exhausted retry fails the run without saving a proposal. Invalid operations are a separate
 failure path handled by the correction agent's repair loop.
+An output-token cutoff requests the complete answer again as compact JSON, with brief explanations
+and every required operation. The retry doubles the output budget when space permits, bounded by
+the remaining deployment context (reported input usage, else a text/image estimate, with 1024
+tokens reserved for feedback and estimation error) and a native model's known output maximum.
+When no additional space is available, it retries with the original budget and compact-output
+feedback. A second cutoff fails with the attempted limit in the error; even parseable JSON from
+a truncated reply is discarded. Both attempts' reported usage is counted.
+LiteLLM and SDK transport retries are disabled so the application controls attempt accounting.
+Streams are closed in a `finally` block on completion, failure, cancellation and whitespace
+abort. Alternative completion choices are kept separate; schema output delivered as a single
+tool call is read from its accumulated arguments. Mock transports exercise the actual LiteLLM
+OpenAI-compatible, Anthropic and native Gemini paths without live credentials.
 
 Each client reports its context window (`context_tokens()`; `llm.context_window` falls back
 to 32768): the provider's `context_tokens` setting, else what the endpoint says (llama-server
 `/props` per-slot `n_ctx`, Lemonade `/health` loaded `ctx_size`, a `/models` entry's
 `context_length`/`max_model_len`/`max_context_window`, Anthropic's `max_input_tokens`),
+then LiteLLM's bundled catalog for native routes when the endpoint provides no answer,
 remembered per endpoint and model. The correction agent turns it into a character budget for
 the first message (`correction.context_budget`: a quarter of the window for tool steps, room
 for the reply, system prompt, sources, history and images) and `build_context` fills its
 sections by priority — selection, issues, related objects, term hints, equipment, spaces,
 points, connections, connection points, entities, relationships — counting what it leaves out
 so the model can look it up with `find_entities`.
-Within a run, replies ask for `llm.reply_tokens(window)` output tokens (an eighth of a small
-window; adapters keep their own default from 64k up), since providers count prompt +
+Replies default to 32768 output tokens for every provider kind, with native routes respecting
+known model output maxima. Within a run, `llm.reply_tokens(window)` reserves up to half the
+context for output: 32768 tokens from a 64k window or larger, 16384 from a 32k window,
+and 4096 from an 8k window. This reservation also reduces the input context budget,
+since providers count prompt +
 `max_tokens` against the window. When the messages outgrow the window, the oldest tool results
 (all but the latest two) are shortened to their first lines and their calls may be made again.
 Follow-ups carry the last eight conversation turns, each clipped. Tool results are compact

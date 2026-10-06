@@ -23,9 +23,15 @@ npm --prefix frontend run build
 **3. Configure your model.** Copy [workbench.example.toml](workbench.example.toml)
 to `workbench.toml`. Set `[llm]` → `default` to the provider name you want to use
 and edit its settings under `[llm.providers.<name>]`. You can
-use a local llama.cpp server, an OpenAI-compatible service, or Anthropic. For a
-remote service, set the API key environment variable named in the configuration.
+use a local llama.cpp server, an OpenAI-compatible service, Anthropic, or another
+provider supported by LiteLLM. Existing `openai` and `anthropic` provider kinds
+remain supported. For native routes, set `kind = "litellm"` and a provider-prefixed
+model such as `gemini/gemini-2.5-flash`; the example configuration includes a
+Gemini entry. For a remote service, set the API key environment variable named
+in the configuration.
 Use a model with image support to extract from diagrams or scanned PDFs.
+Replies default to 32,768 output tokens; smaller context windows and known native
+model output limits reduce that budget.
 
 **4. Start the app:**
 

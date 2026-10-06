@@ -388,7 +388,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Table views for this project: curated ones and workbench.toml's, with spec problems."""
         p = project(pid)
         specs, errors = project_views(p)
-        return {"views": [{"id": s.id, "label": s.label, "builtin": s.builtin,
+        return {"views": [{"id": s.id, "label": s.label, "builtin": s.builtin, "table": s.table,
                            "errors": views_mod.check_spec(p.vocab, s)} for s in specs],
                 "errors": errors + p.vocab.virtual_errors}
 

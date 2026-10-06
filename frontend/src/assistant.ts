@@ -175,7 +175,7 @@ export function issuesOnSelection(issues: ReviewIssue[], sel: Selection): Review
   const chosen = new Set([...sel.entity_ids, ...sel.relationship_ids])
   const ids = issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion'
     && i.affected_ids.some((a) => chosen.has(a))).map((i) => i.id)
-  return autofixCandidates(issues, new Set(ids))
+  return ids.length ? autofixCandidates(issues, new Set(ids)) : []  // (no ticks would mean "every violation")
 }
 
 // ------------------------------------------------------------- proposal card

@@ -43,12 +43,36 @@ function useEntityDetail() {
   const [version, setVersion] = useState(0)
 
   useEffect(() => {
-    if (!inspectId) { setDetail(null); return }
+    if (!inspectId || isTermId(inspectId)) { setDetail(null); return }
     setError(null)
     api.entity(projectId, inspectId, viewing ?? undefined).then(setDetail).catch((e) => { setDetail(null); setError(String(e.message ?? e)) })
   }, [projectId, inspectId, head, viewing, version])
 
   return { inspectId, detail, error, refresh: () => setVersion((v) => v + 1) }
+}
+
+/** Rows of a vocabulary view (e.g. Processes) are terms, not model objects: their id is the IRI. */
+const isTermId = (id: string) => id.includes('://') || id.startsWith('urn:')
+
+/** A vocabulary term: what it is called, its kind and description. */
+function TermInspector({ iri }: { iri: string }) {
+  const profile = useStore((s) => s.model?.info.profile)
+  const [term, setTerm] = useState<Awaited<ReturnType<typeof api.term>> | null>(null)
+  useEffect(() => {
+    if (!profile) return
+    let alive = true
+    api.term(iri, profile).then((t) => alive && setTerm(t)).catch(() => alive && setTerm(null))
+    return () => { alive = false }
+  }, [iri, profile])
+  if (!term) return <p className="muted pad">{shortIri(iri)}</p>
+  return <div className="inspector">
+    <h4>{term.label}</h4>
+    <dl>
+      <dt>Term</dt><dd><code>{shortIri(iri)}</code> · vocabulary {term.kind?.replace('_', ' ')}</dd>
+      {term.comment && <><dt>About</dt><dd>{term.comment}</dd></>}
+      {term.deprecated && <><dt>Deprecated</dt><dd>{term.replaced_by ? <>use <code>{shortIri(term.replaced_by)}</code></> : 'yes'}</dd></>}
+    </dl>
+  </div>
 }
 
 function Inspector() {
@@ -61,6 +85,7 @@ function Inspector() {
   const { inspectId, detail, error, refresh } = useEntityDetail()
 
   if (!inspectId) return <p className="muted pad">Select an object to inspect its ontology terms, evidence, and history.</p>
+  if (isTermId(inspectId)) return <TermInspector iri={inspectId} />
   if (error) return <p className="error-text pad">{error}</p>
   if (!detail) return <p className="muted pad">Loading…</p>
   return (

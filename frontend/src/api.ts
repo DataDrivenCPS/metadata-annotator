@@ -88,6 +88,8 @@ export const api = {
     req<AgentRun>('POST', `${P(pid)}/proposals/${id}/regenerate`, { provider }),
   searchTerms: (q: string, kind: string | undefined, profile: string) =>
     req<Term[]>('GET', `/api/vocabulary/search?q=${encodeURIComponent(q)}${kind ? `&kind=${kind}` : ''}&limit=25&profile=${profile}`),
+  term: (iri: string, profile: string) =>
+    req<Term & { deprecated?: boolean; replaced_by?: string }>('GET', `/api/vocabulary/term?iri=${encodeURIComponent(iri)}&profile=${profile}`),
   options: (kind: string, quantityKind: string | undefined | null, profile: string) =>
     req<Term[]>('GET', `/api/vocabulary/options/${kind}?profile=${profile}${quantityKind ? `&quantity_kind=${encodeURIComponent(quantityKind)}` : ''}`),
   sources: (pid: string) => req<Source[]>('GET', `${P(pid)}/sources`),

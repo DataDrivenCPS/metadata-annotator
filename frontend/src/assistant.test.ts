@@ -149,3 +149,11 @@ describe('proposal change lines', () => {
     expect(lines[1].detail).toBe('maps to → AHU inlet; paired with → none (+1 more)')
   })
 })
+
+describe('auto-fix on a selection', () => {
+  it('offers nothing when the selection has no issues (not every violation)', () => {
+    const issue = { id: 'a', affected_ids: ['eq-1'], category: 'validation', severity: 'violation', explanation: 'x',
+      resolution_state: 'open', origin: 'validation', details: {} } as ReviewIssue
+    expect(issuesOnSelection([issue], { ...emptySelection(), entity_ids: ['https://example.org/term'] })).toEqual([])
+  })
+})

@@ -6,8 +6,35 @@
 # (virtual:<id>). One with a `via` class can be set: relating two entities that share no middle
 # node creates one (labelled by via_label) and links it both ways.
 #
-# Views: rows are instances of the `rows` classes ("entity" = every generic entity); columns are
-# paths (see views.py). `builtin` adds the columns to a typed table instead.
+# Views are the project's tabs, in this order (Graph and Issues always follow). Rows are instances
+# of the `rows` classes ("entity" = every generic entity), or the vocabulary terms under `terms`;
+# columns are paths (see views.py), through the model or (source = "vocabulary") the ontologies.
+# `table` makes a tab one of the typed tables; `builtin` adds columns to a typed table instead.
+# `families` / `profiles` limit a view to some projects, `exclude_profiles` hides it from some.
+
+# ------------------------------------------------------------------------- typed tables
+
+[views.points]
+label = "Points"
+table = "points"
+
+[views.equipment]
+label = "Equipment"
+table = "equipment"
+
+[views.spaces]
+label = "Spaces"
+table = "spaces"
+exclude_profiles = ["watr"]  # treatment plants are modeled by process, not by room
+
+[views.connections]
+label = "Connections"
+table = "connections"
+
+[views.connection_points]
+label = "Connection points"
+table = "connection_points"
+families = ["s223"]  # Brick has none
 
 # --------------------------------------------------------------------- virtual relations
 
@@ -49,6 +76,7 @@ columns = [
 [views.zones]
 label = "Zones"
 families = ["s223"]
+exclude_profiles = ["watr"]
 rows = ["s223:Zone"]
 columns = [
   { key = "label", label = "Zone", path = "label", editor = "label" },
@@ -61,12 +89,40 @@ columns = [
 [views.domain_spaces]
 label = "Domain spaces"
 families = ["s223"]
+exclude_profiles = ["watr"]
 rows = ["s223:DomainSpace"]
 columns = [
   { key = "label", label = "Domain space", path = "label", editor = "label" },
   { key = "domain", label = "Domain", path = "s223:hasDomain", editor = "relation" },
   { key = "enclosed_by", label = "Enclosed by", path = "^s223:encloses", editor = "relation" },
   { key = "zone", label = "Zone", path = "^s223:hasDomainSpace", editor = "relation" },
+]
+
+# ------------------------------------------------------------------------------- WaTr
+
+# Every treatment process the vocabulary knows, with the equipment that performs it here.
+[views.processes]
+label = "Processes"
+profiles = ["watr"]
+terms = "watr:Process"
+columns = [
+  { key = "label", label = "Process", path = "label" },
+  { key = "kind", label = "Kind of process", path = "rdfs:subClassOf", source = "vocabulary" },
+  { key = "equipment", label = "Equipment", path = "^watr:hasProcess", editor = "relation" },
+  { key = "about", label = "Description", path = "rdfs:comment", source = "vocabulary" },
+]
+
+# The kinds of water the vocabulary knows (brackish, brine, freshwater...), what carries them and
+# what measures them here.
+[views.media]
+label = "Media"
+profiles = ["watr"]
+terms = "s223:Fluid-Water"
+columns = [
+  { key = "label", label = "Medium", path = "label" },
+  { key = "constituents", label = "Made of", path = "s223:composedOf/s223:ofConstituent", source = "vocabulary" },
+  { key = "carried_by", label = "Carried by", path = "^s223:hasMedium", editor = "relation", only = "s223:Connection" },
+  { key = "measured_by", label = "Measured by", path = "^s223:ofMedium" },
 ]
 
 # ---------------------------------------------------------------------------- every family
@@ -93,6 +149,7 @@ columns = [
 [views.space_zones]
 label = "Zones"
 families = ["s223"]
+exclude_profiles = ["watr"]
 builtin = "spaces"
 columns = [
   { key = "zones", label = "Zones", path = "^virtual:serves_space", editor = "relation" },

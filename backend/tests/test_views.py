@@ -89,3 +89,54 @@ def test_typed_table_extensions_merge():
     (spaces,) = [s for s in brick if s.builtin == "spaces"]
     assert [c.key for c in spaces.columns] == ["adjacent", "parts"]
     assert "building_elements" in {s.id for s in brick} and "zones" not in {s.id for s in brick}
+
+
+def test_tabs_per_profile():
+    specs, errors = views.load_specs()
+    assert not errors
+    tabs = {prof: [v.id for v in views.for_project(specs, fam, prof) if not v.builtin]
+            for fam, prof in (("s223", "watr"), ("s223", "223p"), ("brick", "brick"))}
+    # typed tables are views too, first and in order; each profile shows what fits it
+    assert tabs["watr"][:4] == ["points", "equipment", "connections", "connection_points"]
+    assert "processes" in tabs["watr"] and not {"spaces", "zones", "domain_spaces"} & set(tabs["watr"])
+    assert {"spaces", "zones", "domain_spaces"} <= set(tabs["223p"]) and "processes" not in tabs["223p"]
+    assert "connection_points" not in tabs["brick"] and "building_elements" in tabs["brick"]
+    # workbench.toml can bring a hidden tab back
+    specs, _ = views.load_specs({"spaces": {"exclude_profiles": []}})
+    assert "spaces" in [v.id for v in views.for_project(specs, "s223", "watr")]
+
+
+def test_processes_lists_vocabulary_terms_with_the_equipment_performing_them(sample_project):
+    p = sample_project
+    spec = next(s for s in views.load_specs()[0] if s.id == "processes")
+    assert not views.check_spec(p.vocab, spec)
+    out = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), spec)
+    rows = {r["label"]: r for r in out["rows"]}
+    assert len(rows) > 50 and all(r["kind"] == "term" for r in out["rows"])  # every process, used or not
+    ro = rows["Reverse Osmosis (RO)"]
+    assert [c["label"] for c in ro["cells"]["equipment"]] == ["RO-1 Reverse Osmosis Skid"]
+    assert [c["label"] for c in ro["cells"]["kind"]] == ["Membrane Process"]  # from the vocabulary
+    assert "desalination" in ro["cells"]["about"][0]["label"]
+    col = next(c for c in out["columns"] if c["key"] == "equipment")
+    assert col["editor"] == "relation" and col["inverse"]
+    # assigning equipment to a process is relating it, from the process's row
+    pump = by_label(p.view(p.head()).equipment, "P-101")
+    rev, _ = p.edit(p.head(), ops({"op": "relate", "subject": pump.id, "relation": col["relation"],
+                                   "object": rows["Filtration"]["id"]}))
+    out = views.evaluate(p.graph(rev.id), p.vocab, p.view(rev.id), spec)
+    filtration = next(r for r in out["rows"] if r["label"] == "Filtration")
+    assert "P-101 Feed Pump" in [c["label"] for c in filtration["cells"]["equipment"]]
+
+
+def test_media_lists_kinds_of_water_with_what_carries_and_measures_them(sample_project):
+    p = sample_project
+    spec = next(s for s in views.load_specs()[0] if s.id == "media")
+    assert not views.check_spec(p.vocab, spec)
+    out = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), spec)
+    rows = {r["label"]: r["cells"] for r in out["rows"]}
+    brine = rows["Water-Brine"]
+    assert {c["label"] for c in brine["constituents"]} == {"H2O", "Salt-NaCl"}  # from the vocabulary
+    assert [c["label"] for c in brine["carried_by"]] == ["L-06"]  # only = s223:Connection: no connection points
+    assert "CT-201" in [c["label"] for c in rows["Water-Freshwater"]["measured_by"]]
+    col = next(c for c in out["columns"] if c["key"] == "carried_by")
+    assert col["candidates"] and all(c["label"].startswith("L-") for c in col["candidates"])

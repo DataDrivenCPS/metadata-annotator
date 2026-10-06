@@ -63,11 +63,17 @@ api_key_env = "ANTHROPIC_API_KEY"
 # via = "rec:Slab"
 # via_label = "Slab: {subject} | {object}"
 
-# Table views (see backend/src/workbench/views.toml for the curated ones). Rows are instances of
-# the given classes; columns are property paths (virtual relations too); a single-step
-# "relation" column is editable.
-# A view with `builtin = "spaces"` (or points/equipment/connections/connection_points) adds its
-# columns to that typed table instead.
+# Views are the tabs (see backend/src/workbench/views.toml for the curated ones), filtered by
+# families / profiles / exclude_profiles; the typed tables are views too, e.g. to show Spaces in
+# WaTr projects again:
+# [views.spaces]
+# exclude_profiles = []
+#
+# Rows are instances of the given classes (or `terms = "<class>"`: the vocabulary terms under
+# it); columns are property paths (virtual relations too; source = "vocabulary" follows the
+# ontologies; only = "<class>" keeps values of that class); a single-step "relation" column is
+# editable. A view with `builtin = "spaces"`
+# (or points/equipment/connections/connection_points) adds its columns to that typed table.
 # [views.systems]
 # label = "Systems"
 # families = ["brick"]

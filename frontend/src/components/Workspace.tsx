@@ -53,10 +53,12 @@ function FileMenu({ onImport, items }: { onImport: () => void; items: { label: s
   </div>
 }
 
-const TABS: [Tab, string][] = [
-  ['points', 'Points'], ['equipment', 'Equipment'], ['spaces', 'Spaces'], ['connections', 'Connections'],
-  ['connection_points', 'Connection points'], ['graph', 'Graph'], ['issues', 'Issues'],
+// The project's tabs come from its views (views.toml / workbench.toml, filtered per profile);
+// these show until the list arrives. Graph and Issues always follow.
+const DEFAULT_TABS: [Tab, string][] = [
+  ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'],
 ]
+const FIXED_TABS: [Tab, string][] = [['graph', 'Graph'], ['issues', 'Issues']]
 
 export function Workspace() {
   const projectId = useStore((s) => s.projectId)!
@@ -108,12 +110,10 @@ export function Workspace() {
   const counts = { points: model.view.points.length, equipment: model.view.equipment.length, spaces: model.view.spaces.length,
                    connections: model.view.connections.length, connection_points: model.view.connection_points.length,
                    graph: model.view.equipment.length + model.view.spaces.length, issues: problems }
-  // Brick has no connection points.
-  const typed = model.info.family === 'brick' ? TABS.filter(([id]) => id !== 'connection_points') : TABS
-  // Views with a table of their own go after the typed tables, before Graph and Issues.
-  const own: [Tab, string][] = views.filter((v) => !v.builtin).map((v) => [`view:${v.id}`, v.label])
-  const cut = typed.findIndex(([id]) => id === 'graph')
-  const tabs = [...typed.slice(0, cut), ...own, ...typed.slice(cut)]
+  const listed: [Tab, string][] = views.filter((v) => !v.builtin)
+    .map((v) => [v.table ? v.table as Tab : `view:${v.id}`, v.label])
+  const tabs = [...(views.length ? listed : DEFAULT_TABS), ...FIXED_TABS]
+  const shown = tabs.some(([id]) => id === tab) ? tab : tabs[0][0]  // e.g. Spaces, hidden for this profile
   const tabCount = (id: Tab) => (counts as Record<string, number | undefined>)[id]
 
   return (
@@ -171,21 +171,21 @@ export function Workspace() {
               {sourcesOpen ? '◂' : '▸'} Sources
             </button>
             {tabs.map(([id, label]) => (
-              <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}
+              <button key={id} className={shown === id ? 'active' : ''} onClick={() => setTab(id)}
                 title={id === 'issues' ? 'Validation findings plus source extraction and association issues' : undefined}>
                 {label} <span className={`count ${id === 'issues' && tabCount(id) ? 'warn' : ''}`}>{tabCount(id)}</span>
               </button>
             ))}
           </nav>
           <div className="tab-body">
-            {tab === 'points' && <PointsTable />}
-            {tab === 'equipment' && <EquipmentTable />}
-            {tab === 'spaces' && <SpacesTable />}
-            {tab === 'connections' && <ConnectionsTable />}
-            {tab === 'connection_points' && <ConnectionPointsTable />}
-            {tab === 'graph' && <GraphView />}
-            {tab === 'issues' && <IssuesView />}
-            {tab.startsWith('view:') && <ViewTable key={tab} vid={tab.slice(5)} />}
+            {shown === 'points' && <PointsTable />}
+            {shown === 'equipment' && <EquipmentTable />}
+            {shown === 'spaces' && <SpacesTable />}
+            {shown === 'connections' && <ConnectionsTable />}
+            {shown === 'connection_points' && <ConnectionPointsTable />}
+            {shown === 'graph' && <GraphView />}
+            {shown === 'issues' && <IssuesView />}
+            {shown.startsWith('view:') && <ViewTable key={shown} vid={shown.slice(5)} />}
           </div>
           <ResizeHandle label="Resize inspector tray" onResize={resizeDrawer} onReset={resetDrawer} />
           <Drawer />

@@ -41,6 +41,9 @@ if TYPE_CHECKING:
     from .vocabulary import Vocabulary
 
 VIRTUAL = "urn:workbench:virtual#"
+# RDF/RDFS/OWL/SKOS predicates (rdfs:subClassOf, rdfs:comment...) are usable in paths too.
+STANDARD = ("http://www.w3.org/1999/02/22-rdf-syntax-ns#", "http://www.w3.org/2000/01/rdf-schema#",
+            "http://www.w3.org/2002/07/owl#", "http://www.w3.org/2004/02/skos/core#")
 CURATED = FilePath(__file__).with_name("views.toml")
 PLACEHOLDER = "new:"
 
@@ -101,7 +104,7 @@ class Path:
             iri = expand_term(vocab, name)
             if "://" not in iri and not iri.startswith("urn:"):
                 raise PathError(f"unknown prefix in {name!r}")
-            if vocab.term(iri) is None and vocab.kind_of(iri) is None:
+            if vocab.term(iri) is None and vocab.kind_of(iri) is None and not iri.startswith(STANDARD):
                 raise PathError(f"{vocab.curie(iri)} is not a relation in the loaded vocabulary")
             return iri, inverse
 

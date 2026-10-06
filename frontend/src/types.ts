@@ -212,7 +212,7 @@ export interface AllowedRelation extends VocabTermRef {
 export interface EntityRelations { allowed: AllowedRelation[]; relationships: RelationshipRow[] }
 
 /** A table view (curated or from workbench.toml); builtin ones add columns to a typed table. */
-export interface ViewInfo { id: string; label: string; builtin: string | null; errors: string[] }
+export interface ViewInfo { id: string; label: string; builtin: string | null; table?: string | null; errors: string[] }
 export interface ViewCellItem {
   id?: string; iri?: string; curie?: string; label: string; kind?: string
   relationship?: string  // the rl- id behind the value, for removing it

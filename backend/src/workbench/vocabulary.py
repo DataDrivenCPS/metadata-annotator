@@ -779,7 +779,9 @@ def expand_term(vocab: Vocabulary, value: str) -> str:
         known = {**vocab.namespaces, "s223": str(S223), "qudt": str(QUDT),
                  "unit": "http://qudt.org/vocab/unit/",
                  "quantitykind": "http://qudt.org/vocab/quantitykind/",
-                 "qk": "http://qudt.org/vocab/quantitykind/"}
+                 "qk": "http://qudt.org/vocab/quantitykind/",
+                 "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+                 "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
         if prefix in known:
             return known[prefix] + local
     return v

@@ -19,6 +19,8 @@ import tomllib
 from pathlib import Path as FilePath
 from typing import Any, Literal
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field, ValidationError
 from rdflib import Literal as RDFLiteral
 from rdflib import URIRef
@@ -34,11 +36,17 @@ BUILTINS = ("points", "equipment", "spaces", "connections", "connection_points")
 SPECIAL = ("label", "type", "relations")
 
 
+Typed = Literal["points", "equipment", "spaces", "connections", "connection_points"]
+
+
 class ColumnSpec(BaseModel):
     key: str
     label: str
     path: str
     editor: Literal["label", "type", "relation", "none"] = "none"
+    # "vocabulary": follow the path through the loaded ontologies (a term's parent, description...)
+    source: Literal["model", "vocabulary"] = "model"
+    only: str | None = None  # keep values (and edit candidates) of this class, e.g. s223:Connection
 
 
 class ViewSpec(BaseModel):
@@ -46,12 +54,25 @@ class ViewSpec(BaseModel):
     label: str
     families: list[str] = Field(default_factory=list)  # empty = every family
     profiles: list[str] = Field(default_factory=list)  # empty = every profile
-    builtin: Literal["points", "equipment", "spaces", "connections", "connection_points"] | None = None
+    exclude_profiles: list[str] = Field(default_factory=list)  # hidden for these profiles
+    table: Typed | None = None  # this tab is a typed table (its own component)
+    builtin: Typed | None = None  # these columns extend a typed table
     rows: list[str] = Field(default_factory=list)  # root classes; "entity" = every generic entity
+    terms: str | None = None  # rows are the vocabulary terms under this class (e.g. watr:Process)
     columns: list[ColumnSpec] = Field(default_factory=list)
 
     def applies(self, family: str, profile: str) -> bool:
-        return (not self.families or family in self.families) and (not self.profiles or profile in self.profiles)
+        return ((not self.families or family in self.families) and (not self.profiles or profile in self.profiles)
+                and profile not in self.exclude_profiles)
+
+
+@dataclass
+class TermRow:
+    """A vocabulary term as a view row (``terms`` views)."""
+    id: str
+    iri: str
+    label: str
+    kind: str = "term"
 
 
 def load_specs(config_views: dict[str, dict] | None = None) -> tuple[list[ViewSpec], list[str]]:
@@ -85,7 +106,7 @@ def for_project(specs: list[ViewSpec], family: str, profile: str) -> list[ViewSp
 
 def check_spec(vocab: Vocabulary, spec: ViewSpec) -> list[str]:
     errors = []
-    for root in spec.rows:
+    for root in [*spec.rows, *([spec.terms] if spec.terms else [])]:
         if root != "entity" and vocab.term(expand_term(vocab, root)) is None:
             errors.append(f"row class {root!r} is not in the loaded vocabulary")
     for col in spec.columns:
@@ -96,6 +117,8 @@ def check_spec(vocab: Vocabulary, spec: ViewSpec) -> list[str]:
         except PathError as exc:
             errors.append(f"column {col.key}: {exc}")
             continue
+        if col.only and vocab.term(expand_term(vocab, col.only)) is None:
+            errors.append(f"column {col.key}: only {col.only!r} is not a class in the loaded vocabulary")
         if col.editor == "relation" and path.single_step is None:
             errors.append(f"column {col.key}: only a single (possibly inverse) relation can be edited")
     return errors
@@ -108,13 +131,19 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
     entities = {r.iri: r for r in view.rows().values()  # type: ignore[attr-defined]
                 if r.kind != "relationship" and getattr(r, "iri", "")}  # type: ignore[attr-defined]
     roots = [expand_term(vocab, r) for r in spec.rows if r != "entity"]
-    if spec.builtin:
-        rows = list(getattr(view, spec.builtin))
+    if spec.builtin or spec.table:
+        rows = list(getattr(view, spec.builtin or spec.table))  # type: ignore[arg-type]
+    elif spec.terms:
+        root = expand_term(vocab, spec.terms)
+        rows = [TermRow(t.iri, t.iri, t.label) for t in sorted(vocab.terms.values(), key=lambda t: t.label.lower())
+                if t.iri != root and not t.deprecated and vocab.is_a(t.iri, root)]
     else:
         rows = [r for r in entities.values()
                 if ("entity" in spec.rows and r.kind == "entity")
                 or any(vocab.is_a(t, root) for t in _types(pg, URIRef(r.iri)) for root in roots)]
-    row_types = sorted({t for r in rows for t in _types(pg, URIRef(r.iri))} | set(roots))  # type: ignore[attr-defined]
+    # a term row's "type" is the term itself (a process class is what a hasProcess value must be)
+    row_types = sorted({t for r in rows for t in ([r.iri] if isinstance(r, TermRow) else _types(pg, URIRef(r.iri)))}
+                       | set(roots))  # type: ignore[attr-defined]
     counts: dict[str, int] = {}
     for rel in (r for r in view.relationships if not r.virtual):  # stored facts only
         for ref in (rel.subject, rel.object):
@@ -133,11 +162,12 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
                 columns.append(meta)
                 continue
             step = path.single_step
-            if col.editor == "relation" and step is not None:
+            if col.editor == "relation" and step is not None and col.source == "model":
                 pred, inverse = step
+                candidates = _candidates(pg, vocab, entities, row_types, pred, inverse)
                 meta.update(editor="relation", relation=pred, inverse=inverse,
                             relation_label=vocab.label(pred), relation_curie=vocab.curie(pred),
-                            candidates=_candidates(pg, vocab, entities, row_types, pred, inverse))
+                            candidates=[c for c in candidates if _of_class(pg, vocab, c, col.only)])
         columns.append(meta)
 
     out_rows = []
@@ -148,12 +178,14 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
             if col.path == "label":
                 cells[col.key] = [{"label": r.label}]  # type: ignore[attr-defined]
             elif col.path == "type":
-                t = getattr(r, "type", None)
+                t = getattr(r, "type", None)  # (term rows have none)
                 cells[col.key] = [{"label": t.label, "iri": t.iri}] if t else []
             elif col.path == "relations":
                 cells[col.key] = [{"label": str(counts.get(r.id, 0))}]  # type: ignore[attr-defined]
             elif col.key in paths:
-                cells[col.key] = _values(pg, vocab, entities, node, paths[col.key])
+                graph = vocab.graph() if col.source == "vocabulary" else pg.model
+                cells[col.key] = [v for v in _values(graph, vocab, entities, node, paths[col.key], col.source == "model")
+                                  if _of_class(pg, vocab, v, col.only)]
         out_rows.append({"id": r.id, "kind": r.kind, "label": r.label, "iri": r.iri, "cells": cells})  # type: ignore[attr-defined]
     return {"id": spec.id, "label": spec.label, "builtin": spec.builtin, "columns": columns, "rows": out_rows}
 
@@ -162,10 +194,10 @@ def _types(pg: ProjectGraph, node) -> list[str]:
     return [str(t) for t in pg.model.objects(node, RDF.type) if isinstance(t, URIRef)]
 
 
-def _values(pg: ProjectGraph, vocab: Vocabulary, entities: dict, node, path: Path) -> list[dict]:
-    step = path.single_step
+def _values(graph, vocab: Vocabulary, entities: dict, node, path: Path, editable: bool = True) -> list[dict]:
+    step = path.single_step if editable else None
     out = []
-    for value in path.values(pg.model, node):
+    for value in path.values(graph, node):
         item: dict[str, Any]
         if isinstance(value, RDFLiteral):
             item = {"label": str(value)}
@@ -182,6 +214,17 @@ def _values(pg: ProjectGraph, vocab: Vocabulary, entities: dict, node, path: Pat
             item["relationship"] = relationship_id(relationship_key(vocab, s, URIRef(pred), o))
         out.append(item)
     return sorted(out, key=lambda i: i["label"].lower())
+
+
+def _of_class(pg: ProjectGraph, vocab: Vocabulary, item: dict, only: str | None) -> bool:
+    """Whether a cell value or candidate is of the column's ``only`` class (entities by their types)."""
+    if not only:
+        return True
+    cls = expand_term(vocab, only)
+    if item.get("id") and item.get("kind") != "value":
+        node = pg.iri(item["id"])
+        return node is not None and any(vocab.is_a(t, cls) for t in _types(pg, node))
+    return bool(item.get("iri")) and vocab.is_a(item["iri"], cls)
 
 
 def _candidates(pg: ProjectGraph, vocab: Vocabulary, entities: dict, row_types: list[str], pred: str,

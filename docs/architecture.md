@@ -161,19 +161,32 @@ copying the zone's `s223:hasDomain`).
 
 ### Table views (`views.py`, `views.toml`)
 
-Tables beyond the typed ones are declarative views: rows are instances of ontology classes
-(`rows = ["s223:Zone"]`, or `"entity"` for every generic entity) and columns are property paths
-(`s223:hasDomainSpace`, `^s223:encloses`, `s223:hasDomainSpace/^s223:encloses`, `a|b`, and
-virtual relations such as `virtual:serves_space`; specials `label`, `type`, `relations`). A
-single-step (possibly inverse, possibly virtual) `relation` column is edited
-with relate/unrelate — each cell value carries its relationship id, and the column lists
-candidate objects (those the shapes expect first). A view with `builtin` adds
-its columns to a typed table (points, equipment, spaces, connections, connection_points); all
-such views for one table are merged (`views.for_project`).
-Curated views ship in `views.toml` (Building elements for Brick; Zones and Domain spaces for
-223P; Other things everywhere); `[views.<id>]` in `workbench.toml` adds views or overrides
-fields of curated ones. `GET /views` lists a project's views with spec problems,
-`GET /views/{id}` evaluates one.
+A project's tabs are its views, in `views.toml` order, filtered by `families`, `profiles` and
+`exclude_profiles` (Graph and Issues always follow). The typed tables are views too
+(`table = "points"` etc.), so a profile can drop one: WaTr hides Spaces, Zones and Domain spaces
+and shows Processes and Media; Brick has no Connection points.
+
+Other views are declarative tables:
+- **Rows** are instances of ontology classes (`rows = ["s223:Zone"]`, or `"entity"` for every
+  generic entity), or the vocabulary terms under a class (`terms = "watr:Process"`: every
+  process, used or not; a term row's id is its IRI, and the inspector shows the term).
+- **Columns** are property paths (`s223:hasDomainSpace`, `^s223:encloses`,
+  `s223:hasDomainSpace/^s223:encloses`, `a|b`, virtual relations such as
+  `virtual:serves_space`, and RDF/RDFS/OWL/SKOS predicates; specials `label`, `type`,
+  `relations`), followed through the model or, with `source = "vocabulary"`, through the
+  ontologies (a process's parent `rdfs:subClassOf`, its `rdfs:comment`, a medium's
+  `s223:composedOf/s223:ofConstituent`). `only = "<class>"` keeps the values (and edit
+  candidates) of that class, e.g. the connections, not connection points, carrying a medium.
+- A single-step (possibly inverse, possibly virtual) model `relation` column is edited with
+  relate/unrelate — each cell value carries its relationship id, and the column lists
+  candidate objects (those the shapes expect first). Processes' Equipment column
+  (`^watr:hasProcess`) assigns equipment to a process from the process's row.
+- A view with `builtin` adds its columns to a typed table; all such views for one table are
+  merged (`views.for_project`).
+
+`[views.<id>]` in `workbench.toml` adds views or overrides fields of curated ones (e.g.
+`[views.spaces] exclude_profiles = []` brings Spaces back for WaTr). `GET /views` lists a
+project's views with spec problems, `GET /views/{id}` evaluates one.
 
 ## Revisions, undo, stale proposals
 

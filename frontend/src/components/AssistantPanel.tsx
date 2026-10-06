@@ -313,7 +313,7 @@ function Starters() {
       run: () => void startAutofix(onSelection),
     },
     violations.length > 1 && !autofixing && {
-      label: `Auto-fix the ${violations.length} open violations one by one`,
+      label: `Auto-fix the ${violations.length} open violations`,
       hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
       run: () => void startAutofix(autofixCandidates(issues ?? [], new Set())),
     },
@@ -496,6 +496,7 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
   const viewing = useStore((s) => s.viewing)
   const [allLines, setAllLines] = useState(false)
   const [allFixes, setAllFixes] = useState(false)
+  const [expanded, setExpanded] = useState(false)  // an applied proposal folds to one line
   const v = proposal.validation
   const lines = useMemo(() => summarizeChanges(proposal.changes, fieldLabel), [proposal])
   const outside = lines.filter((l) => l.outside).length
@@ -511,10 +512,20 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
   const headline = [counts.created && `${counts.created} added`, counts.updated && `${counts.updated} changed`,
     counts.deleted && `${counts.deleted} removed`].filter(Boolean).join(' · ')
 
+  if (proposal.status === 'applied' && !expanded) return (
+    <div className="proposal status-applied collapsed">
+      <span className="ok-text">✓ {proposal.operations.length ? `Applied as ${proposal.applied_revision}` : `Dismissed ${dismissals.length} issue(s)`}</span>
+      {headline && <span className="muted"> · {headline}</span>}
+      {fixes.length > 0 && <span className="muted"> · fixes {fixes.length} issue{fixes.length === 1 ? '' : 's'}</span>}
+      <button className="link small" onClick={() => setExpanded(true)}>show</button>
+    </div>
+  )
+
   return (
     <div className={`proposal status-${proposal.status}`}>
       <div className="proposal-head">
         <h3>Proposed change</h3>
+        {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>collapse</button>}
         <span className="muted">based on {proposal.base_revision}</span>
       </div>
       {showConversation && <div className="proposal-conversation">

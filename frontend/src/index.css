@@ -450,3 +450,6 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .relation-choices li { padding: 2px 0; }
 .react-flow__edge.space-edge.virtual path { stroke: #b0894f; stroke-dasharray: 1 5; stroke-width: 2; }
 .relation-cell .chip button { margin-left: 3px; }
+
+.proposal.collapsed { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; padding: 6px 10px; font-size: 12.5px; }
+.proposal.collapsed button { margin-left: auto; }

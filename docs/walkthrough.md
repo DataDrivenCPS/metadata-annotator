@@ -8,7 +8,9 @@ The header shows the current revision with its summary (`rev-2 …`; click it fo
 and the open violations; click the violations (or the **Issues** tab) to list them. Each issue is the validator's own message, e.g. "CT-201: s223: Inconsistent
 dimensionalities among the `Property`'s `Unit` and `Property`'s `QuantityKind`", with the repair
 engine's summary under it, e.g. "s223:hasConnectionPoint: have 0, need 1" for TK-301. Clicking an
-issue inspects its object below without leaving the list; **show in table** jumps to its row.
+issue expands its full message, validation findings and available repair details directly in
+the list, including while auto-fix is running. It also inspects the affected object below
+when one is available; **show in table** jumps to its row.
 
 ## 1. Correct an incorrectly interpreted point
 

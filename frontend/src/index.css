@@ -163,7 +163,13 @@ table.data td.empty { text-align: center; color: var(--muted); padding: 30px; }
 .repair-detail h6 { margin: 6px 0 2px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
 .repair-detail pre.code { max-height: 200px; white-space: pre-wrap; }
 .dismissal-note { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); font-style: italic; }
-.issue-text { flex: 1; cursor: pointer; }
+.issue-text { flex: 1; min-width: 0; }
+.issue-text > summary { cursor: pointer; list-style: none; }
+.issue-text > summary::-webkit-details-marker { display: none; }
+.issue-message::before { content: '▸ '; color: var(--muted); }
+.issue-text[open] .issue-message { display: block; overflow: visible; -webkit-line-clamp: unset; }
+.issue-text[open] .issue-message::before { content: '▾ '; }
+.issue-details { overflow-wrap: anywhere; }
 .sev { font-size: 10px; text-transform: uppercase; padding: 1px 6px; border-radius: 8px; letter-spacing: .03em; }
 .sev.violation { background: #fdecea; color: var(--bad); }
 .sev.warning { background: #fff0e0; color: var(--warn); }
@@ -180,7 +186,8 @@ table.data td.empty { text-align: center; color: var(--muted); padding: 30px; }
 .inspector-issue p { margin: 5px 0; font-size: 12px; }
 .inspector-issue .issue-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; text-transform: none; }
 .finding-detail { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 5px; }
-.finding-detail dl { grid-template-columns: 55px minmax(0, 1fr); font-size: 11px; }
+.finding-detail dl { display: grid; grid-template-columns: 55px minmax(0, 1fr); gap: 4px 8px; margin: 0; font-size: 11px; }
+.finding-detail dd { margin: 0; overflow-wrap: anywhere; }
 pre.code { background: #f6f8fa; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; font-size: 11.5px; overflow: auto; max-height: 360px; margin: 4px 0; white-space: pre; }
 .history, .revisions { list-style: none; margin: 0; padding: 0 10px; }
 .history li, .revisions li { padding: 3px 0; border-bottom: 1px solid #f0f2f5; font-size: 13px; }

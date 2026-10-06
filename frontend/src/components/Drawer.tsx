@@ -3,7 +3,7 @@ import { api } from '../api'
 import { useStore } from '../store'
 import { emptySelection, type EntityDetail, type EntityRelations, type Revision, type ReviewIssue } from '../types'
 import { CandidateOptions } from './cells'
-import { DismissalNote, RepairDetail } from './IssuesView'
+import { DismissalNote, IssueDetails } from './IssuesView'
 import { shortIri } from './TermPicker'
 
 export function Drawer() {
@@ -43,9 +43,14 @@ function useEntityDetail() {
   const [version, setVersion] = useState(0)
 
   useEffect(() => {
-    if (!inspectId || isTermId(inspectId)) { setDetail(null); return }
+    let alive = true
+    setDetail(null)
     setError(null)
-    api.entity(projectId, inspectId, viewing ?? undefined).then(setDetail).catch((e) => { setDetail(null); setError(String(e.message ?? e)) })
+    if (!inspectId || isTermId(inspectId)) return
+    api.entity(projectId, inspectId, viewing ?? undefined)
+      .then((detail) => { if (alive) setDetail(detail) })
+      .catch((e) => { if (alive) setError(String(e.message ?? e)) })
+    return () => { alive = false }
   }, [projectId, inspectId, head, viewing, version])
 
   return { inspectId, detail, error, refresh: () => setVersion((v) => v + 1) }
@@ -127,17 +132,7 @@ function Inspector() {
               </div>
               <p>{issue.explanation}</p>
               {issue.dismissal && <DismissalNote dismissal={issue.dismissal} />}
-              {repairs?.[issue.id] && <RepairDetail repair={repairs[issue.id]} />}
-              {issue.details.findings?.map((finding, index) => (
-                <div className="finding-detail" key={`${finding.focus}-${index}`}>
-                  {finding.message && <p>{finding.message}</p>}
-                  <dl>
-                    {finding.focus && <><dt>Focus</dt><dd><code>{finding.focus}</code></dd></>}
-                    {finding.path && <><dt>Path</dt><dd><code>{finding.path}</code></dd></>}
-                    {finding.shape && <><dt>Shape</dt><dd><code>{finding.shape}</code></dd></>}
-                  </dl>
-                </div>
-              ))}
+              <IssueDetails issue={issue} repair={repairs?.[issue.id]} />
             </li>
           ))}
         </ul>

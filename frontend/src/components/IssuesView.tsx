@@ -11,6 +11,7 @@ export function IssuesView() {
   const setSelection = useStore((s) => s.setSelection)
   const setTab = useStore((s) => s.setTab)
   const inspect = useStore((s) => s.inspect)
+  const setDrawerTab = useStore((s) => s.setDrawerTab)
   const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
   const notify = useStore((s) => s.notify)
   const projectId = useStore((s) => s.projectId)!
@@ -39,7 +40,8 @@ export function IssuesView() {
     const ids = i.affected_ids.filter((id) => rows.has(id))
     const rel = ids.filter((id) => rows.get(id)!.kind === 'connection')
     setSelection({ ...emptySelection(), entity_ids: ids.filter((id) => !rel.includes(id)), relationship_ids: rel })
-    if (ids[0]) inspect(ids[0])
+    inspect(ids[0] ?? null)
+    if (ids[0]) setDrawerTab('inspector')
   }
   const showInTable = (i: ReviewIssue) => {
     focus(i)
@@ -85,11 +87,14 @@ export function IssuesView() {
                 return next
               })} />
             <span className={`sev ${i.severity}`}>{i.severity}</span>
-            <span className="issue-text" onClick={() => focus(i)} title="Select and inspect the affected object">
-              <span className="issue-message">{i.explanation}</span>
-              {repairs?.[i.id] && <RepairLine repair={repairs[i.id]} />}
-              {i.dismissal && <DismissalNote dismissal={i.dismissal} />}
-            </span>
+            <details className="issue-text">
+              <summary onClick={() => focus(i)} title="Expand the full error and inspect its affected object">
+                <span className="issue-message">{i.explanation}</span>
+                {repairs?.[i.id] && <RepairLine repair={repairs[i.id]} />}
+                {i.dismissal && <DismissalNote dismissal={i.dismissal} />}
+              </summary>
+              <IssueDetails issue={i} repair={repairs?.[i.id]} />
+            </details>
             <span className="issue-actions">
               {!viewing && <button className="link" onClick={() => addToPrompt([i])}
                 title="Add this issue to the assistant prompt and select its objects">add to chat</button>}
@@ -106,6 +111,24 @@ export function IssuesView() {
         {showAll ? 'hide suggestions and dismissed' : `show ${hidden} suggestion(s)/dismissed`}</button>}
     </div>
   )
+}
+
+/** Error details are already in the model response, so inspection needs no entity request. */
+export function IssueDetails({ issue, repair }: { issue: ReviewIssue; repair?: IssueRepair }) {
+  return <div className="issue-details">
+    <p className="muted small">{issue.category.replaceAll('_', ' ')} · {issue.resolution_state}</p>
+    {repair && <RepairDetail repair={repair} />}
+    {issue.details.findings?.map((finding, index) => (
+      <div className="finding-detail" key={`${finding.focus}-${index}`}>
+        {finding.message && <p>{finding.message}</p>}
+        <dl>
+          {finding.focus && <><dt>Focus</dt><dd><code>{finding.focus}</code></dd></>}
+          {finding.path && <><dt>Path</dt><dd><code>{finding.path}</code></dd></>}
+          {finding.shape && <><dt>Shape</dt><dd><code>{finding.shape}</code></dd></>}
+        </dl>
+      </div>
+    ))}
+  </div>
 }
 
 /** One line of pyshifty's repair witness: its failing leaves, in the engine's words. */

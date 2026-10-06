@@ -16,6 +16,7 @@ times; they never reach the model graph.
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 import re
 from dataclasses import dataclass, field
@@ -127,7 +128,9 @@ Source abbreviations are not always standard: check with search_terms before cho
 
 COMMON_RULES = """
 In update operations include only the fields that change; set a field to null to clear it.
-Refer to entities by their ids (eq-..., pt-..., cx-...). Give a new entity an id like
+Refer to entities by their exact full ids (eq-..., pt-..., cx-...). Copy ids from the model
+or lookup results character for character; never shorten or invent an existing id.
+Give a new entity an id like
 "new:x1" when a later operation in the same proposal refers to it, and use that id (not its
 label) in the later operation, e.g.
   [{{"op": "create_equipment", "id": "new:x1", "label": "Unit 1", "type": "{example_type}"}},
@@ -905,6 +908,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             repairs += 1
             if isinstance(exc, ops_mod.OperationError):
                 problems = problems + suggest_terms(project, exc.unknown_terms)
+                problems += suggest_entities(tools, exc.unknown_entities)
             progress("rejected", "Operations were malformed; asking the model to fix them", {"problems": problems})
             if repairs > MAX_REPAIRS:
                 raise LLMError("the model could not produce valid operations: " + "; ".join(problems[:5]))
@@ -994,6 +998,27 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             project.dismiss_proposal(prior_proposal.id)
         return outcome
     raise LLMError("the assistant did not reach a proposal within the step limit")
+
+
+def suggest_entities(tools: AgentTools, unknown: list[tuple[str, str]]) -> list[str]:
+    """Offer exact references from the current lookup state; never rewrite an operation."""
+    if not unknown:
+        return []
+    rows = tools._view().rows()
+    out = []
+    for eid, kind in dict.fromkeys(unknown):
+        # A placeholder may need a missing create operation, not an existing replacement.
+        if eid.startswith("new:"):
+            continue
+        candidates = {r.id: r for r in rows.values()
+                      if r.kind == kind or (kind == "entity" and r.kind != "relationship")}
+        close = difflib.get_close_matches(eid, sorted(candidates), n=3, cutoff=0.6)
+        if close:
+            options = "; ".join(entity_line(tools.vocab, candidates[i]) for i in close)
+            out.append(f"For unknown {kind} id {eid!r}, nearby valid ids are: {options}. "
+                       "Choose by the label and copy the full id exactly; do not guess. "
+                       "Use find_entities to look up the intended object if these do not match.")
+    return out
 
 
 def suggest_terms(project: Project, unknown: list[tuple[str, str, str | None]]) -> list[str]:

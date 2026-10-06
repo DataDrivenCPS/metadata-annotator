@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from ..config import ProviderConfig
 from .base import (
     CancelToken, ImageInput, LLMError, LLMResult, MalformedOutput, ProgressFn, detected_window, parse_reply,
-    retry_malformed,
+    json_retry_message, retry_malformed,
 )
 
 
@@ -58,8 +58,14 @@ class OpenAICompatClient:
     def complete_json(self, system, messages, schema, *, images: list[ImageInput] | None = None,
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int = 8000) -> LLMResult:
-        return retry_malformed(lambda: self._complete_once(system, messages, schema, images, cancel,
-                                                           on_progress, max_tokens))
+        retry_messages = list(messages)
+
+        def on_retry(exc):
+            log.warning("%s (%s): %s; retrying with JSON feedback", self.provider, self.model, exc)
+            retry_messages.append(json_retry_message(exc))
+
+        return retry_malformed(lambda: self._complete_once(system, retry_messages, schema, images, cancel,
+                                                           on_progress, max_tokens), on_retry=on_retry)
 
     def _complete_once(self, system, messages, schema, images, cancel, on_progress, max_tokens) -> LLMResult:
         if images and not self.supports_images:
@@ -93,6 +99,7 @@ class OpenAICompatClient:
         text_parts: list[str] = []
         usage: dict[str, Any] = {}
         finish = None
+        generation_id = upstream = None
         blank = 0  # blank characters at the end of the reply so far
         try:
             with httpx.Client(timeout=httpx.Timeout(self.cfg.timeout_s, connect=10.0)) as client:
@@ -117,6 +124,8 @@ class OpenAICompatClient:
                             raise LLMError(f"{self.provider}: {chunk['error']}")
                         if chunk.get("usage"):
                             usage = chunk["usage"]
+                        generation_id = chunk.get("id") or generation_id
+                        upstream = chunk.get("provider") or upstream
                         for choice in chunk.get("choices") or []:
                             delta = choice.get("delta") or {}
                             if delta.get("content"):
@@ -138,7 +147,13 @@ class OpenAICompatClient:
         if finish == "length":
             log.warning("%s ran out of output tokens (%d chars); the reply ended: %r", self.provider, len(text), text[-400:])
             raise LLMError("the model ran out of output tokens before finishing its answer", tokens_in, tokens_out)
-        return LLMResult(data=parse_reply(text, tokens_in, tokens_out), raw_text=text,
+        try:
+            data = parse_reply(text, tokens_in, tokens_out)
+        except MalformedOutput:
+            log.warning("%s (%s): invalid JSON; generation=%s upstream=%s finish=%s chars=%d tokens=%d",
+                        self.provider, self.model, generation_id, upstream, finish, len(text), tokens_out)
+            raise
+        return LLMResult(data=data, raw_text=text,
                          input_tokens=tokens_in, output_tokens=tokens_out)
 
     def context_tokens(self) -> int | None:

@@ -46,9 +46,12 @@ base_url = "https://openrouter.ai/api/v1"
 model = "google/gemma-4-31b-it"
 api_key_env = "OPENROUTER_API_KEY"
 supports_images = true
+# OpenRouter routing option: only use endpoints that support the requested parameters,
+# including the JSON schema. Other endpoints can use their own request_options.
+request_options = { provider = { require_parameters = true } }
 # Reasoning models spend thousands of hidden tokens on each structured call; turning
 # reasoning off made builds several times faster in testing (OpenRouter's unified option).
-# request_options = { reasoning = { enabled = false } }
+# To disable reasoning, add reasoning = { enabled = false } to request_options above.
 
 # Anthropic Messages API (official SDK); reads ANTHROPIC_API_KEY
 [llm.providers.anthropic]

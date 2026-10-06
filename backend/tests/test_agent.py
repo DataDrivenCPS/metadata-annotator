@@ -103,6 +103,56 @@ def test_repair_budget_is_bounded(sample_project, guidance):
         run(p, llm, guidance, SelectionScope(), "rename")
 
 
+def test_mistyped_equipment_id_gets_exact_reference_feedback(sample_project, guidance):
+    from workbench.operations import OperationError, OperationList
+    from workbench.agent.correction import suggest_entities
+    from workbench.agent.tools import AgentTools
+
+    p = sample_project
+    p.edit(p.head(), OperationList.validate_python([
+        {"op": "create_equipment", "id": "eq-f1e5ea", "label": "Sedimentation", "type": "s223:Equipment"},
+    ]))
+    base = p.head()
+    bad = [
+        {"op": "create_connection_point", "equipment": "eq-f1e5a", "direction": "outlet",
+         "medium": "s223:Fluid-Water"},
+        {"op": "create_point", "label": "Outlet temperature", "point_kind": "measurement",
+         "equipment": "eq-f1e5a"},
+    ]
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(base, OperationList.validate_python(bad), SelectionScope())
+    assert caught.value.unknown_entities == [("eq-f1e5a", "equipment")] * 2
+    hints = suggest_entities(AgentTools(p, base, guidance), caught.value.unknown_entities)
+    assert len(hints) == 1 and 'eq-f1e5ea | equipment "Sedimentation"' in hints[0]
+
+    llm = ScriptedLLM([
+        {"action": "propose", "operations": bad},
+        {"action": "propose", "operations": [
+            {"op": "update_equipment", "id": "eq-f1e5ea", "label": "Sedimentation Tank"}]},
+    ])
+    out, events = run(p, llm, guidance, SelectionScope(), "rename Sedimentation")
+    assert "eq-f1e5ea" in llm.seen[1][-1]["content"]
+    assert "Sedimentation" in llm.seen[1][-1]["content"]
+    assert len([e for e in events if e[0] == "rejected"]) == 1
+    assert out.proposal is not None
+    assert out.proposal.operations[0].id == "eq-f1e5ea"
+    assert p.head() == base
+
+
+def test_reference_hints_keep_ambiguous_ids_and_skip_new_placeholders():
+    from types import SimpleNamespace
+    from workbench.agent.correction import suggest_entities
+
+    def row(eid):
+        return SimpleNamespace(id=eid, kind="equipment", label="Tank")
+
+    rows = {eid: row(eid) for eid in ("eq-abc123", "eq-abc124")}
+    tools = SimpleNamespace(_view=lambda: SimpleNamespace(rows=lambda: rows), vocab=None)
+    hints = suggest_entities(tools, [("eq-abc12", "equipment"), ("new:abc12", "equipment")])
+    assert len(hints) == 1
+    assert "eq-abc123" in hints[0] and "eq-abc124" in hints[0]
+
+
 def test_cancellation_stops_the_run(sample_project, guidance):
     token = CancelToken()
     token.cancel()

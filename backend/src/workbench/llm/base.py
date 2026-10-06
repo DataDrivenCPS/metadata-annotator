@@ -151,7 +151,8 @@ def parse_reply(text: str, input_tokens: int, output_tokens: int) -> dict[str, A
         raise
 
 
-def retry_malformed(call: Callable[[], LLMResult], attempts: int = 2) -> LLMResult:
+def retry_malformed(call: Callable[[], LLMResult], attempts: int = 2,
+                    on_retry: Callable[[MalformedOutput], None] | None = None) -> LLMResult:
     """Ask again when a reply is not a usable JSON object, counting every attempt's tokens."""
     spent_in = spent_out = 0
     for attempt in range(attempts):
@@ -162,8 +163,18 @@ def retry_malformed(call: Callable[[], LLMResult], attempts: int = 2) -> LLMResu
             if not isinstance(exc, MalformedOutput) or attempt == attempts - 1:
                 exc.input_tokens, exc.output_tokens = spent_in, spent_out
                 raise
+            if on_retry:
+                on_retry(exc)
             continue
         result.input_tokens += spent_in
         result.output_tokens += spent_out
         return result
     raise AssertionError("unreachable")
+
+
+def json_retry_message(exc: MalformedOutput) -> dict[str, str]:
+    return {"role": "user", "content":
+            f"Your previous response could not be parsed: {exc}. "
+            "Answer the pending request again with exactly one complete JSON object matching the schema. "
+            "Do not include prose, code fences, or multiple JSON objects. "
+            "Include the complete answer in that single object."}

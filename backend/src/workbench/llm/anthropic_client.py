@@ -15,7 +15,8 @@ import anthropic
 
 from ..config import ProviderConfig
 from .base import (
-    CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, detected_window, parse_reply, retry_malformed,
+    CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, detected_window, json_retry_message,
+    parse_reply, retry_malformed,
 )
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -41,8 +42,10 @@ class AnthropicClient:
     def complete_json(self, system, messages, schema, *, images: list[ImageInput] | None = None,
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int = 16000) -> LLMResult:
-        return retry_malformed(lambda: self._complete_once(system, messages, schema, images, cancel,
-                                                           on_progress, max_tokens))
+        retry_messages = list(messages)
+        return retry_malformed(lambda: self._complete_once(system, retry_messages, schema, images, cancel,
+                                                           on_progress, max_tokens),
+                               on_retry=lambda exc: retry_messages.append(json_retry_message(exc)))
 
     def _complete_once(self, system, messages, schema, images, cancel, on_progress, max_tokens) -> LLMResult:
         msgs: list[dict[str, Any]] = []

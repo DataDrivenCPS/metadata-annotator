@@ -326,11 +326,13 @@ REF_FIELDS = {"contained_in": "equipment", "equipment": "equipment",
 class OperationError(Exception):
     """Malformed operations: they cannot be applied at all."""
 
-    def __init__(self, problems: list[str], unknown_terms: list[tuple[str, str, str | None]] | None = None):
+    def __init__(self, problems: list[str], unknown_terms: list[tuple[str, str, str | None]] | None = None,
+                 unknown_entities: list[tuple[str, str]] | None = None):
         super().__init__("; ".join(problems))
         self.problems = problems
         # (field, value as written, expected term kind) for terms not in the vocabulary
         self.unknown_terms = unknown_terms or []
+        self.unknown_entities = unknown_entities or []  # (id as written, expected entity kind)
 
 
 @dataclass
@@ -364,6 +366,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
     origin = [i for i, _ in expanded]  # positions as written, for messages
     ops = OperationList.validate_python([o for _, o in expanded])
     unknown_terms: list[tuple[str, str, str | None]] = []
+    unknown_entities: list[tuple[str, str]] = []
     placeholders: dict[str, str] = {}
     created: dict[str, str] = {}  # id -> kind, for entities created earlier in the list
     created_relationships: set[str] = set()
@@ -477,6 +480,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             data["id"] = eid
             if not exists(eid, kind):
                 problems.append(f"{where}: no {kind} with id {eid!r}")
+                unknown_entities.append((eid, kind))
                 continue
 
         for fname, target_kind in REF_FIELDS.items():
@@ -488,6 +492,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                                     "create it first, or set this in an update after both exist")
                 elif not exists(ref, target_kind):
                     problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
+                    unknown_entities.append((ref, target_kind))
                 elif ref == eid:
                     problems.append(f"{where}: {fname} cannot refer to the entity itself")
 
@@ -515,7 +520,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
         out.append(type(op).model_validate(data))
 
     if problems:
-        raise OperationError(problems, unknown_terms)
+        raise OperationError(problems, unknown_terms, unknown_entities)
     return out
 
 

@@ -31,10 +31,12 @@ Browser (React)                      Python backend (FastAPI, one process)
   Selections, proposals, evidence links, layout and issues all refer to ids, never to labels,
   row numbers or positions.
 - **Observations are not assertions.** Source observations live in the `observations` table;
-  model entities point to them through `wb:evidence`. (Populated by ingestion, slice 4.)
+  model entities point to them through `wb:evidence`.
 - **Human corrections are locked.** A field a person set (direct edit) or confirmed (applied
   proposal) gets `wb:locked`; automatic fixes lock nothing. Proposals that change a locked field show "overrides earlier edit";
-  extraction (slice 4) must not overwrite locked fields silently.
+  source builds preserve locked fields and do not add locks when applied. Generic
+  relate/unrelate operations track changes to typed fields too, including inverse relations;
+  confirming an existing relationship can lock the corresponding field.
 
 ## Vocabulary profiles
 
@@ -253,17 +255,47 @@ Bounded workflow, identical for local and remote models:
 1. **Context**: selected rows (compact one-line form with ids and prefixed terms), related
    objects (owner equipment, attached points, touching connections), all equipment, open issues
    on the selection, evidence, and vocabulary hints matched from the instruction.
-2. **Steps**: every model reply is JSON constrained by a schema (llama-server compiles it to a
+2. **Steps**: every model reply requests JSON constrained by a schema (llama-server compiles it to a
    grammar): either a read-only tool call — `search_terms`, `units_for`, `describe_class`,
-   `find_entities`, `read_evidence`, `read_guidance` — or `propose` with explanation, operations
+   `find_entities`, `read_evidence`, `read_guidance`, `relations_for` — or `propose` with explanation, operations
    and questions. At most 8 steps.
 3. **Candidate**: operations are resolved and applied to a copy of the base revision and
    validated. Malformed operations go back to the model with the problems and the closest valid
-   terms (up to 2 repairs).
+   terms (up to 2 repairs). Unknown entity references also carry nearby exact ids and
+   labels from the lookup state, including a pending draft when replying to one. These are
+   suggestions for the model to check; resolution never silently substitutes an id.
 4. **Proposal**: stored with before/after per entity (every entity whose projection changes,
    flagged when outside the selection), the triple diff, the validation delta (issues resolved
    and introduced), evidence (model rows, observations, skill sections, vocabulary terms) and
    the explanation. No operations + questions = the assistant needs input.
+
+Replies to a pending proposal use its candidate graph for lookup tools, so the agent can
+inspect new entities and relationships before they are applied. Each retry or revision must
+return the complete replacement changes under that reply's operation rules, rather than a
+fragment of the previous answer. Refreshing a stale proposal instead inspects the current
+head and treats old operations as historical context. Draft references are checked during
+resolution; duplicate `new:*` definitions are rejected. Cancellation is checked before
+saving a proposal or publishing an automatic change.
+
+`questions.readable_questions` normalizes structured questions and option labels into readable
+chat text, including older saved question dictionaries. Choice-only replies remain visible
+in chat and conversation history even when no ordinary operations were proposed.
+
+### Source builds and evidence
+
+CSV/TSV sources have a confirmed row or column layout and one observation per source record.
+Reconfirming the layout reuses observation ids for unchanged coordinates and content,
+supersedes changed unresolved records, and retains records linked through model evidence.
+`agent/build.py` discovers naming conventions and maps tokens to vocabulary terms, then
+builds points and equipment in batches. The proposal carries its mapping summary and source
+evidence; unresolved records can be built later. Replies can revise a token mapping across
+all matching draft points with `token_updates`.
+
+Images, PDFs and text documents use the correction workflow with source context. PDF builds
+read explicitly selected pages, at most eight pages or images per build. Text and page images
+are supplied according to the model's image support; source regions and page references are
+retained as evidence. Source build proposals require review before applying and preserve
+existing human locks without marking extracted values as human-confirmed.
 
 ### Auto-fix (`autofix.py`)
 
@@ -294,7 +326,8 @@ Auto-fix works through issues without asking about each one. It is one backgroun
    option applies its proposal, which locks what it sets, and discards the others.
 6. Otherwise the group is left as a pending proposal ("review", with the failed checks as
    reasons), as questions ("input"), or "failed"; later groups still run. Proposals made
-   stale by later fixes rebase when applied.
+   stale by later fixes can rebase when a person applies them. Automatic apply rejects a
+   moved head, so a fix cannot publish against a revision it did not verify.
 
 The run's outcome lists the groups and the automatic revisions; the interface shows progress,
 then the report: choices as buttons (with "Something else…" to discuss in chat), what to
@@ -306,6 +339,18 @@ between streamed tokens; closing the stream aborts generation in llama-server). 
 persisted on the run record and pushed over Server-Sent Events. Runs interrupted by a restart
 are marked failed on next open.
 
+The frontend reconciles run and revision state after reconnects and ignores asynchronous
+responses from a previous project. A start response cannot overwrite newer progress already
+received through SSE. Applied proposals collapse into a summary with an option to reopen
+the details. **Clear chat** stores hidden run/proposal ids per project in browser local storage;
+it resets the visible conversation without deleting server records or token usage.
+
+`GET /api/projects/{pid}/usage` includes every recorded run, beyond the chat history limit.
+`RunManager.tracked_client` publishes provider-reported usage after each call and includes
+failed attempts and malformed-output retries. Concurrent calls update totals under a lock;
+final outcomes do not count those calls a second time. The header combines persisted usage
+with current run updates. Missing provider usage cannot be inferred.
+
 ## Model providers (`llm/`)
 
 `complete_json(system, messages, schema, images?, cancel?)` behind two adapters:
@@ -313,8 +358,27 @@ are marked failed on next open.
 - `openai` — any OpenAI-compatible `/v1/chat/completions` (llama-server by default,
   `response_format: json_schema`, streamed).
 - `anthropic` — official SDK, `output_config.format` JSON schema, streamed, server-side refusal
-  fallbacks on by default (`request_options = { fallbacks = false }` to disable). Not exercised
-  in testing (no key was available); see README "Tested configuration".
+  fallbacks on by default (`request_options = { fallbacks = false }` to disable). The adapter's
+  retry behavior is covered with a stub; live verification requires an Anthropic key.
+
+Provider-specific routing belongs in configuration: the adapter passes `request_options`
+through without selecting behavior by endpoint hostname. The OpenRouter example sets
+`request_options = { provider = { require_parameters = true } }`. This limits routing to endpoints that report
+support for the requested parameters, including `response_format`; enforcement still depends
+on the upstream provider. See [OpenRouter's structured-output guidance](https://openrouter.ai/docs/guides/features/structured-outputs).
+If no compatible endpoint is available, the request fails instead of silently dropping the
+schema requirement. Local and other compatible endpoints receive only their configured
+options. Parsing, retry feedback, usage accounting and operation validation are shared across
+providers; routing flags supplement those checks.
+
+Both adapters retry malformed JSON once, adding the parsing error and an instruction to return
+exactly one complete schema-matching object. Retry messages are local to that call and every
+attempt's reported tokens are counted. Multiple JSON objects remain an error rather than
+silently discarding part of a proposed change. The OpenAI-compatible adapter also abandons
+runaway whitespace generation; malformed replies log the provider, model, generation id,
+upstream provider when available, finish reason, character count and output-token count.
+An exhausted retry fails the run without saving a proposal. Invalid operations are a separate
+failure path handled by the correction agent's repair loop.
 
 Each client reports its context window (`context_tokens()`; `llm.context_window` falls back
 to 32768): the provider's `context_tokens` setting, else what the endpoint says (llama-server

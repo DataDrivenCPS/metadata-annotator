@@ -16,10 +16,11 @@ issue inspects its object below without leaving the list; **show in table** jump
    The assistant shows **"Units for 1 point"**.
 2. Type: *The unit is wrong, this analyzer reads uS/cm.* → **Propose change**.
 3. The proposal shows `CT-201 · Unit · Milligram per Litre → Microsiemens per Centimetre` and
-   "Model check: 5 → 4 · ✓ fixes: CT-201 …". Open **Technical detail** to see the one operation
+   an **Addresses … issues** section and whether it introduces new issues. Open **Technical detail** to see the one operation
    and the exact triples removed/added.
 4. **Apply**. The header moves to the next revision; the Unit cell shows a purple dot (set or
-   confirmed by a person).
+   confirmed by a person). The applied proposal folds into a summary; choose **show** to
+   inspect it again.
 
 ## 2. Reassign selected points to different equipment
 
@@ -62,9 +63,54 @@ beside a record jumps to its point. Open **Individual changes** for a detailed l
 **Undo** to return to the prior revision. Records left outside the model can be submitted with
 **Build the rest** after correcting or clarifying their source convention.
 
-Before applying any proposal, you can type a response in the Assistant box above it and choose
-**Reply to proposal**. For example, *A2 is an AHU, not a VAV*. The assistant sees the pending
-draft and proposes a revision; review its updated changes and questions before **Apply**.
+Before applying any proposal, type a response in the Assistant box above it and send it as a
+reply to the proposed change. For example, *A2 is an AHU, not a VAV*. The
+assistant can inspect the pending draft, including newly proposed objects, and returns an
+updated proposal; review the complete updated changes and questions before **Apply**.
+Source builds preserve extraction evidence and do not lock fields when applied. Direct edits
+and ordinary correction proposals do lock the fields you set or confirm.
+
+For images, PDFs and documents, open the source and choose **Build model**. A PDF lets you
+choose **Pages to read**, such as `1-3, 5`, with up to eight pages per build. You can build
+additional pages afterwards. Use a model with image support for diagrams or pages without
+a text layer. The source viewer lets you inspect pages and their extracted text.
+
+Reconfirming a CSV layout keeps unchanged source records and their evidence links. Changed
+records that have not been modeled are replaced; records already linked to the model remain
+available as evidence.
+
+## Continue a conversation
+
+Answer the assistant's questions in the same chat. Questions and option labels are rendered
+as readable text; choosing a checked auto-fix option is described below. A follow-up with no
+new selection keeps the previous selection, dropping objects that no longer exist. To start
+a separate request, choose **Clear chat** once the current run finishes. This clears the
+visible conversation and draft from this browser; stored runs, proposals and model history
+remain on the server.
+
+The **Tokens** display counts the project's provider-reported sent and received tokens across
+chat, source builds and auto-fix, including retries and failed replies. Clearing chat keeps
+these totals. Providers that omit usage cannot be counted. You can change the model in the
+Assistant panel; its status reports whether the configured endpoint is available.
+
+## Auto-fix validation issues
+
+In **Issues**, select the issues to address or run auto-fix for all open violations. Auto-fix
+groups related issues and applies a fix automatically only when its checks pass: it resolves
+the selected issues, introduces none, stays within the affected objects, deletes nothing,
+and preserves fields confirmed by a person. New objects are allowed when needed, and the
+chosen vocabulary terms must be supported by the model, issue or evidence.
+
+When a decision is needed, the report offers checked option buttons. Choosing one applies
+that option and dismisses the alternatives. **Something else… (chat)** lets you discuss a
+different answer. Other groups may need review or more information; one failed group does
+not stop the rest. **Undo automatic fixes** is available while those revisions are still
+the newest. The results can be collapsed after review.
+
+Tabs depend on the project vocabulary. WaTr includes **Processes** and **Media**;
+Brick uses RealEstateCore spaces and has no Connection points tab. Use the Inspector's
+**Relationships** panel for ontology relations beyond the typed fields. Proposal rows mark
+changes outside your selection and overrides of earlier human edits.
 
 ## 5. Apply and undo
 

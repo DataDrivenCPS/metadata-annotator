@@ -87,7 +87,7 @@ class Revision(BaseModel):
     parent_id: str | None
     created_at: str
     author: Literal["user", "agent", "import", "extraction", "system"]
-    kind: Literal["initial", "import", "edit", "proposal", "extraction"]
+    kind: Literal["initial", "import", "edit", "proposal", "extraction", "autofix"]
     summary: str
     proposal_id: str | None = None
     operations: list[Operation] = Field(default_factory=list)
@@ -220,7 +220,7 @@ class ProgressEvent(BaseModel):
 
 class AgentRun(BaseModel):
     id: str
-    kind: Literal["correction", "build", "image_extraction", "association"]
+    kind: Literal["correction", "build", "image_extraction", "association", "autofix"]
     input_revision: str
     selection: SelectionScope | None = None
     source_ids: list[str] = Field(default_factory=list)

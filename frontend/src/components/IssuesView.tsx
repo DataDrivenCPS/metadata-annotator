@@ -68,7 +68,7 @@ export function IssuesView() {
           const queue = autofixCandidates(issues, selectedIds)
           return !viewing && <button disabled={!queue.length || autofixing || running}
             title={autofixing ? 'Auto-fix is already running' : running ? 'Wait for the assistant to finish'
-              : 'The assistant works through these one at a time; you approve, skip or answer each proposal'}
+              : 'The assistant fixes these group by group; fixes that pass every check are applied (and can be undone), the rest wait for your review or input'}
             onClick={() => { setSelectedIds(new Set()); void startAutofix(queue) }}>
             {selectedIssues.length ? `Auto-fix selected (${queue.length})` : `Auto-fix ${queue.length} violation${queue.length === 1 ? '' : 's'}`}
           </button>

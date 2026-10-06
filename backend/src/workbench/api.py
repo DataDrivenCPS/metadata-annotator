@@ -53,6 +53,12 @@ class AssistRequest(BaseModel):
     parent_run_id: str | None = None  # continue this run's conversation, e.g. answer its questions
 
 
+class AutofixRequest(BaseModel):
+    base_revision: str
+    issue_ids: list[str] = Field(default_factory=list)  # empty: every open violation
+    provider: str | None = None
+
+
 class BuildRequest(BaseModel):
     base_revision: str
     source_ids: list[str] = Field(min_length=1)
@@ -535,6 +541,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             run = runs.start_correction(p, body.base_revision, body.selection, body.instruction, body.provider,
                                         body.parent_run_id)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        except ProviderUnavailable as exc:
+            raise HTTPException(503, str(exc)) from None
+        return run.model_dump(mode="json")
+
+    @app.post("/api/projects/{pid}/autofix")
+    def autofix(pid: str, body: AutofixRequest):
+        """Fix issues group by group in the background; obvious fixes are applied automatically."""
+        p = project(pid)
+        try:
+            run = runs.start_autofix(p, body.base_revision, body.issue_ids, body.provider)
         except (KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except ProviderUnavailable as exc:

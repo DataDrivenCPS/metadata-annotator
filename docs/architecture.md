@@ -21,7 +21,8 @@ Browser (React)                      Python backend (FastAPI, one process)
   Tables and the graph view are projections (`projection.py`) recomputed per revision; they are
   never edited directly.
 - **One mutation path.** Direct cell edits, accepted proposals and imports all go through
-  `Project.build_candidate` → `Project.publish`. The agent can only build candidates.
+  `Project.build_candidate` → `Project.publish`. The agent can only build candidates; only
+  auto-fix (below) applies one without a person, and only after its checks pass.
 - **Stable identifiers.** Every equipment/point/connection/connection point/space has an
   app-managed id (`eq-…`, `pt-…`, `cx-…`, `cp-…`, `sp-…`) stored as `wb:id` on its IRI. Imported
   entities keep their IRIs and get ids. Connection points minted with a connection (and those
@@ -32,7 +33,7 @@ Browser (React)                      Python backend (FastAPI, one process)
 - **Observations are not assertions.** Source observations live in the `observations` table;
   model entities point to them through `wb:evidence`. (Populated by ingestion, slice 4.)
 - **Human corrections are locked.** A field a person set (direct edit) or confirmed (applied
-  proposal) gets `wb:locked`. Proposals that change a locked field show "overrides earlier edit";
+  proposal) gets `wb:locked`; automatic fixes lock nothing. Proposals that change a locked field show "overrides earlier edit";
   extraction (slice 4) must not overwrite locked fields silently.
 
 ## Vocabulary profiles
@@ -250,6 +251,31 @@ Bounded workflow, identical for local and remote models:
    flagged when outside the selection), the triple diff, the validation delta (issues resolved
    and introduced), evidence (model rows, observations, skill sections, vocabulary terms) and
    the explanation. No operations + questions = the assistant needs input.
+
+### Auto-fix (`autofix.py`)
+
+Auto-fix works through issues without asking about each one. It is one background run
+(`POST /autofix`, run kind `autofix`):
+
+1. **Group** the chosen open issues (default: every open violation) by cause — severity,
+   shape and path — so one decision covers every issue with the same cause (at most 8 per
+   group). The RO-train sample's nine violations are three groups.
+2. For each group, on the current head, the correction agent proposes a fix, asked to use only
+   what the model, vocabulary and sources establish and to ask instead of guessing.
+3. **Verify** — the checks, not the model's confidence, decide. A fix is obvious when it
+   resolves the group's issues; introduces nothing (validation delta and the repair engine's
+   gate); changes only the issues' own objects (new objects are fine); deletes nothing;
+   overrides no locked field; has no notes or questions; and every vocabulary term it chooses
+   is grounded — already used in the model, named by the issue, or in the evidence of the
+   objects concerned.
+4. An obvious fix is applied at once as an `autofix` revision ("Automatic fix: …") that locks
+   no fields, since no person confirmed it. Otherwise the group is left as a pending proposal
+   ("review", with the failed checks as reasons), as questions ("input"), or "failed"; later
+   groups still run. Review proposals made stale by later fixes rebase when applied.
+
+The run's outcome lists the groups and the automatic revisions; the interface shows progress,
+then the report: what to review (opens the proposal), what needs input (discuss in chat), what
+was fixed, and "Undo automatic fixes" while those revisions are still the newest.
 
 Runs execute in a thread pool with cooperative cancellation (checked between steps and
 between streamed tokens; closing the stream aborts generation in llama-server). Progress is

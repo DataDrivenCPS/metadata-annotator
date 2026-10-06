@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, nextAutofixIssue,
+  autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection,
   proposalStates,
   startsExchange, summarizeChanges, threadRuns,
 } from './assistant'
@@ -121,13 +121,15 @@ describe('auto-fix helpers', () => {
     expect(issuesOnSelection(issues, sel).map((i) => i.id)).toEqual(['w', 'b'])
   })
 
-  it('skips queued issues that are no longer open', () => {
-    const queue = ['a', 'x', 'b'].map((id) => ({ id, explanation: id }))
-    const { next, rest, resolved } = nextAutofixIssue(queue.slice(1), issues)
-    expect(next?.id).toBe('b')
-    expect(resolved.map((r) => r.id)).toEqual(['x'])
-    expect(rest).toEqual([])
-    expect(nextAutofixIssue([{ id: 'x', explanation: 'x' }], issues).next).toBeNull()
+  it('reads an auto-fix run: progress while running, the report when done', () => {
+    const ev = (stage: string, message: string, data: Record<string, unknown>) => ({ at: '', stage, message, data })
+    const running = { progress: [ev('autofix', '3 issues in 2 groups', { groups: 2 }), ev('group', 'Group 1/2', { group: 1 }),
+      ev('group_done', 'Group 1/2: fixed', { group: 1, status: 'fixed', reasons: [] }), ev('group', 'Group 2/2', { group: 2 }),
+      ev('model', '2/2 · Asking', { group: 2 })], outcome: {} } as unknown as AgentRun
+    expect(autofixProgress(running)).toEqual({ group: 2, total: 2, message: '2/2 · Asking' })
+    expect(autofixReport(running).groups.map((g) => g.status)).toEqual(['fixed'])
+    const done = { ...running, outcome: { autofix: { groups: [{ issues: ['a'], explanations: ['x'], status: 'review' }], revisions: ['rev-2'] } } }
+    expect(autofixReport(done as AgentRun)).toEqual(done.outcome.autofix)
   })
 })
 

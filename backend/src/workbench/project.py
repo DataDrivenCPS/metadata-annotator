@@ -584,14 +584,16 @@ class Project:
                 p.status = "stale"
         return [p for p in props if status is None or p.status == status]
 
-    def apply_proposal(self, pid: str) -> Revision:
+    def apply_proposal(self, pid: str, automatic: bool = False) -> Revision:
+        """Apply a proposal as a new revision. ``automatic``: applied by auto-fix after its checks
+        passed, not confirmed by a person, so (like a build) it locks no fields."""
         with self.lock:
             prop = self.proposal(pid)
             head = self.head()
             rebasing = prop.base_revision != head
             if prop.status not in ("pending", "stale"):
                 raise ValueError(f"proposal is {prop.status}")
-            build = prop.kind == "build"
+            build = prop.kind == "build" or automatic
             try:
                 # A build is extraction, not a person's correction: it doesn't lock fields.
                 if rebasing:
@@ -640,12 +642,13 @@ class Project:
                 prop.applied_revision = head
                 self._put_proposal(prop)
                 return self.revision(head)
-            if build:
-                summary = (prop.build_summary or {}).get("title") or "Built model from sources"
+            if automatic:
+                summary, kind = f"Automatic fix: {describe_changes(cand.changes)}", "autofix"
+            elif build:
+                summary, kind = (prop.build_summary or {}).get("title") or "Built model from sources", "extraction"
             else:
-                summary = f"Assistant: {prop.instruction[:80]}" if prop.instruction else None
-            rev = self.publish(cand, author="agent", kind="extraction" if build else "proposal",
-                               summary=summary, proposal_id=pid)
+                summary, kind = (f"Assistant: {prop.instruction[:80]}" if prop.instruction else None), "proposal"
+            rev = self.publish(cand, author="agent", kind=kind, summary=summary, proposal_id=pid)
             for issue in prop.followup_issues:
                 body = {**issue, "id": f"{issue['id']}-{rev.id}"}
                 self.store.put_body("issues", body["id"], body, origin=body.get("origin", "extraction"),

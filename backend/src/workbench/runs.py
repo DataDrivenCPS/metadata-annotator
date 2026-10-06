@@ -132,6 +132,32 @@ class RunManager:
                              instruction, run.id, progress, token, history=history))
         return run
 
+    def start_autofix(self, project: Project, base: str, issue_ids: list[str],
+                      provider: str | None = None) -> AgentRun:
+        """Fix issues group by group (autofix.py); obvious fixes are applied as automatic revisions."""
+        from .autofix import run_autofix
+
+        if base != project.head():
+            raise StaleRevision(base, project.head())
+        cfg = self.settings.provider(provider)
+        if cfg.kind == "openai":
+            health = make_client(cfg).health()  # type: ignore[attr-defined]
+            if not health["ok"]:
+                raise ProviderUnavailable(health["detail"])
+        run = AgentRun(
+            id=f"run-{secrets.token_hex(4)}", kind="autofix", input_revision=base,
+            instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model,
+            skill_version=self.guidance.version,
+        )
+        token = CancelToken()
+        with self._lock:
+            self.tokens[run.id] = token
+        self.save(project, run)
+        self.pool.submit(self._execute, project, run, token,
+                         lambda progress: run_autofix(project, make_client(cfg), self.guidance, issue_ids or None,
+                                                      run.id, progress, token))
+        return run
+
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
                     provider: str | None = None, source_pages: dict[str, list[int]] | None = None) -> AgentRun:
         """Build from confirmed CSV records or selected image/document evidence."""
@@ -253,6 +279,7 @@ class RunManager:
                 "steps": getattr(outcome, "steps", 0),
                 "input_tokens": getattr(outcome, "input_tokens", 0),
                 "output_tokens": getattr(outcome, "output_tokens", 0),
+                **({"autofix": outcome.autofix} if hasattr(outcome, "autofix") else {}),
             }
             run.status = "succeeded"
         except Cancelled:

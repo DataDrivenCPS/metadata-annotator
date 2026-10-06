@@ -71,6 +71,8 @@ export const api = {
   assist: (pid: string, base_revision: string, selection: Selection, instruction: string, provider?: string,
     parent_run_id?: string) =>
     req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id }),
+  autofix: (pid: string, base_revision: string, issue_ids: string[], provider?: string) =>
+    req<AgentRun>('POST', `${P(pid)}/autofix`, { base_revision, issue_ids, provider }),
   build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>) =>
     req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages }),
   run: (pid: string, id: string) => req<AgentRun>('GET', `${P(pid)}/runs/${id}`),

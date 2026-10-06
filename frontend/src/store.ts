@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
-  autofixPause, continuation, isActive, issueSelection, issuesPrompt, nextAutofixIssue, proposalStates, threadRuns,
-  type AutofixOutcome, type AutofixState, type ProposalState,
+  autofixReport, continuation, isActive, issueSelection, issuesPrompt, proposalStates, threadRuns,
+  type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
@@ -39,7 +39,7 @@ interface State {
   busy: boolean
   sourcesVersion: number
   sourcesOpen: boolean
-  /** Working through issues one at a time; every change still needs the person's approval. */
+  /** The auto-fix run being followed: obvious fixes are applied, the rest wait for the person. */
   autofix: AutofixState | null
   /** An earlier revision being browsed read-only; null = the current model. */
   viewing: string | null
@@ -77,9 +77,12 @@ interface State {
   handleEvent: (ev: { type: string; head?: string; summary?: string; run?: AgentRun }) => void
   notify: (t: Toast | null) => void
   startAutofix: (issues: ReviewIssue[]) => Promise<void>
-  autofixNext: () => Promise<void>
-  skipAutofixIssue: () => Promise<void>
-  stopAutofix: () => void
+  /** Cancel a running auto-fix, or close the finished report. */
+  stopAutofix: () => Promise<void>
+  /** Undo the automatic revisions, newest first, while they are still the newest. */
+  undoAutofix: () => Promise<void>
+  /** Open a proposal auto-fix left for review in the assistant panel. */
+  reviewProposal: (proposalId: string) => Promise<void>
   viewRevision: (revision: string | null) => Promise<void>
 }
 
@@ -154,8 +157,10 @@ export const useStore = create<State>((set, get) => ({
       if (get().projectId !== id) return
       const merged = { ...Object.fromEntries(runs.map((r) => [r.id, r])), ...get().runs }
       const thread = threadRuns(merged)
+      const autofixing = Object.values(merged).find((r) => r.kind === 'autofix' && isActive(r))
       set({ runs: merged, proposalStates: proposalStates(proposals),
-            activeRunId: get().activeRunId ?? thread[thread.length - 1]?.id ?? null })
+            activeRunId: get().activeRunId ?? thread[thread.length - 1]?.id ?? null,
+            autofix: get().autofix ?? (autofixing ? { runId: autofixing.id } : null) })
       const pending = proposals.find((p) => p.status === 'pending' || p.status === 'stale')
       if (pending) set({ proposal: pending })
     } else {
@@ -267,7 +272,6 @@ export const useStore = create<State>((set, get) => ({
     try {
       const run = await api.assist(projectId, model.head, selection, instruction, provider ?? undefined, parentRunId)
       set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id, proposal: null, assistantNewRequest: false })
-      trackAutofixRun(run.id)
       return true
     } catch (e) {
       if (e instanceof ApiError && e.isStale) await get().reload()
@@ -283,7 +287,6 @@ export const useStore = create<State>((set, get) => ({
     try {
       const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId)
       set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id, assistantNewRequest: false })
-      trackAutofixRun(run.id)
       return true
     } catch (e) {
       if (e instanceof ApiError && e.isStale) await get().reload()
@@ -335,10 +338,6 @@ export const useStore = create<State>((set, get) => ({
         get().notify({ kind: 'success', text: `Applied as ${rev.id}${dismissed.length ? `; dismissed ${dismissed.length} issue(s)` : ''}`,
           action: { label: 'Undo', run: () => void get().undo() } })
       }
-      if (ownsProposal(proposal)) {
-        recordAutofix(proposal.operations.length ? 'applied' : 'dismissed')
-        await get().autofixNext()
-      }
     } catch (e) {
       if (e instanceof ApiError && e.isStale) {
         set({ proposal: { ...proposal, status: 'stale' } })
@@ -355,10 +354,6 @@ export const useStore = create<State>((set, get) => ({
     if (!projectId || !proposal) return
     await api.dismissProposal(projectId, proposal.id)
     set({ proposal: null, proposalStates: { ...get().proposalStates, [proposal.id]: 'dismissed' } })
-    if (ownsProposal(proposal)) {
-      recordAutofix('skipped')
-      await get().autofixNext()
-    }
   },
 
   regenerate: async () => {
@@ -368,7 +363,6 @@ export const useStore = create<State>((set, get) => ({
     try {
       const run = await api.regenerate(projectId, proposal.id, provider ?? undefined)
       set({ runs: { ...get().runs, [run.id]: run }, activeRunId: run.id })
-      trackAutofixRun(run.id)
     } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
   },
 
@@ -384,10 +378,6 @@ export const useStore = create<State>((set, get) => ({
     } else if (ev.type === 'run' && ev.run) {
       const run = ev.run
       set({ runs: { ...s.runs, [run.id]: run } })
-      const af = get().autofix
-      if (af?.current?.runIds.includes(run.id)) {
-        set({ autofix: { ...af, paused: isActive(run) ? null : autofixPause(run) } })
-      }
       const dismissed = run.status === 'succeeded' ? run.outcome.dismissed_proposal_id : null
       if (dismissed) {
         set({ proposalStates: { ...get().proposalStates, [dismissed]: 'dismissed' } })
@@ -408,46 +398,49 @@ export const useStore = create<State>((set, get) => ({
 
   startAutofix: async (issues) => {
     if (readOnly()) return
-    if (!issues.length) return
-    set({ autofix: { queue: issues.map((i) => ({ id: i.id, explanation: i.explanation })), total: issues.length,
-                     current: null, results: [], paused: null } })
-    await get().autofixNext()
-  },
-
-  autofixNext: async () => {
-    const af = get().autofix
-    if (!af) return
-    const { next, rest, resolved } = nextAutofixIssue(af.queue, get().model?.issues ?? [])
-    const results = [...af.results, ...resolved.map((r) => ({ ...r, outcome: 'resolved' as const }))]
-    if (!next) {
-      set({ autofix: { ...af, queue: [], current: null, results, paused: null } })
-      return
-    }
-    // Exactly what "add to chat" + Send does, as a new request about this one issue.
-    const rows = get().rows
-    set({ selection: issueSelection([next], rows), assistantNewRequest: true,
-          autofix: { ...af, queue: rest, results, paused: null,
-                     current: { id: next.id, explanation: next.explanation, runIds: [] } } })
-    if (!await get().assist(issuesPrompt([next], rows))) {
-      const now = get().autofix
-      if (now) set({ autofix: { ...now, paused: 'failed' } })
+    const { projectId, model, provider } = get()
+    if (!projectId || !model || !issues.length) return
+    try {
+      const run = await api.autofix(projectId, model.head, issues.map((i) => i.id), provider ?? undefined)
+      set({ runs: { ...get().runs, [run.id]: run }, autofix: { runId: run.id } })
+    } catch (e) {
+      if (e instanceof ApiError && e.isStale) await get().reload()
+      get().notify({ kind: 'error', text: `Could not start auto-fix: ${errorText(e)}` })
     }
   },
 
-  skipAutofixIssue: async () => {
-    const af = get().autofix
-    if (!af?.current) return
-    const { proposal, runs } = get()
-    if (af.current.runIds.some((id) => runs[id] && isActive(runs[id]))) await get().cancelRun()
-    if (proposal && (proposal.status === 'pending' || proposal.status === 'stale') && ownsProposal(proposal)) {
-      await get().dismissProposal()  // records the skip and moves on
-      return
-    }
-    recordAutofix(af.paused === 'failed' ? 'failed' : 'skipped')
-    await get().autofixNext()
+  stopAutofix: async () => {
+    const { projectId, autofix, runs } = get()
+    const run = autofix ? runs[autofix.runId] : undefined
+    if (projectId && run && isActive(run)) {
+      const cancelled = await api.cancelRun(projectId, run.id)
+      set({ runs: { ...get().runs, [run.id]: cancelled } })
+    } else set({ autofix: null })
   },
 
-  stopAutofix: () => set({ autofix: null }),
+  undoAutofix: async () => {
+    const { projectId, autofix, runs } = get()
+    if (!projectId || !autofix || readOnly()) return
+    const { revisions } = autofixReport(runs[autofix.runId])
+    let undone = 0
+    try {
+      while (get().model && revisions.includes(get().model!.head)) {
+        await api.undo(projectId)
+        await get().reload()
+        undone++
+      }
+    } catch (e) { get().notify({ kind: 'error', text: errorText(e) }) }
+    get().notify(undone
+      ? { kind: 'info', text: `Undid ${undone} automatic fix(es)`, action: { label: 'Redo', run: () => void get().redo() } }
+      : { kind: 'info', text: 'Nothing to undo: the model has changed since the automatic fixes' })
+  },
+
+  reviewProposal: async (proposalId) => {
+    const { projectId } = get()
+    if (!projectId) return
+    const proposal = await api.proposal(projectId, proposalId)
+    set({ proposal, proposalStates: { ...get().proposalStates, [proposal.id]: proposal.status } })
+  },
 
   viewRevision: async (viewing) => {
     if (viewing && get().autofix) set({ autofix: null })
@@ -461,22 +454,4 @@ function readOnly() {
   const { viewing, notify } = useStore.getState()
   if (viewing) notify({ kind: 'info', text: `You are viewing ${viewing}, which is read-only. Go back to the current model to make changes.` })
   return !!viewing
-}
-
-/** Add a run to the current auto-fix issue's conversation. */
-function trackAutofixRun(runId: string) {
-  const af = useStore.getState().autofix
-  if (af?.current) useStore.setState({ autofix: { ...af, paused: null, current: { ...af.current, runIds: [...af.current.runIds, runId] } } })
-}
-
-function ownsProposal(proposal: Proposal) {
-  const current = useStore.getState().autofix?.current
-  return !!current && !!proposal.agent_run_id && current.runIds.includes(proposal.agent_run_id)
-}
-
-function recordAutofix(outcome: AutofixOutcome) {
-  const af = useStore.getState().autofix
-  if (!af?.current) return
-  const { id, explanation } = af.current
-  useStore.setState({ autofix: { ...af, current: null, paused: null, results: [...af.results, { id, explanation, outcome }] } })
 }

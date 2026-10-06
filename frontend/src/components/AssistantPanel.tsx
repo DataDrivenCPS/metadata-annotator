@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { autofixCandidates, continuation, describeStep, effectiveSelection, formatDuration, isActive, issuesOnSelection, startsExchange,
-  summarizeChanges, threadRuns, type AutofixOutcome, type ProposalState } from '../assistant'
+import { autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, isActive,
+  issuesOnSelection, startsExchange, summarizeChanges, threadRuns, type AutofixGroup, type AutofixStatus,
+  type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
@@ -119,7 +120,7 @@ function Composer() {
           {chosen.length > 6 && <span className="muted">+{chosen.length - 6} more</span>}
           {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
           {fixable.length > 0 && <button className="link" disabled={running}
-            title="The assistant works through these issues one at a time; you approve, skip or answer each proposal"
+            title="The assistant fixes these issues group by group; fixes that pass every check are applied (and can be undone), the rest wait for you"
             onClick={() => void startAutofix(fixable)}>· Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>}
         </> : <span className="muted">{summary}</span>}
       </div>
@@ -156,44 +157,74 @@ function Composer() {
   )
 }
 
-const OUTCOME_TEXT: Record<AutofixOutcome, string> = {
-  applied: 'applied', dismissed: 'dismissed', skipped: 'skipped', resolved: 'already resolved', failed: 'failed',
+const STATUS_TEXT: Record<AutofixStatus, string> = {
+  fixed: 'fixed automatically', review: 'to review', input: 'need your input', failed: 'failed', resolved: 'already fixed',
 }
 
-/** Progress through the auto-fix queue, with Skip/Stop; a summary when it is done. */
+/** One group of issues in the auto-fix report, with what the person can do about it. */
+function AutofixGroupLine({ group }: { group: AutofixGroup }) {
+  const reviewProposal = useStore((s) => s.reviewProposal)
+  const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
+  const issues = useStore((s) => s.model?.issues ?? [])
+  const proposal = useStore((s) => s.proposal)
+  const open = issues.filter((i) => group.issues.includes(i.id) && i.resolution_state === 'open')
+  const title = group.explanations[0] ?? ''
+  return <li className={`autofix-group ${group.status}`}>
+    <div className="autofix-issue" title={group.explanations.join('\n')}>
+      {title}{group.explanations.length > 1 && <span className="muted"> (+{group.explanations.length - 1} like it)</span>}
+    </div>
+    {group.status === 'fixed' && group.explanation && <div className="muted small">{group.explanation}</div>}
+    {group.status !== 'fixed' && !!group.reasons?.length && <div className="muted small">Why not automatic: {group.reasons.join('; ')}</div>}
+    {group.questions?.map((q) => <div key={q} className="small">❓ {q}</div>)}
+    <div className="autofix-actions">
+      {group.status === 'review' && group.proposal_id && (proposal?.id === group.proposal_id
+        ? <span className="muted small">shown below</span>
+        : <button className="link" onClick={() => void reviewProposal(group.proposal_id!)}>Review the proposal</button>)}
+      {(group.status === 'input' || group.status === 'failed') && open.length > 0 &&
+        <button className="link" onClick={() => addIssuesToPrompt(open)}>Discuss in chat</button>}
+    </div>
+  </li>
+}
+
+/** A running auto-fix (group k of n) or its report: fixed automatically, to review, needs input. */
 function AutofixBanner() {
   const af = useStore((s) => s.autofix)
-  const skip = useStore((s) => s.skipAutofixIssue)
+  const run = useStore((s) => (s.autofix ? s.runs[s.autofix.runId] : undefined))
+  const head = useStore((s) => s.model?.head)
   const stop = useStore((s) => s.stopAutofix)
-  const [busy, setBusy] = useState(false)
+  const undoAll = useStore((s) => s.undoAutofix)
   if (!af) return null
-  const counts = (Object.keys(OUTCOME_TEXT) as AutofixOutcome[])
-    .map((o) => [o, af.results.filter((r) => r.outcome === o).length] as const).filter(([, n]) => n > 0)
-  const tally = counts.map(([o, n]) => `${n} ${OUTCOME_TEXT[o]}`).join(' · ')
-  if (!af.current) return <div className="autofix-banner done">
-    <div className="autofix-head"><strong>Auto-fix finished</strong><span className="muted">{tally || 'nothing to do'}</span>
-      <span className="spacer" /><button onClick={stop}>Close</button></div>
-    {af.results.length > 0 && <details>
-      <summary>Details</summary>
-      <ul className="autofix-results">{af.results.map((r) => <li key={r.id}>
-        <span className={`autofix-outcome ${r.outcome}`}>{OUTCOME_TEXT[r.outcome]}</span> {r.explanation}</li>)}</ul>
-    </details>}
-  </div>
-  const position = af.results.length + 1
-  const state = af.paused === 'review' ? 'Review the proposed change below: apply it, or skip this issue.'
-    : af.paused === 'input' ? 'The assistant needs your input: answer below, or skip this issue.'
-      : af.paused === 'failed' ? 'The assistant could not finish this one.' : 'The assistant is working on it…'
-  const act = async (f: () => Promise<void> | void) => { setBusy(true); try { await f() } finally { setBusy(false) } }
-  return <div className={`autofix-banner ${af.paused ?? 'working'}`}>
-    <div className="autofix-head">
-      <strong>Auto-fix · issue {Math.min(position, af.total)} of {af.total}</strong>
-      {tally && <span className="muted">{tally}</span>}
-      <span className="spacer" />
-      <button disabled={busy} onClick={() => void act(skip)}>Skip this issue</button>
-      <button disabled={busy} onClick={() => act(stop)}>Stop</button>
+  const { groups, revisions } = autofixReport(run)
+  const counts = (Object.keys(STATUS_TEXT) as AutofixStatus[])
+    .map((st) => [st, groups.filter((g) => g.status === st).length] as const).filter(([, n]) => n > 0)
+  const tally = counts.map(([st, n]) => `${n} ${STATUS_TEXT[st]}`).join(' · ')
+  if (!run || isActive(run)) {
+    const { group, total, message } = autofixProgress(run)
+    return <div className="autofix-banner working">
+      <div className="autofix-head">
+        <strong>Auto-fix{total ? ` · group ${Math.max(group, 1)} of ${total}` : ''}</strong>
+        {tally && <span className="muted">{tally}</span>}
+        <span className="spacer" /><button onClick={() => void stop()}>Stop</button>
+      </div>
+      <div className="autofix-state"><span className="spinner small" /> {message}</div>
     </div>
-    <div className="autofix-issue" title={af.current.explanation}>{af.current.explanation}</div>
-    <div className="autofix-state">{!af.paused && <span className="spinner small" />} {state}</div>
+  }
+  const byStatus = (st: AutofixStatus) => groups.filter((g) => g.status === st)
+  const pending = [...byStatus('review'), ...byStatus('input'), ...byStatus('failed')]
+  return <div className={`autofix-banner ${run.status === 'succeeded' ? 'done' : 'failed'}`}>
+    <div className="autofix-head">
+      <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
+      <span className="muted">{tally || run.error || 'nothing to fix'}</span>
+      <span className="spacer" />
+      {revisions.length > 0 && head && revisions.includes(head) &&
+        <button onClick={() => void undoAll()} title="Undo every automatic fix from this run">Undo automatic fixes</button>}
+      <button onClick={() => void stop()}>Close</button>
+    </div>
+    {pending.length > 0 && <ul className="autofix-results">{pending.map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>}
+    {byStatus('fixed').length > 0 && <details>
+      <summary>Fixed automatically ({byStatus('fixed').length})</summary>
+      <ul className="autofix-results">{byStatus('fixed').map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>
+    </details>}
   </div>
 }
 

@@ -47,7 +47,7 @@ export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R
           const fixable = selectedHere && !autofixing && !viewing ? issuesOnSelection(issues ?? [], selection) : []
           return fixable.length > 0 && <button className="link" disabled={running}
             title={running ? 'Wait for the assistant to finish'
-              : 'The assistant works through the selection’s issues one at a time; you approve, skip or answer each proposal'}
+              : 'The assistant fixes the selection’s issues group by group; fixes that pass every check are applied (and can be undone), the rest wait for you'}
             onClick={() => void startAutofix(fixable)}>Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>
         })()}
         <span className="spacer" />

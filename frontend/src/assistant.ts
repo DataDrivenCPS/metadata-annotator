@@ -9,7 +9,8 @@ export const isActive = (run: AgentRun) => run.status === 'queued' || run.status
 
 /** Assistant runs in the order they were requested. */
 export function threadRuns(runs: Record<string, AgentRun>): AgentRun[] {
-  return Object.values(runs).sort((a, b) => a.created_at.localeCompare(b.created_at))
+  // Auto-fix runs report in their own banner, not as conversation turns.
+  return Object.values(runs).filter((r) => r.kind !== 'autofix').sort((a, b) => a.created_at.localeCompare(b.created_at))
 }
 
 /** A run that does not continue an earlier one starts a new exchange in the thread. */
@@ -126,16 +127,30 @@ export function formatDuration(ms: number): string {
 
 // ------------------------------------------------------------------ auto-fix
 
-export type AutofixOutcome = 'applied' | 'dismissed' | 'skipped' | 'resolved' | 'failed'
-export interface AutofixItem { id: string; explanation: string }
-export interface AutofixState {
-  queue: AutofixItem[]
-  total: number
-  /** The issue being worked on and the runs of its conversation (the first request and any replies). */
-  current: (AutofixItem & { runIds: string[] }) | null
-  results: (AutofixItem & { outcome: AutofixOutcome })[]
-  /** Why the loop is waiting for the person; null while the assistant works. */
-  paused: 'review' | 'input' | 'failed' | null
+/** How auto-fix left a group of issues (backend autofix.py): fixed automatically after its checks
+ * passed, a proposal to review, the assistant's questions, a failure, or already fixed. */
+export type AutofixStatus = 'fixed' | 'review' | 'input' | 'failed' | 'resolved'
+export interface AutofixGroup {
+  issues: string[]; explanations: string[]; status: AutofixStatus; reasons?: string[]
+  proposal_id?: string; revision?: string; explanation?: string; questions?: string[]
+}
+export interface AutofixState { runId: string }
+
+/** The groups an auto-fix run has finished so far, and the automatic revisions it made. */
+export function autofixReport(run: AgentRun | undefined): { groups: AutofixGroup[]; revisions: string[] } {
+  const done = run?.outcome?.autofix as { groups: AutofixGroup[]; revisions: string[] } | undefined
+  if (done) return done
+  const groups = (run?.progress ?? []).filter((p) => p.stage === 'group_done')
+    .map((p) => ({ issues: [], explanations: [], status: p.data.status as AutofixStatus, reasons: p.data.reasons as string[] }))
+  return { groups, revisions: [] }
+}
+
+/** Where a running auto-fix is: group k of n, and its latest step. */
+export function autofixProgress(run: AgentRun | undefined): { group: number; total: number; message: string } {
+  const events = run?.progress ?? []
+  const total = Number(events.find((p) => p.stage === 'autofix')?.data.groups ?? 0)
+  const group = Number([...events].reverse().find((p) => p.stage === 'group')?.data.group ?? 0)
+  return { group, total, message: events.at(-1)?.message ?? 'Starting…' }
 }
 
 /** The issues ticked in the list, else the open violations; one object's issues stay together. */
@@ -156,23 +171,6 @@ export function issuesOnSelection(issues: ReviewIssue[], sel: Selection): Review
   const ids = issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion'
     && i.affected_ids.some((a) => chosen.has(a))).map((i) => i.id)
   return autofixCandidates(issues, new Set(ids))
-}
-
-/** The next queued issue still open; the ones skipped over were resolved by earlier fixes. */
-export function nextAutofixIssue(queue: AutofixItem[], issues: ReviewIssue[]):
-    { next: ReviewIssue | null; rest: AutofixItem[]; resolved: AutofixItem[] } {
-  const open = new Map(issues.filter((i) => i.resolution_state === 'open').map((i) => [i.id, i]))
-  for (let k = 0; k < queue.length; k++) {
-    const issue = open.get(queue[k].id)
-    if (issue) return { next: issue, rest: queue.slice(k + 1), resolved: queue.slice(0, k) }
-  }
-  return { next: null, rest: [], resolved: queue }
-}
-
-/** What finished the run: a proposal to review, a reply that needs the person, or a failure. */
-export function autofixPause(run: AgentRun): AutofixState['paused'] {
-  if (run.status === 'failed' || run.status === 'cancelled') return 'failed'
-  return run.outcome.proposal_id ? 'review' : 'input'
 }
 
 // ------------------------------------------------------------- proposal card

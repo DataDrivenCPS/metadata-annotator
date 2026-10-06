@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
-import { emptySelection, type EntityDetail, type EntityRelations, type Revision, type ReviewIssue } from '../types'
+import { type EntityDetail, type EntityRelations, type Revision } from '../types'
 import { CandidateOptions } from './cells'
 import { DismissalNote, IssueDetails } from './IssuesView'
 import { shortIri } from './TermPicker'
@@ -82,8 +82,7 @@ function TermInspector({ iri }: { iri: string }) {
 
 function Inspector() {
   const projectId = useStore((s) => s.projectId)!
-  const setSelection = useStore((s) => s.setSelection)
-  const appendAssistantContext = useStore((s) => s.appendAssistantContext)
+  const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
   const notify = useStore((s) => s.notify)
   const reload = useStore((s) => s.reload)
   const repairs = useStore((s) => s.repairs?.byIssue)
@@ -121,11 +120,7 @@ function Inspector() {
                     {issue.resolution_state === 'dismissed' ? 'Reopen' : 'Dismiss'}
                   </button>
                   <button className="link" onClick={() => {
-                    const isConnection = detail.row?.kind === 'connection'
-                    setSelection({ ...emptySelection(),
-                      entity_ids: isConnection ? [] : [detail.id],
-                      relationship_ids: isConnection ? [detail.id] : [] })
-                    appendAssistantContext(issuePrompt(detail, issue))
+                    addIssuesToPrompt([issue])
                     notify({ kind: 'info', text: 'Issue context is in the assistant prompt. Review before sending.' })
                   }}>Use in chat</button>
                 </span>
@@ -227,25 +222,6 @@ function RdfView() {
       <pre className="code turtle">{detail.turtle}</pre>
     </div>
   )
-}
-
-function issuePrompt(detail: EntityDetail, issue: ReviewIssue): string {
-  const label = detail.row?.label ?? detail.id
-  const findings = issue.details.findings?.map((finding, index) => [
-    `Finding ${index + 1}: ${finding.message}`,
-    finding.focus ? `Focus: ${finding.focus}` : '',
-    finding.path ? `Path: ${finding.path}` : '',
-    finding.shape ? `Shape: ${finding.shape}` : '',
-  ].filter(Boolean).join('\n')) ?? []
-  return [
-    'Please review this issue in the current model and propose a correction if it still applies. Check the related context and explain your reasoning.',
-    `Issue [${issue.id}] (${issue.severity}, ${issue.category.replaceAll('_', ' ')}): ${issue.explanation}`,
-    `Affected object: ${label} (${detail.row?.kind ?? 'entity'})`,
-    `Object ID: ${detail.id}`,
-    `Object IRI: ${detail.iri}`,
-    detail.types.length ? `Ontology types: ${detail.types.map((type) => `${type.label} (${type.iri})`).join('; ')}` : '',
-    findings.length ? `Validation details:\n${findings.join('\n\n')}` : '',
-  ].filter(Boolean).join('\n\n')
 }
 
 const fmtJson = (s: string) => { try { const v = JSON.parse(s); return v === null ? '—' : String(v) } catch { return s } }

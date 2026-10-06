@@ -78,32 +78,72 @@ export function issueSelection(issues: ReviewIssue[], rows: Map<string, Row>): S
 }
 
 export function issuesPrompt(issues: ReviewIssue[], rows: Map<string, Row>): string {
-  const descriptions = issues.map((issue, index) => {
-    const objects = issue.affected_ids.map((id) => {
-      const row = rows.get(id)
-      return row ? `${row.label} (${row.kind}, ${id})` : id
-    })
-    const findings = issue.details.findings?.map((finding) => [
-      finding.message,
-      finding.focus ? `focus ${finding.focus}` : '',
-      finding.path ? `path ${finding.path}` : '',
-      finding.shape ? `shape ${finding.shape}` : '',
-    ].filter(Boolean).join('; ')) ?? []
-    return [
-      `${issues.length > 1 ? `${index + 1}. ` : ''}[${issue.id}] ${issue.severity}, ${issue.category.replaceAll('_', ' ')}: ${issue.explanation}`,
-      objects.length ? `Affected objects: ${objects.join('; ')}` : '',
-      findings.length ? `Validation details: ${findings.join(' | ')}` : '',
-    ].filter(Boolean).join('\n')
+  issues = [...new Map(issues.map((issue) => [issue.id, issue])).values()]
+  if (!issues.length) return ''
+  type Entry = { issue: ReviewIssue; message: string; metadata: Record<string, unknown>; specific: string[] }
+  const entries: Entry[] = []
+  for (const issue of issues) {
+    const base = { Severity: issue.severity, Category: issue.category, Origin: issue.origin, State: issue.resolution_state }
+    const { findings, ...details } = issue.details
+    const detail = Object.keys(details).length ? [`Details: ${JSON.stringify(details)}`] : []
+    if (!findings?.length) {
+      entries.push({ issue, message: issue.explanation, metadata: base, specific: detail })
+      continue
+    }
+    for (const finding of findings) {
+      const metadata: Record<string, unknown> = { ...base }
+      const specific = [...detail]
+      if (finding.path) metadata.Path = finding.path
+      if (finding.shape) metadata.Shape = finding.shape
+      if (finding.severity) metadata['Finding severity'] = finding.severity
+      if (finding.statement_id != null) metadata.Statement = finding.statement_id
+      const primary = rows.get(issue.affected_ids[0])
+      if (primary?.iri && finding.focus === primary.iri) metadata.Focus = "first affected object's IRI"
+      else if (finding.focus) specific.push(`Focus: ${finding.focus}`)
+      if (finding.value != null) {
+        if (finding.value === finding.focus) metadata.Value = 'same as focus'
+        else specific.push(`Value: ${JSON.stringify(finding.value)}`)
+      }
+      for (const [key, value] of Object.entries(finding)) {
+        if (!['focus', 'value', 'message', 'path', 'shape', 'severity', 'statement_id'].includes(key)) metadata[`Finding ${key}`] = value
+      }
+      // Validation explanations are only rendered copies of the authoritative finding.
+      if (issue.origin !== 'validation') metadata.Explanation = issue.explanation
+      entries.push({ issue, message: finding.message, metadata, specific })
+    }
+  }
+  const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  const shared = Object.fromEntries(Object.entries(entries[0].metadata)
+    .filter(([key, value]) => entries.every((entry) => key in entry.metadata && equal(entry.metadata[key], value))))
+  const format = (metadata: Record<string, unknown>) => Object.entries(metadata)
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`).join('; ')
+  const groups = new Map<string, { metadata: Record<string, unknown>; messages: Map<string, Entry[]> }>()
+  for (const entry of entries) {
+    const metadata = Object.fromEntries(Object.entries(entry.metadata).filter(([key]) => !(key in shared))
+      .sort(([a], [b]) => a.localeCompare(b)))
+    const key = JSON.stringify(metadata)
+    if (!groups.has(key)) groups.set(key, { metadata, messages: new Map() })
+    const messages = groups.get(key)!.messages
+    if (!messages.has(entry.message)) messages.set(entry.message, [])
+    messages.get(entry.message)!.push(entry)
+  }
+  const objects = [...new Set(issues.flatMap((issue) => issue.affected_ids))].map((id) => {
+    const row = rows.get(id)
+    return row ? `${row.label} [${id}] (${row.kind}${row.iri ? `; IRI: ${row.iri}` : ''})` : `[${id}]`
   })
-  if (issues.length === 1) return [
-    'Please review this issue. Check it against the current model and fix it, or explain why it no longer applies.',
-    descriptions[0],
-  ].join('\n\n')
+  const sections = [...groups.values()].map((group) => [
+    format(group.metadata),
+    ...[...group.messages].map(([message, members]) => [
+      `- ${message}`,
+      ...members.map(({ issue, specific }) => `  [${issue.id}] Affected: ${[...new Set(issue.affected_ids)].join(', ') || 'none'}${specific.length ? `; ${specific.join('; ')}` : ''}`),
+    ].join('\n')),
+  ].filter(Boolean).join('\n'))
   return [
-    'Please review these selected issues together. Check each against the current model, fix them together when they share an underlying cause, and explain any that should be handled separately or no longer apply.',
-    `Selected issues (${issues.length}):`,
-    descriptions.join('\n\n'),
-  ].join('\n\n')
+    `Please review ${issues.length === 1 ? 'this issue' : `these ${issues.length} issues`} against the current model. Fix related issues together when appropriate; explain any that need separate handling or no longer apply.`,
+    objects.length ? `Objects: ${objects.join('; ')}` : '',
+    format(shared),
+    ...sections,
+  ].filter(Boolean).join('\n\n')
 }
 
 const TOOL_STEPS: Record<string, (arg: string) => string> = {

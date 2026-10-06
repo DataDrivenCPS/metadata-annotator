@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection,
+  autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
   proposalStates,
   startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
@@ -106,6 +106,93 @@ describe('run steps', () => {
     const sel = issueSelection([issue(['eq-1', 'cx-1']), issue(['eq-1', 'gone'])], rows)
     expect(sel.entity_ids).toEqual(['eq-1'])
     expect(sel.relationship_ids).toEqual(['cx-1'])
+  })
+})
+
+describe('shared issue prompt context', () => {
+  const message = 'The required outlet connection point is missing. '.repeat(12)
+  const makeIssue = (id: string, extra = {}): ReviewIssue => ({
+    id, affected_ids: [id], category: 'validation', severity: 'violation', origin: 'validation',
+    resolution_state: 'open', explanation: `${id}: ${message}`,
+    details: { findings: [{ message, shape: 'urn:shape:outlet', path: 's223:hasConnectionPoint',
+      severity: 'Violation', focus: `urn:plant:${id}`, ...extra }] },
+  })
+
+  it('shares validator text and metadata while retaining every issue and focus', () => {
+    const issues = Array.from({ length: 20 }, (_, i) => makeIssue(`eq-${i}`))
+    const prompt = issuesPrompt(issues, new Map())
+    for (const issue of issues) expect(prompt).toContain(`[${issue.id}] Affected: ${issue.id}; Focus: urn:plant:${issue.id}`)
+    expect(prompt.split(message).length - 1).toBe(1)
+    expect(prompt.match(/Path:/g)).toHaveLength(1)
+    expect(prompt.length).toBeLessThan(issues.map((i) => issuesPrompt([i], new Map())).join('\n').length / 2)
+    expect(prompt).not.toContain('"groups"')
+  })
+
+  it('keeps different paths, shapes, values and severity distinct', () => {
+    const prompt = issuesPrompt([makeIssue('a', { value: 'wrong-a', statement_id: 'statement-a' }),
+      makeIssue('b', { path: 's223:hasProperty', value: 'wrong-b' }),
+      makeIssue('c', { shape: 'urn:shape:other', severity: 'Warning' })], new Map())
+    expect(prompt).toContain('Path: s223:hasConnectionPoint')
+    expect(prompt).toContain('Path: s223:hasProperty')
+    expect(prompt).toContain('Shape: urn:shape:other')
+    expect(prompt).toContain('Finding severity: Warning')
+    expect(prompt).toContain('Statement: statement-a')
+    expect(prompt).toContain('[a] Affected: a; Focus: urn:plant:a; Value: "wrong-a"')
+    expect(prompt).toContain('[b] Affected: b; Focus: urn:plant:b; Value: "wrong-b"')
+  })
+
+  it('shares paths and shapes even when the validator messages differ', () => {
+    const prompt = issuesPrompt([makeIssue('a'), makeIssue('b', { message: 'An incompatible outlet exists instead.' })], new Map())
+    expect(prompt.match(/Path:/g)).toHaveLength(1)
+    expect(prompt.match(/Shape:/g)).toHaveLength(1)
+    expect(prompt).toContain(message)
+    expect(prompt).toContain('An incompatible outlet exists instead.')
+  })
+
+  it('deduplicates issue IDs and preserves non-validation explanations and details', () => {
+    const other = { ...makeIssue('other'), origin: 'association', category: 'unassigned',
+      severity: 'warning' as const, explanation: 'This sensor may belong to either tank.',
+      details: { candidates: ['eq-a', 'eq-b'] } }
+    const prompt = issuesPrompt([makeIssue('a'), makeIssue('a'), other], new Map())
+    expect(prompt.match(/\[a\] Affected:/g)).toHaveLength(1)
+    expect(prompt).toContain(other.explanation)
+    expect(prompt).toContain('Details: {"candidates":["eq-a","eq-b"]}')
+  })
+
+  it('also factors repeated non-validation explanations without merging different objects', () => {
+    const a = { ...makeIssue('a'), origin: 'association', details: {}, explanation: 'Unknown equipment association' }
+    const b = { ...a, id: 'b', affected_ids: ['b'] }
+    const prompt = issuesPrompt([a, b], new Map())
+    expect(prompt.split(a.explanation).length - 1).toBe(1)
+    expect(prompt).toContain('[a] Affected: a')
+    expect(prompt).toContain('[b] Affected: b')
+  })
+
+  it('compacts the reported eight inlet/outlet issues into readable grouped rules', () => {
+    const equipment = [
+      ['eq-4c0af5', 'A1', 'Damper', 'val-b3055977bde8', 'val-eaa961afaa5c'],
+      ['eq-dbb83c', 'A1E', 'Damper', 'val-b4692d9cf482', 'val-e98d64cdee5e'],
+      ['eq-178e00', 'A2', 'Damper', 'val-8bb9c04c0cb3', 'val-2b3225c783dd'],
+      ['eq-9033e6', 'AHU', 'AirHandlingUnit', 'val-6e5d75ef14c5', 'val-c321b2add2ad'],
+    ]
+    const rows = new Map(equipment.map(([id, label]) => [id, {id, label, kind:'equipment', iri:`urn:workbench:t2-3ae6/${id}`}])) as Map<string, Row>
+    const issues = equipment.flatMap(([id, , shape, inlet, outlet]) => ['inlet', 'outlet'].map((direction, i) => {
+      const focus = rows.get(id)!.iri
+      const message = `s223: ${shape === 'Damper' ? 'A' : 'An'} \`${shape}\` shall have at least one ${direction} using the medium \`Fluid-Air\`.`
+      return {...makeIssue(i ? outlet : inlet), affected_ids:[id], details:{findings:[{focus, value:focus,
+        message, severity:'Violation', path:'http://data.ashrae.org/standard223#hasConnectionPoint',
+        shape:`http://data.ashrae.org/standard223#${shape}`, statement_id: shape === 'Damper' ? 196 : 107}]}}
+    }))
+    const prompt = issuesPrompt(issues, rows)
+    expect(prompt.length).toBeLessThan(2100)
+    expect(prompt.match(/hasConnectionPoint/g)).toHaveLength(1)
+    expect(prompt.match(/shall have at least one/g)).toHaveLength(4)
+    expect(prompt.match(/Affected:/g)).toHaveLength(8)
+    expect(prompt.match(/Statement: 196/g)).toHaveLength(1)
+    expect(prompt.match(/Statement: 107/g)).toHaveLength(1)
+    expect(prompt).toContain("Focus: first affected object's IRI; Value: same as focus")
+    for (const issue of issues) expect(prompt).toContain(`[${issue.id}] Affected: ${issue.affected_ids[0]}`)
+    for (const row of rows.values()) expect(prompt.split(row.iri).length - 1).toBe(1)
   })
 })
 

@@ -31,6 +31,7 @@ interface State {
   /** Repair-engine detail per issue id, for the revision named (loaded in the background). */
   repairs: { revision: string; byIssue: Record<string, IssueRepair> } | null
   assistantDraft: string
+  assistantIssueContext: { issues: ReviewIssue[]; text: string } | null
   assistantDraftVersion: number
   /** The next message starts a new request instead of continuing the conversation. */
   assistantNewRequest: boolean
@@ -156,6 +157,7 @@ export const useStore = create<State>((set, get) => ({
   proposalStates: {},
   repairs: null,
   assistantDraft: '',
+  assistantIssueContext: null,
   assistantDraftVersion: 0,
   assistantNewRequest: false,
   assistantCleared: { runs: [], proposals: [] },
@@ -186,7 +188,7 @@ export const useStore = create<State>((set, get) => ({
     const generation = ++projectGeneration
     ++modelGeneration
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
-          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantNewRequest: false,
+          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantIssueContext: null, assistantNewRequest: false,
           assistantCleared: clearedChat(id),
           autofix: null, viewing: null, views: [], busy: false })
     if (id) {
@@ -279,7 +281,9 @@ export const useStore = create<State>((set, get) => ({
   clearSelection: () => set({ selection: emptySelection(), anchor: null }),
   setTab: (tab) => set({ tab }),
   setDrawerTab: (drawerTab) => set({ drawerTab }),
-  setAssistantDraft: (assistantDraft) => set({ assistantDraft }),
+  setAssistantDraft: (assistantDraft) => set((s) => ({ assistantDraft,
+    assistantIssueContext: s.assistantIssueContext && assistantDraft.includes(s.assistantIssueContext.text)
+      ? s.assistantIssueContext : null })),
   setAssistantNewRequest: (assistantNewRequest) => set({ assistantNewRequest }),
   clearChat: () => {
     const s = get()
@@ -295,7 +299,7 @@ export const useStore = create<State>((set, get) => ({
       try { localStorage.setItem(`workbench.clearedChat.${s.projectId}`, JSON.stringify(assistantCleared)) }
       catch { /* Clearing still works for this session if storage is unavailable. */ }
     }
-    set({ assistantCleared, activeRunId: null, proposal: null, assistantDraft: '', assistantNewRequest: true })
+    set({ assistantCleared, activeRunId: null, proposal: null, assistantDraft: '', assistantIssueContext: null, assistantNewRequest: true })
   },
   focusAssistant: () => set((s) => ({ assistantNewRequest: false, assistantDraftVersion: s.assistantDraftVersion + 1 })),
   appendAssistantContext: (context) => set((s) => ({
@@ -305,9 +309,16 @@ export const useStore = create<State>((set, get) => ({
   })),
   addIssuesToPrompt: (issues) => {
     if (!issues.length) return
-    const { rows } = get()
-    set({ selection: issueSelection(issues, rows) })
-    get().appendAssistantContext(issuesPrompt(issues, rows))
+    const { rows, assistantDraft, assistantIssueContext } = get()
+    const previous = assistantIssueContext && assistantDraft.includes(assistantIssueContext.text) ? assistantIssueContext : null
+    const merged = [...new Map([...(previous?.issues ?? []), ...issues].map((issue) => [issue.id, issue])).values()]
+    const text = issuesPrompt(merged, rows)
+    set((s) => ({ selection: issueSelection(merged, rows),
+      assistantDraft: previous ? assistantDraft.replace(previous.text, () => text)
+        : [assistantDraft.trim(), text].filter(Boolean).join('\n\n'),
+      assistantIssueContext: { issues: merged, text }, assistantNewRequest: true,
+      assistantDraftVersion: s.assistantDraftVersion + 1,
+    }))
   },
   inspect: (inspectId) => set({ inspectId }),
 

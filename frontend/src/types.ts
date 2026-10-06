@@ -67,7 +67,7 @@ export interface ReviewIssue {
   id: string; affected_ids: string[]; category: string
   severity: 'violation' | 'warning' | 'suggestion'; explanation: string
   resolution_state: 'open' | 'resolved' | 'dismissed'; origin: string
-  details: { findings?: { focus: string; shape: string | null; path: string | null; message: string; severity: string }[] }
+  details: { findings?: { focus: string; shape: string | null; path: string | null; message: string; severity: string; value?: string | null; statement_id?: string | number | null }[]; [key: string]: unknown }
   dismissal?: IssueDismissalRecord | null
 }
 /** pyshifty's repair witness for an issue, rendered by the backend (the engine's own words). */

@@ -11,6 +11,15 @@ engine's summary under it, e.g. "s223:hasConnectionPoint: have 0, need 1" for TK
 issue expands its full message, validation findings and available repair details directly in
 the list, including while auto-fix is running. It also inspects the affected object below
 when one is available; **show in table** jumps to its row.
+Adding several issues to the assistant prompt, together or through separate **add to chat**
+clicks, combines them into one readable summary grouped by validation rules, rather than
+a JSON dump. Common paths and metadata appear once, and each repeated message lists its
+issue-to-object mappings. Object IRIs appear once; when a finding's focus is that object's
+IRI or its value equals its focus, the summary states that relationship instead of repeating
+the IRI. Different focuses, values, shapes and severities remain explicit.
+Repeated additions of the same issue are ignored, and your instructions outside that section
+are preserved. Editing the generated section yourself keeps your edits; later additions
+start a new section rather than rewriting them.
 
 ## 1. Correct an incorrectly interpreted point
 

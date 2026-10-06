@@ -10,6 +10,10 @@ from typing import Any, Callable, Protocol
 class LLMError(Exception):
     """The provider failed or returned something unusable. ``message`` is user-facing."""
 
+    def __init__(self, message: str, input_tokens: int = 0, output_tokens: int = 0):
+        super().__init__(message)
+        self.input_tokens, self.output_tokens = input_tokens, output_tokens
+
 
 class MalformedOutput(LLMError):
     """The reply was not a usable JSON object. Sampling again usually fixes it."""
@@ -153,9 +157,10 @@ def retry_malformed(call: Callable[[], LLMResult], attempts: int = 2) -> LLMResu
     for attempt in range(attempts):
         try:
             result = call()
-        except MalformedOutput as exc:
+        except LLMError as exc:
             spent_in, spent_out = spent_in + exc.input_tokens, spent_out + exc.output_tokens
-            if attempt == attempts - 1:
+            if not isinstance(exc, MalformedOutput) or attempt == attempts - 1:
+                exc.input_tokens, exc.output_tokens = spent_in, spent_out
                 raise
             continue
         result.input_tokens += spent_in

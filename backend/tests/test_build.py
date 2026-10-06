@@ -85,6 +85,9 @@ def test_brick_build_preview_apply_and_skip_modeled_records(workspace):
     assert len([pt for pt in p.view(rev.id).points if pt.point_type.iri.endswith("Air_Temperature_Sensor")]) == 2
     assert set(p.evidence_map(rev.id)) == {o.id for o in p.observations(source.id)}
     assert all(not point.locked for point in p.view(rev.id).points)
+    original_ids = {o.id for o in p.observations(source.id)}
+    p.confirm_csv_mapping(source.id, p.source(source.id).import_config)
+    assert {o.id for o in p.observations(source.id)} == original_ids
     with pytest.raises(LLMError, match="already in the model"):
         run_build(p, ScriptedLLM([]), guidance, rev.id, [source.id], "", None,
                   lambda *_: None, CancelToken())
@@ -136,3 +139,29 @@ def test_mapping_batches_run_concurrently_up_to_the_provider_limit(workspace):
     assert llm.peak == 3  # three point batches at once, never more than the limit
     assert summary["mapped_tokens"] == 70 and summary["equipment_created"] == 4
     assert outcome.steps == 1 + 3 + 1 and outcome.input_tokens == 50
+
+
+def test_cancelled_build_cannot_save_a_validated_draft(workspace):
+    from workbench.llm import Cancelled
+
+    p = workspace.create("Cancelled build", "brick")
+    src = p.add_source("points.csv", b"Name\nA1:Temp\n")
+    p.confirm_csv_mapping(src.id, CsvImportConfig(layout="row_points", delimiter=",", header_row=0,
+                                                 first_data_row=1, name_column=0))
+    base = p.head()
+    token = CancelToken()
+    llm = ScriptedLLM([
+        {"pattern": r"(?P<equipment>A\d+):(?P<point>.+)", "equipment_from": "group:equipment",
+         "token_from": "group:point", "units_from": "none"},
+        {"action": "map", "mappings": [{"id": "T1", "point_type": "brick:Temperature_Sensor"}]},
+        {"action": "map", "mappings": [{"id": "G1", "type": "brick:AHU"}]},
+    ])
+
+    def cancel_on_validation(stage, *_):
+        if stage == "validated":
+            token.cancel()
+
+    with pytest.raises(Cancelled):
+        run_build(p, llm, SkillGuidance(load_settings().skill_dir), base, [src.id], "", None,
+                  cancel_on_validation, token)
+    assert not p.proposals() and p.head() == base

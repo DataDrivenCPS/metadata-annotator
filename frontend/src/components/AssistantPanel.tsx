@@ -27,7 +27,12 @@ export function AssistantPanel() {
   const runs = useStore((s) => s.runs)
   const proposal = useStore((s) => s.proposal)
   const newRequest = useStore((s) => s.assistantNewRequest)
-  const thread = useMemo(() => threadRuns(runs), [runs])
+  const cleared = useStore((s) => s.assistantCleared)
+  const clearChat = useStore((s) => s.clearChat)
+  const draft = useStore((s) => s.assistantDraft)
+  const busy = useStore((s) => s.busy)
+  const thread = useMemo(() => threadRuns(runs, cleared.runs), [runs, cleared.runs])
+  const running = Object.values(runs).some((r) => r.kind !== 'autofix' && isActive(r))
   const last = thread[thread.length - 1]
   const orphan = proposal && !thread.some((r) => r.outcome.proposal_id === proposal.id) ? proposal : null
   const threadRef = useRef<HTMLDivElement>(null)
@@ -41,7 +46,13 @@ export function AssistantPanel() {
 
   return (
     <aside className="assistant">
-      <div className="assistant-head"><h2>Assistant</h2><ModelStatus /></div>
+      <div className="assistant-head">
+        <h2>Assistant</h2><ModelStatus />
+        <button disabled={running || busy || (!thread.length && !proposal && !draft)} onClick={clearChat}
+          title={running ? 'Wait for the assistant to finish before clearing the chat' : 'Clear this conversation and start a new chat'}>
+          Clear chat
+        </button>
+      </div>
       <AutofixBanner />
       <div className="thread" ref={threadRef} onScroll={(e) => {
         const el = e.currentTarget
@@ -53,7 +64,7 @@ export function AssistantPanel() {
           <UserMessage run={run} />
           <AssistantMessage run={run} isLast={run === last && !newRequest} />
         </div>)}
-        {orphan && <ProposalPreview proposal={orphan} running={!!last && isActive(last)} showConversation />}
+        {orphan && <ProposalPreview proposal={orphan} running={!!last && isActive(last)} />}
       </div>
       <Composer />
     </aside>
@@ -66,6 +77,7 @@ function Composer() {
   const clearSelection = useStore((s) => s.clearSelection)
   const sendMessage = useStore((s) => s.sendMessage)
   const runs = useStore((s) => s.runs)
+  const cleared = useStore((s) => s.assistantCleared)
   const proposal = useStore((s) => s.proposal)
   const text = useStore((s) => s.assistantDraft)
   const setText = useStore((s) => s.setAssistantDraft)
@@ -88,7 +100,7 @@ function Composer() {
     }
   }, [draftVersion])
 
-  const thread = threadRuns(runs)
+  const thread = threadRuns(runs, cleared.runs)
   const last = thread[thread.length - 1]
   const running = !!last && isActive(last)
   const next = continuation(thread, proposal, newRequest)
@@ -178,7 +190,7 @@ function ChoiceButtons({ choice }: { choice: AutofixChoice }) {
 }
 
 /** One group of issues in the auto-fix report, with what the person can do about it. */
-function AutofixGroupLine({ group }: { group: AutofixGroup }) {
+function AutofixGroupLine({ group, onContinue }: { group: AutofixGroup; onContinue?: () => void }) {
   const reviewProposal = useStore((s) => s.reviewProposal)
   const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
   const issues = useStore((s) => s.model?.issues ?? [])
@@ -197,9 +209,9 @@ function AutofixGroupLine({ group }: { group: AutofixGroup }) {
     <div className="autofix-actions">
       {group.status === 'review' && group.proposal_id && (proposal?.id === group.proposal_id
         ? <span className="muted small">shown below</span>
-        : <button className="link" onClick={() => void reviewProposal(group.proposal_id!)}>Review the proposal</button>)}
+        : <button className="link" onClick={() => void reviewProposal(group.proposal_id!).then(onContinue)}>Review the proposal</button>)}
       {(group.status === 'input' || group.status === 'failed' || group.status === 'choice') && open.length > 0 &&
-        <button className="link" onClick={() => addIssuesToPrompt(open)}>{group.status === 'choice' ? 'Something else… (chat)' : 'Discuss in chat'}</button>}
+        <button className="link" onClick={() => { addIssuesToPrompt(open); onContinue?.() }}>{group.status === 'choice' ? 'Something else… (chat)' : 'Discuss in chat'}</button>}
     </div>
   </li>
 }
@@ -211,6 +223,7 @@ function AutofixBanner() {
   const head = useStore((s) => s.model?.head)
   const stop = useStore((s) => s.stopAutofix)
   const undoAll = useStore((s) => s.undoAutofix)
+  const trayRef = useRef<HTMLDetailsElement>(null)
   if (!af) return null
   const { groups, revisions } = autofixReport(run)
   const counts = (Object.keys(STATUS_TEXT) as AutofixStatus[])
@@ -229,21 +242,35 @@ function AutofixBanner() {
   }
   const byStatus = (st: AutofixStatus) => groups.filter((g) => g.status === st)
   const pending = [...byStatus('choice'), ...byStatus('review'), ...byStatus('input'), ...byStatus('failed')]
-  return <div className={`autofix-banner ${run.status === 'succeeded' ? 'done' : 'failed'}`}>
-    <div className="autofix-head">
-      <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
-      <span className="muted">{tally || run.error || 'nothing to fix'}</span>
-      <span className="spacer" />
-      {revisions.length > 0 && head && revisions.includes(head) &&
-        <button onClick={() => void undoAll()} title="Undo every automatic fix from this run">Undo automatic fixes</button>}
-      <button onClick={() => void stop()}>Close</button>
+  const collapse = () => { if (trayRef.current) trayRef.current.open = false }
+  return <details key={af.runId} ref={trayRef}
+    className={`autofix-banner autofix-tray ${run.status === 'succeeded' ? 'done' : 'failed'}`}>
+    <summary className="autofix-tray-toggle">
+      <span className="autofix-tray-chevron" aria-hidden="true">▸</span>
+      <span className="autofix-tray-summary">
+        <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
+        <span className="muted">{tally || run.error || 'nothing to fix'}</span>
+      </span>
+      <span className="autofix-tray-hint">
+        <span className="autofix-expand">Expand results</span>
+        <span className="autofix-collapse">Collapse results</span>
+      </span>
+    </summary>
+    <div className="autofix-tray-body">
+      <div className="autofix-head autofix-toolbar">
+        {revisions.length > 0 && head && revisions.includes(head) &&
+          <button onClick={() => void undoAll()} title="Undo every automatic fix from this run">Undo automatic fixes</button>}
+        <span className="spacer" />
+        <button onClick={() => void stop()}>Close report</button>
+      </div>
+      {pending.length > 0 && <ul className="autofix-results">{pending.map((g, k) =>
+        <AutofixGroupLine key={k} group={g} onContinue={collapse} />)}</ul>}
+      {byStatus('fixed').length > 0 && <details>
+        <summary>Fixed automatically ({byStatus('fixed').length})</summary>
+        <ul className="autofix-results">{byStatus('fixed').map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>
+      </details>}
     </div>
-    {pending.length > 0 && <ul className="autofix-results">{pending.map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>}
-    {byStatus('fixed').length > 0 && <details>
-      <summary>Fixed automatically ({byStatus('fixed').length})</summary>
-      <ul className="autofix-results">{byStatus('fixed').map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>
-    </details>}
-  </div>
+  </details>
 }
 
 const shortModel = (m: string) => m.split(/[\\/]/).pop() ?? m
@@ -425,7 +452,7 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
   const elapsed = (active ? now : Date.parse(run.finished_at ?? run.created_at)) - Date.parse(run.created_at)
   const proposalId = run.status === 'succeeded' ? run.outcome.proposal_id : null
   const current = proposalId && proposal?.id === proposalId ? proposal : null
-  const questions = !proposalId ? run.outcome.questions ?? [] : current?.questions ?? []
+  const questions = !proposalId ? run.outcome.questions ?? [] : []
 
   return (
     <div className={`msg agent run-${run.status}`}>
@@ -439,7 +466,7 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
       {run.status === 'failed' && <div className="error-text">{run.error ?? 'The run failed.'}</div>}
       {run.status === 'cancelled' && <div className="muted">Cancelled.</div>}
       {run.status === 'succeeded' && <>
-        {run.outcome.explanation && <div className="msg-text">{run.outcome.explanation}</div>}
+        {!proposalId && run.outcome.explanation && <div className="msg-text">{run.outcome.explanation}</div>}
         {!run.outcome.explanation && !proposalId && !questions.length && <div className="muted">No change proposed.</div>}
         {run.outcome.dismissed_proposal_id && <div className="thread-event">The earlier proposal is no longer needed and was closed.</div>}
       </>}
@@ -451,7 +478,11 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
       {current
         ? <ProposalPreview proposal={current} running={false} />
         : proposalId && <div className="proposal-ref">Proposed change · {proposalStateText(states[proposalId])}</div>}
-      {!active && <>
+      {!active && proposalId ? <details className="proposal-run-details">
+        <summary>Run details</summary>
+        {run.outcome.explanation && <LongText text={run.outcome.explanation} />}
+        <RunSteps run={run} live={false} />
+      </details> : !active && <>
         <div className="msg-foot">
           <button className="link" onClick={() => setOpen(!open)}>{open ? 'hide steps' : `${run.progress.length} steps`}</button>
           <span className="muted"> · took {formatDuration(elapsed)}</span>
@@ -479,10 +510,8 @@ function fmt(v: unknown) {
 }
 
 const FACE_LINES = 8
-const FACE_FIXES = 3
-
-function ProposalPreview({ proposal, running: runningProp, showConversation = false }: {
-  proposal: Proposal; running: boolean; showConversation?: boolean
+function ProposalPreview({ proposal, running: runningProp }: {
+  proposal: Proposal; running: boolean
 }) {
   const runs = useStore((s) => s.runs)
   const running = runningProp || Object.values(runs).some(isActive)
@@ -495,14 +524,13 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
   const head = useStore((s) => s.model?.head)
   const viewing = useStore((s) => s.viewing)
   const [allLines, setAllLines] = useState(false)
-  const [allFixes, setAllFixes] = useState(false)
   const [expanded, setExpanded] = useState(false)  // an applied proposal folds to one line
   const v = proposal.validation
   const lines = useMemo(() => summarizeChanges(proposal.changes, fieldLabel), [proposal])
   const outside = lines.filter((l) => l.outside).length
   const dismissals = proposal.issue_dismissals ?? []
-  const fixes = v?.resolved.length ? v.resolved : proposal.gate?.fixed ?? []
-  const introduced = v?.introduced ?? []
+  const fixes = [...new Set([...(v?.resolved ?? []), ...(proposal.gate?.fixed ?? [])])]
+  const introduced = [...new Set([...(v?.introduced ?? []), ...(proposal.gate?.introduced ?? [])])]
   const show = (id: string, deleted: boolean, ctrl: boolean) => {
     if (!deleted) click({ id }, { ctrl, shift: false }, [])
     inspect(id)
@@ -526,39 +554,14 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
       <div className="proposal-head">
         <h3>Proposed change</h3>
         {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>collapse</button>}
-        <span className="muted">based on {proposal.base_revision}</span>
       </div>
-      {showConversation && <div className="proposal-conversation">
-        {proposal.conversation?.length ? proposal.conversation.map((message, i) => <p key={i} className={message.role === 'user' ? 'user' : 'agent'}>
-          <strong>{message.role === 'user' ? 'You' : 'Assistant'}:</strong> {message.text}
-        </p>) : <>
-          {proposal.instruction && <p className="user"><strong>You:</strong> {proposal.instruction}</p>}
-          {proposal.explanation && <p className="agent"><strong>Assistant:</strong> {proposal.explanation}</p>}
-        </>}
-      </div>}
-
-      {/* (b) what gets fixed, and anything it breaks */}
-      <div className="proposal-fixes">
-        {fixes.length > 0 ? <>
-          <div className="fixes-head resolved">✓ Fixes {fixes.length} issue{fixes.length === 1 ? '' : 's'}</div>
-          <ul>{(allFixes ? fixes : fixes.slice(0, FACE_FIXES)).map((f, i) => <li key={i}>{f}</li>)}</ul>
-          {fixes.length > FACE_FIXES && <button className="link small" onClick={() => setAllFixes(!allFixes)}>
-            {allFixes ? 'show fewer' : `+${fixes.length - FACE_FIXES} more`}</button>}
-        </> : proposal.operations.length > 0 && <div className="muted small">No change to open issues.</div>}
-        {introduced.length > 0 && <>
-          <div className="fixes-head introduced">! Introduces {introduced.length} issue{introduced.length === 1 ? '' : 's'}</div>
-          <ul className="introduced">{introduced.map((f, i) => <li key={i}>{f}</li>)}</ul>
-        </>}
-      </div>
-
-      {/* (a) what gets added or changed */}
       {lines.length > 0 && <div className="proposal-changes">
-        <div className="changes-head">{headline}
-          {outside > 0 && <span className="warn-text"> · {outside} outside your selection</span>}</div>
+        {(lines.length > 1 || outside > 0) && <div className="changes-head">{lines.length > 1 && headline}
+          {outside > 0 && <span className="warn-text">{lines.length > 1 ? ' · ' : ''}{outside} outside your selection</span>}</div>}
         <ul>{(allLines ? lines : lines.slice(0, FACE_LINES)).map((l) => (
           <li key={l.id} className={`change-line ${l.change}`} title="Select and inspect"
             onClick={(e) => show(l.id, l.change === 'deleted', e.ctrlKey || e.metaKey)}>
-            <span className="change-mark">{l.mark}</span>
+            <span className="change-mark">{l.change === 'created' ? 'Add' : l.change === 'deleted' ? 'Remove' : 'Change'}</span>
             <span className="change-label">{l.label}</span>
             <span className="change-detail muted">{l.detail}</span>
             {l.outside && <span className="badge" title="Outside your selection">outside</span>}
@@ -568,28 +571,30 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
           {allLines ? 'show fewer' : `+${lines.length - FACE_LINES} more`}</button>}
       </div>}
 
-      {proposal.build_summary && (() => { const b = proposal.build_summary!; return <p className="muted small build-line">
-        Source build · {b.title}: read {Math.round(b.parse.coverage * 100)}% of {b.records} records, mapped {b.mapped_tokens} of {b.token_count} point tokens
-        {b.unmapped_records ? `; ${b.unmapped_records} records unresolved` : ''}.</p> })()}
+      <div className="proposal-fixes">
+        {fixes.length > 0 ? <details>
+          <summary className="resolved">Addresses {fixes.length} issue{fixes.length === 1 ? '' : 's'}</summary>
+          <ul>{fixes.map((f, i) => <li key={i}>{f}</li>)}</ul>
+        </details> : (v || proposal.gate) && <div className="muted">No existing issues resolved.</div>}
+        {dismissals.length > 0 && <details>
+          <summary>Dismisses {dismissals.length} issue{dismissals.length === 1 ? '' : 's'}</summary>
+          <ul>{dismissals.map((d) => <li key={d.id}>{d.explanation}<div className="muted">{d.reason}</div></li>)}</ul>
+        </details>}
+        {introduced.length > 0 ? <>
+          <div className="fixes-head introduced">Introduces {introduced.length} new issue{introduced.length === 1 ? '' : 's'}</div>
+          <ul className="introduced">{introduced.map((f, i) => <li key={i}>{f}</li>)}</ul>
+        </> : (v || proposal.gate) ? <div className="ok-text">No new issues.</div>
+          : <div className="muted">Issue checks unavailable.</div>}
+      </div>
 
-      {dismissals.length > 0 && <div className="dismissals">
-        <div className="fixes-head">Dismisses {dismissals.length} issue{dismissals.length === 1 ? '' : 's'}</div>
-        <ul>{dismissals.map((d) => <li key={d.id}>
-          <span className={`sev ${d.severity}`}>{d.severity}</span> {d.explanation}
-          <div className="dismissal-reason">Why: {d.reason}</div>
-        </li>)}</ul>
-        <p className="muted small">Hidden from the open issues; the model itself does not change. You can reopen them from the Issues list.</p>
-      </div>}
-
-      {(proposal.questions.length > 0 || proposal.notes.length > 0) && <div className="proposal-notes">
+      {proposal.questions.length > 0 && <div className="proposal-notes">
         {proposal.questions.map((q, i) => <p key={`q${i}`} className="question">? {q}</p>)}
-        {proposal.notes.map((n, i) => <p key={`n${i}`} className="warn-text">Note: {n}</p>)}
       </div>}
 
       {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
 
-      <details className="proposal-details">
-        <summary>Details</summary>
+      {proposal.changes.some((c) => c.fields.length > 2) && <details className="proposal-details">
+        <summary>All field changes</summary>
         {proposal.changes.length > 0 && <section>
           <h4>Field changes</h4>
           {proposal.changes.map((change) => {
@@ -608,44 +613,20 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
             </table>
           })}
         </section>}
-        {v && <section>
-          <h4>Model checks</h4>
-          <p className="small">{v.before.violations} → {v.after.violations} violation(s), {v.before.warnings} → {v.after.warnings} warning(s)</p>
-        </section>}
-        {proposal.gate && <section title="The repair engine's soundness gate (pyshifty): re-validates the model with this change and compares violations. Sound = introduces nothing; progress = fixes something.">
-          <h4>Soundness gate</h4>
-          <p className="small">{proposal.gate.sound ? 'Sound' : 'Not sound'} · {proposal.gate.progress ? 'progress' : 'no progress'}</p>
-          {proposal.gate.fixed.length > 0 && <p className="small">fixes: {proposal.gate.fixed.join('; ')}</p>}
-          {proposal.gate.introduced.length > 0 && <p className="small">introduces: {proposal.gate.introduced.join('; ')}</p>}
-        </section>}
-        {proposal.build_summary && (() => { const b = proposal.build_summary!; return <section>
-          <h4>Source mapping</h4>
-          {b.revision_note && <p className="muted small">{b.revision_note}</p>}
-          <p className="muted small">Using {b.parse.description}.</p>
-          <div className="grid-scroll short"><table className="raw-grid">
-            <thead><tr><th>#</th><th>Token</th><th>Maps to</th></tr></thead>
-            <tbody>{b.point_mappings.map((m) => <tr key={m.id}><td>{m.count}</td><td className="name">{m.token}</td>
-              <td>{m.term_label ?? (m.point_kind ?? <span className="warn-text">unmapped</span>)}</td></tr>)}
-            {b.equipment_mappings.map((m) => <tr key={m.id}><td>{m.count}</td><td>{m.examples.slice(0, 2).join(', ')}</td>
-              <td>{m.term_label ?? <span className="warn-text">unclassified</span>}</td></tr>)}</tbody>
-          </table></div>
-        </section> })()}
-        <section>
-          <h4>Evidence ({proposal.evidence.length})</h4>
-          <ul className="evidence">
-            {proposal.evidence.map((e, i) => (
-              <li key={i}><span className={`ev-kind ${e.kind}`}>{e.kind}</span> <code>{e.ref}</code> {e.summary}</li>
-            ))}
-          </ul>
-        </section>
-        <section>
-          <h4>Technical detail ({proposal.operations.length} operation(s), +{proposal.diff.added.length}/−{proposal.diff.removed.length} triples)</h4>
-          <pre className="code">{JSON.stringify(proposal.operations, null, 1)}</pre>
-          <pre className="code diff">
-            {proposal.diff.removed.map((t) => `- ${t}`).join('\n')}{'\n'}{proposal.diff.added.map((t) => `+ ${t}`).join('\n')}
-          </pre>
-        </section>
+      </details>}
+
+      <details className="proposal-details">
+        <summary>Show RDF · +{proposal.diff.added.length} / −{proposal.diff.removed.length} triples</summary>
+        <pre className="code diff">{[
+          ...proposal.diff.removed.map((t) => `- ${t}`),
+          ...proposal.diff.added.map((t) => `+ ${t}`),
+        ].join('\n') || 'No RDF changes.'}</pre>
       </details>
+
+      {proposal.notes.length > 0 && <details className="proposal-notes">
+        <summary>Notes ({proposal.notes.length})</summary>
+        {proposal.notes.map((n, i) => <p key={i} className="warn-text">{n}</p>)}
+      </details>}
 
       <div className="proposal-actions">
         {(proposal.status === 'pending' || proposal.status === 'stale') && <>
@@ -654,9 +635,9 @@ function ProposalPreview({ proposal, running: runningProp, showConversation = fa
           </span>}
           <button className="primary" disabled={!!viewing || busy || running || (proposal.operations.length === 0 && !dismissals.length)}
             title={viewing ? 'Go back to the current model to apply it' : undefined}
-            onClick={() => void applyProposal()}>{proposal.operations.length ? 'Apply as proposed'
+            onClick={() => void applyProposal()}>{proposal.operations.length ? 'Apply change'
               : `Dismiss ${dismissals.length} issue(s)`}</button>
-          <button disabled={!!viewing || busy || running} onClick={() => void regenerate()}>Refresh on latest</button>
+          {proposal.status === 'stale' && <button disabled={!!viewing || busy || running} onClick={() => void regenerate()}>Refresh on latest</button>}
           <button disabled={busy || running} onClick={() => void dismissProposal()}>Discard</button>
         </>}
         {proposal.status === 'applied' && <span className="ok-text">{proposal.operations.length

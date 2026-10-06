@@ -142,3 +142,42 @@ def test_relations_endpoint_lists_allowed_and_current(zones, tmp_path):
     assert "s223:hasDomainSpace" in allowed and allowed["s223:hasDomain"]["max"] == 1
     assert allowed["s223:hasProperty"]["typed_field"] == "points"  # listed, with the field that also shows it
     assert len(body["relationships"]) == 3
+
+
+@pytest.mark.parametrize("profile, equipment_type, space_type, relation", [
+    ("brick", "brick:Pump", "rec:Room", "brick:hasLocation"),
+    ("watr", "s223:Pump", "s223:PhysicalSpace", "s223:hasPhysicalLocation"),
+])
+def test_generic_location_edits_lock_the_owning_entity(workspace, profile, equipment_type, space_type, relation):
+    from workbench.relations import relationship_id, relationship_key
+    from workbench.vocabulary import expand_term
+
+    p = workspace.create("Locations", profile)
+    p.edit(p.head(), ops(
+        {"op": "create_equipment", "label": "Pump", "type": equipment_type},
+        {"op": "create_space", "label": "Room", "type": space_type},
+    ))
+    view = p.view(p.head())
+    pump, room = view.equipment[0], view.spaces[0]
+    rev, cand = p.edit(p.head(), ops({"op": "relate", "subject": pump.id, "relation": relation, "object": room.id}))
+    assert "location" in p.view(rev.id).rows()[pump.id].locked
+    assert "location" in cand.result.changes[pump.id]
+    pg = p.graph(rev.id)
+    predicate = URIRef(expand_term(p.vocab, relation))
+    rid = relationship_id(relationship_key(p.vocab, pg.iri(pump.id), predicate, pg.iri(room.id)))
+    from workbench.graph import WB
+    pg.ann.remove((pg.iri(pump.id), WB.locked, None))
+    # An automatic build can set an unlocked value which a person then reconfirms.
+    from workbench.operations import apply
+    apply(pg, p.vocab, cand.ops)
+    assert "location" in pg.locked_fields(pg.iri(pump.id))
+    if profile == "brick":
+        pg.ann.remove((pg.iri(pump.id), WB.locked, None))
+        from workbench.operations import resolve
+        inverse = resolve(pg, p.vocab, ops({"op": "relate", "subject": room.id,
+                                          "relation": "brick:isLocationOf", "object": pump.id}))
+        apply(pg, p.vocab, inverse)
+        assert "location" in pg.locked_fields(pg.iri(pump.id))
+    removal = p.build_candidate(rev.id, ops({"op": "unrelate", "id": rid}))
+    assert "location" in removal.result.changes[pump.id]
+    assert next(c for c in removal.changes if c.entity_id == pump.id).overrides_locked

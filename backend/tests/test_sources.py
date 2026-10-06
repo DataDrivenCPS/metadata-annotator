@@ -63,6 +63,34 @@ def test_confirm_creates_observations_and_supersedes(sample_project):
     first = p.confirm_csv_mapping(src.id, cfg)
     assert first["observations"] == 15
     again = p.confirm_csv_mapping(src.id, cfg)
-    assert again["superseded"] == 15
+    assert again["superseded"] == 0
     live = [o for o in p.observations(src.id) if o.status == "unresolved"]
     assert len(live) == 15 and p.source(src.id).status == "configured"
+
+
+def test_reconfirm_preserves_modeled_evidence_and_record_ids(sample_project):
+    from workbench.operations import OperationList
+
+    p = sample_project
+    src = p.add_source("points.csv", b"Name,Description\nA,Temperature\nA,Temperature\n")
+    rows, delim = p.source_grid(src.id)
+    cfg, _ = suggest_config(rows, delim)
+    p.confirm_csv_mapping(src.id, cfg)
+    original = p.observations(src.id)
+    p.edit(p.head(), OperationList.validate_python([
+        {"op": "create_point", "label": "A", "point_kind": "measurement",
+         "evidence": [original[0].id]},
+    ]))
+    assert original[0].id in p.evidence_map(p.head())
+    assert not original[0].entity_ids
+    p.confirm_csv_mapping(src.id, cfg)
+    assert [o.id for o in p.observations(src.id)] == [o.id for o in original]
+    assert all(o.status == "unresolved" for o in p.observations(src.id))
+    assert original[0].id in p.evidence_map(p.head())
+    # Changed metadata is a new record; linked evidence remains available.
+    cfg.metadata_columns = []
+    p.confirm_csv_mapping(src.id, cfg)
+    observations = p.observations(src.id)
+    assert observations[0].status == "unresolved"
+    assert observations[1].status == "superseded"
+    assert len([o for o in observations if o.status == "unresolved"]) == 3

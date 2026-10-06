@@ -216,6 +216,7 @@ class Session:
     def ask(self, system: str, messages: list[dict], schema: dict) -> dict:
         self.cancel.check()
         res = self.llm.complete_json(system, messages, schema, cancel=self.cancel, **self.llm_options)
+        self.cancel.check()
         with self._lock:
             self.outcome.steps += 1
             self.outcome.input_tokens += res.input_tokens
@@ -476,6 +477,7 @@ def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: st
     explanation = (f"Read the records with {summary['parse']['description']} and mapped "
                    f"{summary['mapped_tokens']} of {len(tgroups)} distinct point tokens to verified terms.")
     s.outcome.explanation = explanation
+    cancel.check()
     s.outcome.proposal = project.save_proposal(
         cand, SelectionScope(), instruction or "Build the model from the uploaded records", explanation, evidence,
         [], run_id, before.validation, before_issues,  # type: ignore[arg-type]

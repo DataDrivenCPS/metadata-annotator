@@ -87,3 +87,32 @@ describe('auto-fix', () => {
     expect(useStore.getState().proposalStates).toMatchObject({ 'prop-a': 'applied', 'prop-b': 'dismissed' })
   })
 })
+
+
+describe('auto-fix start responses', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useStore.setState({ projectId: 'p', model: model(), runs: {}, autofix: null, viewing: null })
+  })
+
+  it('preserves completion received before the start response', async () => {
+    let resolve!: (value: AgentRun) => void
+    vi.mocked(api.autofix).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const starting = useStore.getState().startAutofix(model().issues)
+    useStore.getState().handleEvent({ type: 'run', run: run('succeeded') })
+    resolve(run('queued'))
+    await starting
+    expect(useStore.getState().runs['run-af'].status).toBe('succeeded')
+  })
+
+  it('discards responses from the previous project', async () => {
+    let resolve!: (value: AgentRun) => void
+    vi.mocked(api.autofix).mockReturnValueOnce(new Promise((done) => { resolve = done }))
+    const starting = useStore.getState().startAutofix(model().issues)
+    useStore.setState({ projectId: 'other', runs: {}, autofix: null })
+    resolve(run('queued'))
+    await starting
+    expect(useStore.getState().runs).toEqual({})
+    expect(useStore.getState().autofix).toBeNull()
+  })
+})

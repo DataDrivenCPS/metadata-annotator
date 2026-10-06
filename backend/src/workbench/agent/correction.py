@@ -26,7 +26,7 @@ from pydantic import ValidationError
 from .. import operations as ops_mod
 from ..llm import CancelToken, LLMClient, LLMError, context_window, reply_tokens
 from ..llm.base import REPLY_TOKENS
-from ..project import Project
+from ..project import Project, StaleRevision
 from ..projection import project as project_view
 from ..schemas import ChangeProposal, EvidenceRef, IssueDismissal, SelectionScope
 from .guidance import SkillGuidance
@@ -131,6 +131,12 @@ Refer to entities by their ids (eq-..., pt-..., cx-...). Give a new entity an id
 label) in the later operation, e.g.
   [{{"op": "create_equipment", "id": "new:x1", "label": "Unit 1", "type": "{example_type}"}},
    {{"op": "create_equipment", "label": "Part A", "type": "{example_part}", "contained_in": "new:x1"}}]
+Each proposal is a complete operation list against the current model, not a patch to your
+previous answer. A rejected or gated candidate has NOT been applied. When retrying, repeat
+all required create operations before referencing their "new:*" ids; replace the entire
+previous answer's operation list. Only when the context explicitly names a pending proposal
+for this reply do its saved operations carry forward; return complete additional operations
+for that reply without repeating the saved proposal.
 Anything else the vocabulary defines (the operations above are shortcuts for common patterns;
 these reach everything):
 - create_entity {{label, type}}; update_entity {{id, fields...}}; delete_entity {{id}} - an instance of any
@@ -685,6 +691,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     elif prior_proposal is not None:
         preview = project.build_candidate(rid, prior_proposal.operations, prior_proposal.selection,
                                           lock=prior_proposal.kind != "build")
+        tools = AgentTools(project, rid, guidance, preview=preview.after)
         preview_rows = project_view(preview.after, project.vocab).rows()
         stop = {"is", "an", "to", "the", "all", "are", "for", "with", "not", "these",
                 "those", "point", "points", "should", "actually", "instead"}
@@ -697,6 +704,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                  f"Proposal {prior_proposal.id} is based on {prior_proposal.base_revision} and has not been applied.",
                  f"Original request: {prior_proposal.instruction}",
                  f"Assistant explanation: {prior_proposal.explanation}",
+                 "Lookup tools inspect this proposed state, including its new entities and relationships.",
                  "The rows below show the proposed state. Their ids can be used in update operations:"]
         for change in shown:
             row = preview_rows.get(change.entity_id)
@@ -752,6 +760,22 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     progress("context", "Read the selection and related model objects",
              {"chars": len(context), "budget_chars": rows_budget, "context_tokens": window})
 
+    replacement_rules = (
+        "\nThe candidate from your previous answer has NOT been applied; none of its new entities exist. "
+        "Return the COMPLETE replacement operation list, not just corrected operations. "
+        "Include every required create operation before any update or connection that references its new:* id. "
+        "Fix or omit the invalid fields in those create operations. "
+        "Repeat any required token_updates, dismiss_issues and withdraw_dismissals too; "
+        "nothing from your previous answer carries forward automatically. "
+        "Use tools if you need correct current-model ids or vocabulary terms."
+    )
+    if prior_proposal is not None and not reconsider:
+        replacement_rules += (
+            "\nThe saved pending proposal's operations are carried forward separately. "
+            "Return the COMPLETE replacement list of additional operations for this reply; "
+            "do not repeat the saved proposal's operations. Use its preview ids for entities it creates."
+        )
+
     for step in range(MAX_STEPS + MAX_REPAIRS):
         cancel.check()
         outcome.steps = step + 1
@@ -763,6 +787,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             res = llm.complete_json(system, messages, schema, images=images or None, cancel=cancel, **llm_options)
         except LLMError:
             raise
+        cancel.check()
         outcome.input_tokens += res.input_tokens
         outcome.output_tokens += res.output_tokens
         data = res.data
@@ -830,7 +855,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                     raise LLMError("the model could not revise the token mapping: " + "; ".join(exc.problems))
                 messages.append({"role": "user", "content": "Token mapping problem: " + "; ".join(exc.problems)
                                  + ("\nReturn complete replacement operations using current model ids or create operations."
-                                    if reconsider else "\nUse a token id from the source mapping table, then propose again.")})
+                                    if reconsider else "\nUse a token id from the source mapping table, then propose again.")
+                                 + replacement_rules})
                 continue
         dismissals, problems = resolve_dismissals(open_issues, prior_dismissals, data.get("dismiss_issues") or [],
                                                   data.get("withdraw_dismissals") or [])
@@ -840,13 +866,18 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             if repairs > MAX_REPAIRS:
                 raise LLMError("the model could not produce valid issue dismissals: " + "; ".join(problems[:5]))
             messages.append({"role": "user", "content": "Those issue dismissals cannot be used:\n- "
-                             + "\n- ".join(problems) + "\nPropose again."})
+                             + "\n- ".join(problems) + replacement_rules})
             continue
         dismissals_changed = [d.id for d in dismissals] != [d.id for d in prior_dismissals]
         if not raw_ops and not dismissals_changed:
-            if reconsider and prior_proposal and not outcome.questions:
-                project.dismiss_proposal(prior_proposal.id)
-                outcome.dismissed_proposal_id = prior_proposal.id
+            cancel.check()
+            if reconsider and prior_proposal and not outcome.questions and not outcome.choices:
+                with project.lock:
+                    cancel.check()
+                    if project.head() != rid:
+                        raise StaleRevision(rid, project.head())
+                    project.dismiss_proposal(prior_proposal.id)
+                    outcome.dismissed_proposal_id = prior_proposal.id
             progress("done", "The assistant offers choices" if outcome.choices else
                      "The assistant needs more information" if outcome.questions else "No change proposed", {})
             return outcome
@@ -878,8 +909,9 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 raise LLMError("the model could not produce valid operations: " + "; ".join(problems[:5]))
             messages.append({"role": "user", "content":
                              "Those operations cannot be applied:\n- " + "\n- ".join(problems)
-                             + "\nUse tools if you need correct ids or terms, then propose again."})
+                             + replacement_rules})
             continue
+        cancel.check()
         progress("validated", f"Validated candidate: {cand.summary.violations} violation(s)",
                  {"conforms": cand.summary.conforms})
         # An issue the change resolves needs no dismissal.
@@ -901,7 +933,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                                 if notes else "")
                              + "If another change would avoid them, propose that instead. If they are expected"
                                " (for example new equipment that is not connected yet), propose the same"
-                               " operations again and say so in the explanation."})
+                               " operations again and say so in the explanation." + replacement_rules})
             continue
         vocab_refs = {op_term for op in cand.ops for op_term in _terms(op)}
         for iri in sorted(vocab_refs)[:10]:
@@ -946,6 +978,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             changed_tokens = {m["token"] for m in build_summary["point_mappings"]
                               if m["id"] in {u["id"] for u in token_updates} and m["mapped"]}
             followup_issues = [i for i in followup_issues if i.get("details", {}).get("token") not in changed_tokens]
+        cancel.check()
         outcome.proposal = project.save_proposal(
             cand, selection, instruction, outcome.explanation, evidence, outcome.questions,
             run_id, before.validation, before_issues,  # type: ignore[arg-type]

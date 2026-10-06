@@ -67,6 +67,39 @@ class RunManager:
         return [AgentRun.model_validate(b) for b in
                 project.store.list_bodies("agent_runs", order="created_at DESC")[:limit]]
 
+    def usage(self, project: Project) -> dict[str, dict[str, int]]:
+        """Recorded provider usage across all runs, including those outside chat history."""
+        return {body["id"]: {key: body.get("outcome", {}).get(key, 0)
+                             for key in ("input_tokens", "output_tokens")}
+                for body in project.store.list_bodies("agent_runs")}
+
+    def tracked_client(self, cfg, project: Project, run: AgentRun):
+        """Persist provider-reported usage after each call, even if later work fails."""
+        manager = self
+        client = make_client(cfg)
+        usage_lock = threading.Lock()
+
+        class TrackedClient:
+            def __getattr__(self, name):
+                return getattr(client, name)
+
+            def complete_json(self, *args, **kwargs):
+                try:
+                    result = client.complete_json(*args, **kwargs)
+                except LLMError as exc:
+                    record(exc)
+                    raise
+                record(result)
+                return result
+
+        def record(result):
+            with usage_lock:
+                for key in ("input_tokens", "output_tokens"):
+                    run.outcome[key] = run.outcome.get(key, 0) + getattr(result, key, 0)
+                manager.save(project, run)
+
+        return TrackedClient()
+
     def history(self, project: Project, parent_run_id: str | None) -> list[dict[str, str]]:
         """The conversation up to and including the parent run's exchange, newest turns kept."""
         if not parent_run_id:
@@ -128,7 +161,7 @@ class RunManager:
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
                          lambda progress: run_correction(
-                             project, make_client(cfg), self.guidance, base, selection,
+                             project, self.tracked_client(cfg, project, run), self.guidance, base, selection,
                              instruction, run.id, progress, token, history=history))
         return run
 
@@ -154,7 +187,7 @@ class RunManager:
             self.tokens[run.id] = token
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_autofix(project, make_client(cfg), self.guidance, issue_ids or None,
+                         lambda progress: run_autofix(project, self.tracked_client(cfg, project, run), self.guidance, issue_ids or None,
                                                       run.id, progress, token))
         return run
 
@@ -198,12 +231,12 @@ class RunManager:
         if documents:
             request = "Build a model from the attached sources. Extract equipment, points, and supported connections. " + instruction
             self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_correction(project, make_client(cfg), self.guidance, base,
+                             lambda progress: run_correction(project, self.tracked_client(cfg, project, run), self.guidance, base,
                                                              selection, request, run.id, progress, token,
                                                              build_from_sources=True))
         else:
             self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_build(project, make_client(cfg), self.guidance, base, source_ids,
+                             lambda progress: run_build(project, self.tracked_client(cfg, project, run), self.guidance, base, source_ids,
                                                         instruction, run.id, progress, token))
         return run
 
@@ -242,7 +275,7 @@ class RunManager:
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
                          lambda progress: run_correction(
-                             project, make_client(cfg), self.guidance, base,
+                             project, self.tracked_client(cfg, project, run), self.guidance, base,
                              selection, instruction, run.id, progress, token,
                              prior_proposal=proposal, reconsider=reconsider, history=history))
         return run
@@ -277,8 +310,8 @@ class RunManager:
                 "questions": getattr(outcome, "questions", []),
                 "explanation": getattr(outcome, "explanation", ""),
                 "steps": getattr(outcome, "steps", 0),
-                "input_tokens": getattr(outcome, "input_tokens", 0),
-                "output_tokens": getattr(outcome, "output_tokens", 0),
+                "input_tokens": run.outcome.get("input_tokens", getattr(outcome, "input_tokens", 0)),
+                "output_tokens": run.outcome.get("output_tokens", getattr(outcome, "output_tokens", 0)),
                 **({"autofix": outcome.autofix} if hasattr(outcome, "autofix") else {}),
             }
             run.status = "succeeded"

@@ -134,10 +134,10 @@ class OpenAICompatClient:
         except httpx.TimeoutException:
             raise LLMError(f"{self.provider} timed out after {self.cfg.timeout_s:.0f}s") from None
         text = "".join(text_parts)
+        tokens_in, tokens_out = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
         if finish == "length":
             log.warning("%s ran out of output tokens (%d chars); the reply ended: %r", self.provider, len(text), text[-400:])
-            raise LLMError("the model ran out of output tokens before finishing its answer")
-        tokens_in, tokens_out = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+            raise LLMError("the model ran out of output tokens before finishing its answer", tokens_in, tokens_out)
         return LLMResult(data=parse_reply(text, tokens_in, tokens_out), raw_text=text,
                          input_tokens=tokens_in, output_tokens=tokens_out)
 

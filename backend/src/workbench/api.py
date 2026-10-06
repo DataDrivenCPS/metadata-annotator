@@ -578,6 +578,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_runs(pid: str):
         return [r.model_dump(mode="json") for r in runs.list(project(pid))]
 
+    @app.get("/api/projects/{pid}/usage")
+    def token_usage(pid: str):
+        return runs.usage(project(pid))
+
     @app.get("/api/projects/{pid}/runs/{run_id}")
     def get_run(pid: str, run_id: str):
         try:

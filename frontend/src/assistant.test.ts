@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection,
   proposalStates,
-  startsExchange, summarizeChanges, threadRuns,
+  startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
 
@@ -13,6 +13,13 @@ const run = (id: string, created_at: string, extra: Partial<AgentRun> = {}): Age
 })
 
 describe('assistant thread', () => {
+  it('totals all recorded runs and live usage without double counting', () => {
+    expect(tokenTotals({ old: { input_tokens: 100, output_tokens: 10 }, a: { input_tokens: 20, output_tokens: 2 } }, {
+      a: run('a', '1', { outcome: { input_tokens: 30, output_tokens: 3 } }),
+      auto: run('auto', '2', { kind: 'autofix', outcome: { input_tokens: 50, output_tokens: 5 } }),
+      pending: run('pending', '3', { status: 'queued' }),
+    })).toEqual({ input_tokens: 180, output_tokens: 18 })
+  })
   it('orders runs by request time', () => {
     const t = threadRuns({ b: run('b', '2026-01-02'), a: run('a', '2026-01-01') })
     expect(t.map((r) => r.id)).toEqual(['a', 'b'])
@@ -146,7 +153,7 @@ describe('proposal change lines', () => {
     ], (f) => f.replace('_', ' '))
     expect(lines.map((l) => [l.mark, l.id])).toEqual([['+', 'out'], ['~', 'upd'], ['−', 'gone']])
     expect(lines[0]).toMatchObject({ detail: 'connection point', outside: true })
-    expect(lines[1].detail).toBe('maps to → AHU inlet; paired with → none (+1 more)')
+    expect(lines[1].detail).toBe('maps to: none → AHU inlet; paired with: none → none (+1 more)')
   })
 })
 

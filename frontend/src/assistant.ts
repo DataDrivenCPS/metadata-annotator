@@ -1,4 +1,4 @@
-import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection } from './types'
+import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection, type TokenUsage } from './types'
 
 export type ProposalState = Proposal['status'] | 'superseded'
 
@@ -7,10 +7,27 @@ export type Continuation = { kind: 'proposal' | 'questions' | 'conversation'; ru
 
 export const isActive = (run: AgentRun) => run.status === 'queued' || run.status === 'running'
 
+/** Merge persisted history with live run updates without counting a run twice. */
+export function tokenTotals(recorded: Record<string, TokenUsage>, runs: Record<string, AgentRun>): TokenUsage {
+  const usage = { ...recorded }
+  for (const run of Object.values(runs)) {
+    usage[run.id] = {
+      input_tokens: Math.max(usage[run.id]?.input_tokens ?? 0, run.outcome.input_tokens ?? 0),
+      output_tokens: Math.max(usage[run.id]?.output_tokens ?? 0, run.outcome.output_tokens ?? 0),
+    }
+  }
+  return Object.values(usage).reduce((total, run) => ({
+    input_tokens: total.input_tokens + run.input_tokens,
+    output_tokens: total.output_tokens + run.output_tokens,
+  }), { input_tokens: 0, output_tokens: 0 })
+}
+
 /** Assistant runs in the order they were requested. */
-export function threadRuns(runs: Record<string, AgentRun>): AgentRun[] {
+export function threadRuns(runs: Record<string, AgentRun>, hiddenIds: string[] = []): AgentRun[] {
   // Auto-fix runs report in their own banner, not as conversation turns.
-  return Object.values(runs).filter((r) => r.kind !== 'autofix').sort((a, b) => a.created_at.localeCompare(b.created_at))
+  const hidden = new Set(hiddenIds)
+  return Object.values(runs).filter((r) => r.kind !== 'autofix' && !hidden.has(r.id))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
 }
 
 /** A run that does not continue an earlier one starts a new exchange in the thread. */
@@ -193,9 +210,14 @@ export function summarizeChanges(changes: EntityChange[], fieldLabel: (field: st
   return [...changes].sort((a, b) => order[a.change] - order[b.change]).map((c) => {
     const kind = c.entity_kind.replace(/_/g, ' ')
     let detail = kind
-    if (c.change === 'updated') {
-      const shown = c.fields.slice(0, 2).map((f) => `${fieldLabel(f.field)} → ${f.after === null || f.after === undefined || f.after === '' ? 'none' : String(f.after)}`)
-      detail = shown.join('; ') + (c.fields.length > 2 ? ` (+${c.fields.length - 2} more)` : '')
+    const fields = c.change === 'created' ? c.fields.filter((f) => f.field !== 'label') : c.fields
+    if (c.change !== 'deleted' && fields.length) {
+      const value = (v: unknown) => v === null || v === undefined || v === '' ? 'none' : String(v)
+      const shown = fields.slice(0, 2).map((f) => c.change === 'updated'
+        ? `${fieldLabel(f.field)}: ${value(f.before)} → ${value(f.after)}`
+        : `${fieldLabel(f.field)}: ${value(f.after)}`)
+      detail = (c.change === 'created' ? `${kind} · ` : '') + shown.join('; ')
+        + (fields.length > 2 ? ` (+${fields.length - 2} more)` : '')
     }
     return { id: c.entity_id, mark: MARKS[c.change], change: c.change, label: c.label, kind, detail,
              outside: !c.in_selection, overridesEdit: c.overrides_locked.length > 0 }

@@ -156,7 +156,13 @@ def test_assistant_and_review_flow(live, page):
     page.keyboard.type("Yes, that is expected for reverse osmosis.")
     page.keyboard.press("Enter")
     card = page.locator(".proposal")
-    expect(card.locator(".dismissals")).to_contain_text("RO changes the medium by design.")
+    card.get_by_text("Dismisses 1 issue", exact=True).click()
+    expect(card.locator(".proposal-fixes")).to_contain_text("RO changes the medium by design.")
+    expect(card.locator(".proposal-fixes")).to_contain_text("No new issues.")
+    rdf = card.locator("details", has=page.locator("summary", has_text="Show RDF"))
+    expect(rdf).not_to_have_attribute("open", "")
+    rdf.locator("summary").click()
+    expect(rdf.locator("pre")).to_be_visible()
     second_context = llm.seen[1][0]["content"]
     assert "EARLIER CONVERSATION" in second_context and question in second_context
     assert "(nothing selected" not in second_context

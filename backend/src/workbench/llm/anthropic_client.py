@@ -97,9 +97,11 @@ class AnthropicClient:
 
         if message.stop_reason == "refusal":
             details = getattr(message, "stop_details", None)
-            raise LLMError(f"the model declined this request ({getattr(details, 'category', None) or 'refusal'})")
+            raise LLMError(f"the model declined this request ({getattr(details, 'category', None) or 'refusal'})",
+                           message.usage.input_tokens, message.usage.output_tokens)
         if message.stop_reason == "max_tokens":
-            raise LLMError("the model ran out of output tokens before finishing its answer")
+            raise LLMError("the model ran out of output tokens before finishing its answer",
+                           message.usage.input_tokens, message.usage.output_tokens)
         text = next((b.text for b in message.content if b.type == "text"), "")
         return LLMResult(
             data=parse_reply(text, message.usage.input_tokens, message.usage.output_tokens), raw_text=text,

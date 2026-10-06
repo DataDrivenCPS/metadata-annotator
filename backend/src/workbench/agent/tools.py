@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..graph import ProjectGraph
 from ..project import Project
 from ..projection import (
     ConnectionPointRow, ConnectionRow, EntityRow, EquipmentRow, PointRow, RelationshipRow, SpaceRow, typed_field,
+    project as project_view,
 )
 from ..vocabulary import S223, Vocabulary
 from .guidance import FAMILY_TOPICS, SkillGuidance
@@ -98,11 +100,17 @@ class AgentTools:
     KINDS = ["equipment", "point_class", "location", "sensor", "connection", "process", "medium",
              "substance", "quantity_kind", "unit", "enumeration", "role", "class", "relation"]
 
-    def __init__(self, project: Project, revision: str, guidance: SkillGuidance):
+    def __init__(self, project: Project, revision: str, guidance: SkillGuidance,
+                 preview: ProjectGraph | None = None):
         self.project = project
         self.revision = revision
         self.vocab = project.vocab
         self.guidance = guidance
+        self.preview = preview
+        self.preview_view = project_view(preview, self.vocab) if preview is not None else None
+
+    def _view(self):
+        return self.preview_view if self.preview_view is not None else self.project.view(self.revision)
 
     def search_terms(self, query: str, kind: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
         """Find ontology terms (classes, units, quantity kinds, media...) by text."""
@@ -138,7 +146,7 @@ class AgentTools:
     def find_entities(self, query: str, limit: int = 25) -> list[str]:
         """Search the model's equipment/points/connections/connection points by name."""
         q = query.lower().strip()
-        view = self.project.view(self.revision)
+        view = self._view()
         hits = [r for r in view.rows().values() if q in r.label.lower() or q in r.id]
         out = []
         for r in hits[:limit]:
@@ -150,11 +158,11 @@ class AgentTools:
 
     def relations_for(self, entity_id: str) -> dict[str, Any]:
         """Relations the vocabulary's shapes allow for this entity, what they point to, and its current ones."""
-        view = self.project.view(self.revision)
+        view = self._view()
         row = view.rows().get(entity_id)
         if row is None or row.kind == "relationship":  # type: ignore[attr-defined]
             return {"error": f"no entity {entity_id}"}
-        pg = self.project.graph(self.revision)
+        pg = self.preview if self.preview is not None else self.project.graph(self.revision)
         from rdflib import URIRef
         from rdflib.namespace import RDF
 

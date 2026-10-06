@@ -118,3 +118,29 @@ def test_questions_need_input_and_failures_do_not_stop_the_rest(sample_project):
     out, _ = autofix(p, [boom, {"action": "propose", "explanation": "Expected for now.", "operations": [],
                                 "questions": ["Is this expected?"]}], ids)
     assert [g["status"] for g in out.groups] == ["failed", "input"]
+
+
+def test_cancellation_during_verification_prevents_automatic_publish(sample_project, monkeypatch):
+    import pytest
+    import workbench.autofix as module
+    from workbench.llm import Cancelled
+
+    p = sample_project
+    ct, issue = unit_issue(p)
+    base = p.head()
+    token = CancelToken()
+    verify = module.verify
+
+    def cancelled_verification(*args):
+        reasons = verify(*args)
+        assert not reasons
+        token.cancel()
+        return reasons
+
+    monkeypatch.setattr(module, "verify", cancelled_verification)
+    llm = ScriptedLLM([{"action": "propose", "operations": [
+        {"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"},
+    ]}])
+    with pytest.raises(Cancelled):
+        run_autofix(p, llm, guidance(), [issue.id], "run-cancel", lambda *_: None, token)
+    assert p.head() == base

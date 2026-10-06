@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from rdflib import URIRef
 
+from .llm import Cancelled
 from .operations import TERM_FIELDS, OperationError, OperationList
 from .schemas import ChangeProposal, ReviewIssue, SelectionScope
 
@@ -309,22 +310,24 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
         try:
             out = run_correction(project, llm, guidance, head, selection_for(group, rows), instruction(group, rows),
                                  run_id, lambda s, m, d: progress(s, f"{tag} · {m}", {**d, "group": n}), cancel)
+        except Cancelled:
+            raise
         except Exception as exc:  # one group failing does not stop the others
-            from .llm import Cancelled
-
-            if isinstance(exc, Cancelled):
-                raise
             record.update(status="failed", reasons=[str(exc)])
             progress("group_done", f"Group {tag}: failed ({exc})", {"group": n, "status": "failed"})
             continue
         record.update(explanation=out.explanation, questions=out.questions)
         selection, request = selection_for(group, rows), instruction(group, rows)
         reasons = verify(project, out.proposal, group) if out.proposal else []
+        cancel.check()
         if out.proposal is not None and not reasons:
             record["proposal_id"] = out.proposal.id
             try:
+                cancel.check()
                 rev = project.apply_proposal(out.proposal.id, automatic=True)
                 record.update(status="fixed", revision=rev.id, reasons=[])
+            except Cancelled:
+                raise
             except Exception as exc:  # e.g. the model changed meanwhile: leave it for review
                 record.update(status="review", reasons=[f"could not apply automatically: {exc}"])
         else:

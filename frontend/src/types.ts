@@ -134,6 +134,8 @@ export interface BuildSummary {
   sources: { id: string; filename: string }[]
 }
 export interface ProgressEvent { at: string; stage: string; message: string; data: Record<string, unknown> }
+export interface TokenUsage { input_tokens: number; output_tokens: number }
+
 export interface AgentRun {
   id: string; kind: string; input_revision: string; selection: Selection | null
   instruction: string; provider: string; model: string; skill_version: string

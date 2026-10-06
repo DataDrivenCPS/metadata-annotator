@@ -593,6 +593,8 @@ class Project:
             rebasing = prop.base_revision != head
             if prop.status not in ("pending", "stale"):
                 raise ValueError(f"proposal is {prop.status}")
+            if automatic and rebasing:
+                raise StaleRevision(prop.base_revision, head)
             build = prop.kind == "build" or automatic
             try:
                 # A build is extraction, not a person's correction: it doesn't lock fields.
@@ -765,25 +767,44 @@ class Project:
     def confirm_csv_mapping(self, sid: str, cfg: CsvImportConfig) -> dict:
         """Record the confirmed structure and create one observation per record.
 
-        Re-confirming supersedes the unresolved observations of the previous mapping; ones
-        already linked to model entities are kept.
+        Re-confirming reuses unchanged records and supersedes changed unresolved records;
+        observations already linked to model entities are kept.
         """
         with self.lock:
             src = self.source(sid)
             rows, _ = self.source_grid(sid, cfg.delimiter)
             new = src_mod.observations_from(src, rows, cfg)
+            linked = self.evidence_map(self.head())
+            # Coordinates distinguish repeated names; content distinguishes changed mappings.
+            def record_key(obs: Observation) -> str:
+                return json.dumps([obs.kind, obs.location.model_dump(mode="json"), obs.content], sort_keys=True)
+
+            previous: dict[str, list[Observation]] = {}
+            for obs in self.observations(sid):
+                if obs.status != "superseded":
+                    previous.setdefault(record_key(obs), []).append(obs)
+            for matches in previous.values():
+                matches.sort(key=lambda obs: obs.id not in linked and not obs.entity_ids)
+            retained: set[str] = set()
+            inserts = []
+            for obs in new:
+                matches = previous.get(record_key(obs), [])
+                if matches:
+                    retained.add(matches.pop(0).id)
+                else:
+                    inserts.append(obs)
             superseded = 0
             with self.store.tx() as db:
                 for row in db.execute("SELECT id, body FROM observations WHERE source_id=? AND status='unresolved'", (sid,)):
                     body = json.loads(row["body"])
-                    if body.get("entity_ids"):
+                    if row["id"] in retained or row["id"] in linked or body.get("entity_ids"):
                         continue
                     body["status"] = "superseded"
                     db.execute("UPDATE observations SET status='superseded', body=? WHERE id=?", (json.dumps(body), row["id"]))
                     superseded += 1
                 db.executemany(
                     "INSERT INTO observations(id, source_id, run_id, status, body) VALUES(?,?,?,?,?)",
-                    [(o.id, o.source_id, o.run_id, o.status, o.model_dump_json()) for o in new])
+                    [(o.id, o.source_id, o.run_id, o.status, o.model_dump_json()) for o in inserts])
             src.import_config = cfg
             src.status = "configured"
             self._put_source(src)

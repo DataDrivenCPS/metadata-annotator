@@ -340,3 +340,26 @@ def test_proposals_carry_the_soundness_gate(sample_project):
     line = propose({"op": "create_connection", "from_equipment": by_label(v.equipment, "RO-1").id,
                     "to_equipment": by_label(v.equipment, "TK-301").id, "label": "L-07", "medium": "watr:Water-Brine"})
     assert line.gate["introduced"] == [] and line.gate["sound"]
+
+
+def test_stale_automatic_proposal_cannot_override_human_edit(sample_project):
+    p = sample_project
+    point = by_label(p.view(p.head()).points, "TT-101")
+    prop = _proposal(p, [{"op": "update_point", "id": point.id, "label": "Automatic"}])
+    human, _ = p.edit(p.head(), ops({"op": "update_point", "id": point.id, "label": "Human"}))
+    with pytest.raises(StaleRevision):
+        p.apply_proposal(prop.id, automatic=True)
+    assert p.head() == human.id
+    row = p.view(p.head()).rows()[point.id]
+    assert row.label == "Human" and "label" in row.locked
+    assert p.proposal(prop.id).status == "stale"
+
+
+def test_duplicate_placeholder_definitions_are_rejected(workspace):
+    p = workspace.create("Duplicate placeholders", "brick")
+    with pytest.raises(OperationError, match="placeholder.*already"):
+        p.build_candidate(p.head(), ops(
+            {"op": "create_equipment", "id": "new:eq-1", "label": "AHU", "type": "brick:AHU"},
+            {"op": "create_equipment", "id": "new:eq-1", "label": "Pump", "type": "brick:Pump"},
+        ))
+    assert not p.view(p.head()).equipment

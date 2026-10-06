@@ -65,6 +65,8 @@ textarea { width: 100%; resize: vertical; }
 /* ------------------------------------------------------------- workspace */
 .workspace { display: flex; flex-direction: column; height: 100%; }
 .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.token-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 8px; font-size: 11px; font-variant-numeric: tabular-nums; max-width: 240px; }
+.token-status > span { white-space: nowrap; }
 .rev { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 360px; border: 0; background: none; padding: 2px 6px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .rev:hover { background: var(--accent-soft); color: var(--text); }
 .rev-id { font-weight: 600; flex-shrink: 0; }
@@ -389,14 +391,19 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .proposal-changes { margin: 6px 0; font-size: 12.5px; }
 .changes-head { font-weight: 600; margin-bottom: 2px; }
 .proposal-changes ul { list-style: none; margin: 0; padding: 0; }
-.change-line { display: flex; gap: 6px; align-items: baseline; padding: 3px 4px; border-radius: 4px; cursor: pointer; min-width: 0; }
+.change-line { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 3px 8px; align-items: baseline; padding: 7px 4px; border-radius: 4px; cursor: pointer; min-width: 0; }
 .change-line:hover { background: var(--accent-soft); }
-.change-mark { width: 12px; flex: none; font-weight: 700; text-align: center; color: var(--muted); }
+.change-mark { grid-column: 1; font-weight: 600; color: var(--muted); font-size: 11px; }
 .change-line.created .change-mark { color: var(--ok); }
 .change-line.deleted .change-mark { color: var(--bad); }
 .change-line.deleted .change-label { text-decoration: line-through; }
-.change-label { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.change-detail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.change-label { grid-column: 2; font-weight: 600; overflow-wrap: anywhere; }
+.change-detail { grid-column: 2; min-width: 0; overflow-wrap: anywhere; line-height: 1.45; }
+.change-line .badge { grid-column: 2; justify-self: start; margin-left: 0; }
+.proposal-fixes summary.resolved { color: var(--ok); }
+.proposal-run-details { font-size: 12px; color: var(--muted); }
+.proposal-run-details > summary { cursor: pointer; }
+.proposal-run-details .msg-text { margin: 8px 0; color: var(--text); }
 .build-line { margin: 4px 0; }
 .proposal-notes p { margin: 4px 0; font-size: 12.5px; }
 .proposal-details section { margin: 8px 0; }
@@ -418,6 +425,23 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .autofix-options { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
 .autofix-options button { font-size: 12px; padding: 2px 8px; }
 .autofix-banner.done { border-color: var(--ok); background: #f6fbf7; }
+.autofix-tray { padding: 0; flex-shrink: 0; }
+.autofix-tray-toggle { display: flex; align-items: center; gap: 9px; padding: 10px; cursor: pointer; list-style: none; }
+.autofix-tray-toggle:hover { background: rgba(31, 111, 235, .05); }
+.autofix-tray-hint { margin-left: auto; flex-shrink: 0; font-size: 11px; color: var(--accent); text-decoration: underline; }
+.autofix-collapse, .autofix-tray[open] > summary .autofix-expand { display: none; }
+.autofix-tray[open] > summary .autofix-collapse { display: inline; }
+.autofix-tray-toggle::-webkit-details-marker { display: none; }
+.autofix-tray-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.autofix-tray-chevron { color: var(--muted); transition: transform .15s; }
+.autofix-tray[open] > summary .autofix-tray-chevron { transform: rotate(90deg); }
+.autofix-tray-summary { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.autofix-tray-body { padding: 0 10px 10px; max-height: min(320px, 35vh); overflow: auto; border-top: 1px solid var(--border); }
+.autofix-toolbar { padding: 8px 0; }
+.autofix-tray .autofix-results { max-height: none; overflow: visible; }
+.autofix-tray .autofix-group { margin: 10px 0; }
+.autofix-tray-body > details { margin-top: 10px; }
+.autofix-tray-body > details > summary { cursor: pointer; }
 .autofix-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .autofix-head .spacer { flex: 1; }
 .autofix-issue { margin-top: 4px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }

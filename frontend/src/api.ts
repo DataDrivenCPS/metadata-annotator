@@ -1,5 +1,5 @@
 import type {
-  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term,
+  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
 } from './types'
 
 export class ApiError extends Error {
@@ -77,6 +77,7 @@ export const api = {
     req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages }),
   run: (pid: string, id: string) => req<AgentRun>('GET', `${P(pid)}/runs/${id}`),
   runs: (pid: string) => req<AgentRun[]>('GET', `${P(pid)}/runs`),
+  tokenUsage: (pid: string) => req<Record<string, TokenUsage>>('GET', `${P(pid)}/usage`),
   cancelRun: (pid: string, id: string) => req<AgentRun>('POST', `${P(pid)}/runs/${id}/cancel`),
   proposal: (pid: string, id: string) => req<Proposal>('GET', `${P(pid)}/proposals/${id}`),
   proposals: (pid: string) => req<Proposal[]>('GET', `${P(pid)}/proposals`),

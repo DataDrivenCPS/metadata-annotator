@@ -493,3 +493,185 @@ def test_step_schema_offers_only_what_the_family_accepts(registry):
     assert "evidence" in s223["create_point"] and "point_type" not in s223["create_point"]
     watr = step_schema(registry.get("watr"))
     assert "process" in ops(watr)["create_equipment"] and "token_updates" in watr["properties"]
+
+
+def test_source_build_retry_repeats_equipment_and_ports_after_rejection(workspace, guidance):
+    p = workspace.create("Port retry", "watr")
+    base = p.head()
+    create = [
+        {"op": "create_equipment", "id": "new:eq-1", "label": "Pump 1", "type": "s223:Pump"},
+        {"op": "create_equipment", "id": "new:eq-2", "label": "Pump 2", "type": "s223:Pump"},
+        {"op": "create_connection_point", "id": "new:cp-1", "equipment": "new:eq-1",
+         "direction": "outlet", "medium": "s223:Fluid-Water"},
+        {"op": "create_connection_point", "id": "new:cp-2", "equipment": "new:eq-2",
+         "direction": "inlet", "medium": "s223:Fluid-Water"},
+    ]
+    connect = {"op": "create_connection", "from_point": "new:cp-1", "to_point": "new:cp-2"}
+    # Unrelated equipment cannot map its ports to each other.
+    bad = [*create, {"op": "update_connection_point", "id": "new:cp-1", "maps_to": "new:cp-2"}]
+
+    def full_retry(messages):
+        feedback = messages[-1]["content"]
+        assert "has NOT been applied" in feedback
+        assert "COMPLETE replacement operation list" in feedback
+        assert "every required create operation" in feedback
+        assert p.head() == base and not p.view(base).equipment
+        return {"action": "propose", "operations": [*create, connect]}
+
+    # Reproduce a model treating its rejected answer as already applied before it recovers.
+    llm = ScriptedLLM([
+        {"action": "propose", "operations": [*bad, connect]},
+        {"action": "propose", "operations": [
+            {"op": "update_connection_point", "id": "new:cp-1", "maps_to": None}, connect,
+        ]},
+        full_retry,
+    ])
+    events = []
+    out = run_correction(p, llm, guidance, base, SelectionScope(), "Connect the pumps", None,
+                         lambda *event: events.append(event), CancelToken(), build_from_sources=True)
+    rejected = [data["problems"] for stage, _, data in events if stage == "rejected"]
+    assert len(rejected) == 2
+    assert any("can only map to a connection point" in problem for problem in rejected[0])
+    assert any("no connection_point with id 'new:cp-1'" in problem for problem in rejected[1])
+    assert out.proposal is not None and p.head() == base
+    rev = p.apply_proposal(out.proposal.id)
+    view = p.view(rev.id)
+    assert len(view.equipment) == 2 and len(view.connections) == 1
+    assert len(view.connection_points) == 2
+
+
+def test_pending_proposal_retry_preserves_saved_operations(sample_project, guidance):
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+
+    def corrected_reply(messages):
+        feedback = messages[-1]["content"]
+        assert "COMPLETE replacement list of additional operations" in feedback
+        assert "do not repeat the saved proposal" in feedback
+        return {"action": "propose", "operations": [
+            {"op": "update_point", "id": point.id, "unit": "unit:MicroS-PER-CentiM"},
+        ]}
+
+    llm = ScriptedLLM([
+        {"action": "propose", "operations": [{"op": "update_point", "id": "pt-missing", "unit": "unit:PSI"}]},
+        corrected_reply,
+    ])
+    out = run_correction(p, llm, guidance, p.head(), prior.selection, "Also fix the unit", None,
+                         lambda *_: None, CancelToken(), prior_proposal=prior)
+    assert out.proposal is not None and len(out.proposal.operations) == 2
+    rev = p.apply_proposal(out.proposal.id)
+    row = p.view(rev.id).rows()[point.id]
+    assert row.label == "Old suggestion" and row.unit.iri.endswith("MicroS-PER-CentiM")
+
+
+def test_pending_proposal_tools_inspect_the_draft(workspace, guidance):
+    p = workspace.create("Draft lookup", "brick")
+    base = p.head()
+    prior = run_correction(p, ScriptedLLM([{"action": "propose", "operations": [
+        {"op": "create_equipment", "label": "Draft AHU", "type": "brick:AHU"},
+    ]}]), guidance, base, SelectionScope(), "Add an AHU", None, lambda *_: None,
+        CancelToken(), build_from_sources=True).proposal
+    equipment_id = prior.operations[0].id
+
+    def inspect_relations(messages):
+        assert equipment_id in messages[-1]["content"]
+        assert "Draft AHU" in messages[-1]["content"]
+        return {"action": "relations_for", "args": {"entity_id": equipment_id}}
+
+    def revise(messages):
+        assert "no entity" not in messages[-1]["content"]
+        assert "allowed_relations" in messages[-1]["content"]
+        return {"action": "propose", "operations": [
+            {"op": "update_equipment", "id": equipment_id, "label": "Revised AHU"},
+        ]}
+
+    llm = ScriptedLLM([
+        {"action": "find_entities", "args": {"query": "Draft AHU"}}, inspect_relations, revise,
+    ])
+    out = run_correction(p, llm, guidance, base, prior.selection, "Rename that AHU", None,
+                         lambda *_: None, CancelToken(), prior_proposal=prior)
+    assert out.proposal is not None and len(out.proposal.operations) == 2
+    assert p.head() == base and not p.view(base).equipment
+    revision = p.apply_proposal(out.proposal.id)
+    assert [e.label for e in p.view(revision.id).equipment] == ["Revised AHU"]
+
+
+def test_reconsider_choices_do_not_dismiss_the_pending_proposal(sample_project, guidance):
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    out, _ = _reconsider(p, guidance, prior, {
+        "action": "propose", "operations": [], "choices": [{"question": "Which name?", "options": [
+            {"label": "Keep", "operations": []},
+            {"label": "Rename", "operations": [{"op": "update_point", "id": point.id, "label": "Another name"}]},
+        ]}],
+    })
+    assert out.choices and out.dismissed_proposal_id is None
+    assert p.proposal(prior.id).status == "pending"
+
+
+@pytest.mark.parametrize("stage", ["model_reply", "validated"])
+def test_cancellation_before_saving_keeps_the_original_draft(sample_project, guidance, stage):
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    token = CancelToken()
+    original_ids = {prop.id for prop in p.proposals()}
+
+    def reply(messages):
+        if stage == "model_reply":
+            token.cancel()
+        return {"action": "propose", "operations": [
+            {"op": "update_point", "id": point.id, "unit": "unit:MicroS-PER-CentiM"},
+        ]}
+
+    def progress(current, *_):
+        if stage == "validated" and current == "validated":
+            token.cancel()
+
+    with pytest.raises(Cancelled):
+        run_correction(p, ScriptedLLM([reply]), guidance, p.head(), prior.selection, "Fix the unit", None,
+                       progress, token, prior_proposal=prior)
+    assert p.proposal(prior.id).status == "pending"
+    assert {prop.id for prop in p.proposals()} == original_ids
+
+
+def test_reconsider_cannot_dismiss_a_draft_after_the_head_changes(sample_project, guidance):
+    from workbench.operations import OperationList
+    from workbench.project import StaleRevision
+
+    p = sample_project
+    point, prior = _pending_rename(p, guidance)
+    base = p.head()
+
+    def changed_head(messages):
+        p.edit(p.head(), OperationList.validate_python([
+            {"op": "update_point", "id": point.id, "label": "Concurrent change"},
+        ]))
+        return {"action": "propose", "operations": [], "explanation": "Already resolved."}
+
+    with pytest.raises(StaleRevision):
+        run_correction(p, ScriptedLLM([changed_head]), guidance, base, prior.selection, "Recheck", None,
+                       lambda *_: None, CancelToken(), prior_proposal=prior, reconsider=True)
+    assert p.proposal(prior.id).status == "stale"
+
+
+def test_reply_can_remove_a_relationship_created_by_the_pending_draft(workspace, guidance):
+    from workbench.projection import project as project_view
+
+    p = workspace.create("Draft relation", "brick")
+    base = p.head()
+    prior = run_correction(p, ScriptedLLM([{"action": "propose", "operations": [
+        {"op": "create_entity", "id": "new:room", "label": "Room", "type": "rec:Room"},
+        {"op": "create_entity", "id": "new:wall", "label": "Wall", "type": "rec:Wall"},
+        {"op": "relate", "subject": "new:room", "relation": "rec:adjacentElement", "object": "new:wall"},
+    ]}]), guidance, base, SelectionScope(), "Add room and wall", None, lambda *_: None,
+        CancelToken(), build_from_sources=True).proposal
+    preview = p.build_candidate(base, prior.operations, prior.selection, lock=False)
+    relationship = project_view(preview.after, p.vocab).relationships[0]
+    out = run_correction(p, ScriptedLLM([{"action": "propose", "operations": [
+        {"op": "unrelate", "id": relationship.id},
+    ]}]), guidance, base, prior.selection, "Remove that relationship", None, lambda *_: None,
+        CancelToken(), prior_proposal=prior)
+    assert out.proposal is not None and p.head() == base
+    revision = p.apply_proposal(out.proposal.id)
+    view = p.view(revision.id)
+    assert len(view.spaces) == 1 and len(view.entities) == 1 and not view.relationships

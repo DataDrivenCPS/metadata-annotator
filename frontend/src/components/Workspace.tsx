@@ -9,6 +9,7 @@ import { ConnectionPointsTable, ConnectionsTable, EquipmentTable, PointsTable, S
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
 import { ViewTable } from './ViewTable'
+import { TokenStatus } from './TokenStatus'
 
 const MIN_MODEL_WIDTH = 360
 const HANDLE = 6
@@ -28,7 +29,7 @@ function usePaneSize(key: string, fallback: number, min: number, max: () => numb
 }
 
 /** Import and export, out of the way of the project status in the top bar. */
-function FileMenu({ onImport, items }: { onImport: () => void; items: { label: string; hint: string; href: string }[] }) {
+function FileMenu({ onImport, importDisabled, items }: { onImport: () => void; importDisabled: boolean; items: { label: string; hint: string; href: string }[] }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -42,7 +43,7 @@ function FileMenu({ onImport, items }: { onImport: () => void; items: { label: s
   return <div className="menu" ref={ref}>
     <button aria-haspopup="menu" aria-expanded={open} className={open ? 'active' : ''} onClick={() => setOpen(!open)}>File ▾</button>
     {open && <div className="menu-list" role="menu">
-      <button role="menuitem" onClick={() => { setOpen(false); onImport() }}>
+      <button role="menuitem" disabled={importDisabled} onClick={() => { setOpen(false); onImport() }}>
         Import Turtle model…<span className="menu-hint">Merge a .ttl file into this project</span>
       </button>
       <hr />
@@ -72,7 +73,8 @@ export function Workspace() {
   const viewRevision = useStore((s) => s.viewRevision)
   const views = useStore((s) => s.views)
   const redo = useStore((s) => s.redo)
-  const reload = useStore((s) => s.reload)
+  const importModel = useStore((s) => s.importModel)
+  const reconcile = useStore((s) => s.reconcile)
   const notify = useStore((s) => s.notify)
   const sourcesOpen = useStore((s) => s.sourcesOpen)
   const toggleSources = useStore((s) => s.toggleSources)
@@ -88,9 +90,20 @@ export function Workspace() {
 
   useEffect(() => {
     const es = new EventSource(api.eventsUrl(projectId))
-    es.onmessage = (m) => { try { handleEvent(JSON.parse(m.data)) } catch { /* ignore keepalives */ } }
-    return () => es.close()
-  }, [projectId, handleEvent])
+    let disposed = false
+    es.onopen = () => {
+      if (!disposed && useStore.getState().projectId === projectId) {
+        void reconcile().catch((err) => {
+          if (!disposed) notify({ kind: 'error', text: `Could not refresh project: ${(err as Error).message}` })
+        })
+      }
+    }
+    es.onmessage = (m) => {
+      if (disposed || useStore.getState().projectId !== projectId) return
+      try { handleEvent(JSON.parse(m.data)) } catch { /* ignore keepalives */ }
+    }
+    return () => { disposed = true; es.close() }
+  }, [projectId, handleEvent, reconcile, notify])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -135,9 +148,10 @@ export function Workspace() {
           {dismissedCount > 0 && <span className="muted"> · {dismissedCount} dismissed</span>}
         </button>}
         <span className="spacer" />
+        <TokenStatus key={projectId} projectId={projectId} />
         <button onClick={() => void undo()} disabled={!!viewing || !model.info.can_undo} title="Undo (Ctrl+Z)">Undo</button>
         <button onClick={() => void redo()} disabled={!!viewing || !model.info.can_redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
-        <FileMenu onImport={() => fileInput.current?.click()} items={[
+        <FileMenu importDisabled={!!viewing} onImport={() => fileInput.current?.click()} items={[
           { label: 'Export Turtle (.ttl)', hint: `The model at ${model.revision.id}`, href: api.exportUrl(projectId, model.revision.id, 'ttl') },
           { label: 'Export point table (.csv)', hint: `Points at ${model.revision.id}, with measurement, unit, equipment and sensor type`,
             href: api.exportUrl(projectId, model.revision.id, 'csv') },
@@ -145,9 +159,8 @@ export function Workspace() {
         <input ref={fileInput} type="file" accept=".ttl,.turtle" hidden onChange={async (e) => {
           const f = e.target.files?.[0]
           e.target.value = ''
-          if (!f) return
-          try { const r = await api.importModel(projectId, f); await reload(); notify({ kind: 'success', text: r.summary }) }
-          catch (err) { notify({ kind: 'error', text: `Import failed: ${(err as Error).message}` }) }
+          if (!f || useStore.getState().viewing || useStore.getState().projectId !== projectId) return
+          await importModel(f)
         }} />
       </header>
       {viewing && <div className="viewing-banner">

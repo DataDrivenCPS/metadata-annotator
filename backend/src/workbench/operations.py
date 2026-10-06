@@ -39,6 +39,7 @@ from .projection import (
     owner_of_port,
     paired_port,
     point_owner,
+    project as project_view,
     port_connections,
     port_direction,
     port_id,
@@ -365,6 +366,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
     unknown_terms: list[tuple[str, str, str | None]] = []
     placeholders: dict[str, str] = {}
     created: dict[str, str] = {}  # id -> kind, for entities created earlier in the list
+    created_relationships: set[str] = set()
     deleted: set[str] = set()
     out = []
     allowed = FAMILY_FIELDS[vocab.family]
@@ -413,7 +415,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             continue
         if kind == "relationship":
             if op.op == "unrelate":
-                if data["id"] in deleted or entity_kind(pg, vocab, data["id"]) != "relationship":
+                if data["id"] in deleted or (data["id"] not in created_relationships
+                                             and entity_kind(pg, vocab, data["id"]) != "relationship"):
                     problems.append(f"{where}: no relationship with id {data['id']!r}")
                     continue
                 deleted.add(data["id"])
@@ -439,6 +442,12 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                     continue
                 obj = term
             data.update(subject=subj, relation=rel, object=obj)
+            # A reply can remove a relation introduced earlier by its saved draft.
+            subject_iri = pg.iri(subj) or pg.ns[subj]
+            object_iri = URIRef(obj) if ":" in obj else (pg.iri(obj) or pg.ns[obj])
+            rid = relationship_id(relationship_key(vocab, subject_iri, URIRef(rel), object_iri))
+            created_relationships.add(rid)
+            deleted.discard(rid)
             out.append(type(op).model_validate(data))
             continue
         if vocab.family == "s223" and "process" in data and not vocab.namespaces.get("watr"):
@@ -447,6 +456,9 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
 
         if op.op.startswith("create_"):
             raw = data.get("id")
+            if raw and raw.startswith(PLACEHOLDER) and raw in placeholders:
+                problems.append(f"{where}: placeholder {raw!r} is already defined by an earlier create operation")
+                continue
             if raw and not raw.startswith(PLACEHOLDER):
                 if pg.iri(raw) is not None or raw in created or entity_kind(pg, vocab, raw) is not None:
                     problems.append(f"{where}: id {raw!r} already exists")
@@ -1166,7 +1178,39 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
                 instead = vocab.term(t.replaced_by) if t.replaced_by else None
                 result.notes.append(f"{t.label} ({vocab.curie(value)}) is deprecated or superseded in the loaded vocabulary"
                                     + (f"; use {instead.label} ({vocab.curie(instead.iri)}) instead" if instead else ""))
+        # Generic relations can write any of the typed fields, in either direction.
+        # Compare their projections so ownership follows the same RDF rules as the tables.
+        before_rows = project_view(pg, vocab).rows() if op.op in ("relate", "unrelate") else None
+        confirmed_rows = None
+        if op.op == "relate":
+            s, p = comp.any_node(op.subject), URIRef(op.relation)
+            o = URIRef(op.object) if ":" in op.object else comp.any_node(op.object)
+            term = vocab.term(str(p))
+            existing = ((s, p, o) in pg.model
+                        or (term is not None and term.symmetric and (o, p, s) in pg.model)
+                        or (term is not None and term.inverse and (o, URIRef(term.inverse), s) in pg.model))
+            if existing:
+                # Reconfirming an existing value is still a person's assignment.
+                probe = pg.copy()
+                probe.model.remove((s, p, o))
+                if term is not None and term.symmetric:
+                    probe.model.remove((o, p, s))
+                if term is not None and term.inverse:
+                    probe.model.remove((o, URIRef(term.inverse), s))
+                confirmed_rows = project_view(probe, vocab).rows()
         getattr(comp, op.op)(op)
+        if before_rows is not None:
+            for eid, row in project_view(pg, vocab).rows().items():
+                before = before_rows.get(eid)
+                if before is None:
+                    continue
+                kind = entity_kind(pg, vocab, eid)
+                for name in LOCKABLE_FIELDS.get(kind, set()):
+                    value = getattr(row, name, None)
+                    confirmed = confirmed_rows.get(eid) if confirmed_rows is not None else None
+                    if (getattr(before, name, None) != value
+                            or (confirmed is not None and getattr(confirmed, name, None) != value)):
+                        result.touch(eid, name)
     problems = list(getattr(comp, "problems", []))
     if isinstance(comp, _Compiler):
         comp.check_ports()

@@ -136,6 +136,7 @@ export function GraphView() {
   const click = useStore((s) => s.click)
   const clearSelection = useStore((s) => s.clearSelection)
   const [positions, setPositions] = useState<Record<string, [number, number]>>(model.layout)
+  const [measurements, setMeasurements] = useState<Record<string, Node['measured']>>({})
   const savedRef = useRef(model.layout)
   const spaces = useMemo(() => model.view.spaces ?? [], [model])
   const [showSpaces, setShowSpaces] = useState(true)
@@ -174,12 +175,12 @@ export function GraphView() {
   const at = (id: string) => ({ x: positions[id]?.[0] ?? 0, y: positions[id]?.[1] ?? 0 })
   const nodes: Node<EqNodeData | SpaceNodeData>[] = [
     ...model.view.equipment.map((row) => ({
-      id: row.id, type: 'equipment', position: at(row.id),
+      id: row.id, type: 'equipment', position: at(row.id), measured: measurements[row.id],
       data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
       selected: isSelected(selection, row.id),
     })),
     ...(withSpaces ? spaces.map((row) => ({
-      id: row.id, type: 'space', position: at(row.id),
+      id: row.id, type: 'space', position: at(row.id), measured: measurements[row.id],
       data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
       selected: isSelected(selection, row.id),
     })) : []),
@@ -231,13 +232,21 @@ export function GraphView() {
         onPaneClick={() => clearSelection()}
         onNodesChange={(changes) => {
           const moved: Record<string, [number, number]> = {}
-          for (const ch of changes) if (ch.type === 'position' && ch.position) moved[ch.id] = [ch.position.x, ch.position.y]
+          const measured: Record<string, Node['measured']> = {}
+          for (const ch of changes) {
+            if (ch.type === 'position' && ch.position) moved[ch.id] = [ch.position.x, ch.position.y]
+            if (ch.type === 'dimensions' && ch.dimensions) measured[ch.id] = ch.dimensions
+          }
+          // Controlled nodes must retain measured sizes: dropping them on a drag
+          // resets React Flow's handle bounds and restarts resize observation.
+          if (Object.keys(measured).length) setMeasurements((m) => ({ ...m, ...measured }))
           if (Object.keys(moved).length) setPositions((p) => ({ ...p, ...moved }))
         }}
-        onNodeDragStop={(_, node) => {
-          const pos: [number, number] = [node.position.x, node.position.y]
-          savedRef.current = { ...savedRef.current, [node.id]: pos }
-          void api.saveLayout(projectId, { [node.id]: pos })
+        onNodeDragStop={(_, __, dragged) => {
+          const moved: Record<string, [number, number]> = {}
+          for (const node of dragged) moved[node.id] = [node.position.x, node.position.y]
+          savedRef.current = { ...savedRef.current, ...moved }
+          void api.saveLayout(projectId, moved)
         }}
       >
         <Background />

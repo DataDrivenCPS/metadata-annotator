@@ -28,6 +28,7 @@ from ..llm import CancelToken, LLMClient, LLMError, context_window, reply_tokens
 from ..llm.base import REPLY_TOKENS
 from ..project import Project, StaleRevision
 from ..projection import project as project_view
+from ..questions import readable_questions
 from ..schemas import ChangeProposal, EvidenceRef, IssueDismissal, SelectionScope
 from .guidance import SkillGuidance
 from .tools import AgentTools, curie, entity_line
@@ -831,7 +832,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             continue
 
         outcome.explanation = str(data.get("explanation") or "")
-        outcome.questions = [str(q) for q in data.get("questions") or []]
+        outcome.questions = readable_questions(data.get("questions"))
         outcome.choices = [{"question": str(c.get("question") or ""),
                             "options": [{"label": str(o.get("label") or ""), "operations": list(o.get("operations") or [])}
                                         for o in c.get("options") or [] if isinstance(o, dict)]}

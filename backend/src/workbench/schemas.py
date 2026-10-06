@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .operations import Operation
+from .questions import readable_questions
 
 
 def now() -> str:
@@ -190,6 +191,11 @@ class ChangeProposal(BaseModel):
     # The repair engine's soundness gate on this change: sound, progress, fixed, introduced.
     gate: dict[str, Any] | None = None
 
+    @field_validator("questions", mode="before")
+    @classmethod
+    def normalize_questions(cls, value: Any) -> list[str]:
+        return readable_questions(value)
+
 
 # ------------------------------------------------------------------- issues
 
@@ -238,3 +244,10 @@ class AgentRun(BaseModel):
     error: str | None = None
     created_at: str = Field(default_factory=now)
     finished_at: str | None = None
+
+    @field_validator("outcome", mode="before")
+    @classmethod
+    def normalize_outcome_questions(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "questions" in value:
+            return {**value, "questions": readable_questions(value["questions"])}
+        return value

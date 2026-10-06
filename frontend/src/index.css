@@ -237,7 +237,8 @@ pre.code { background: #f6f8fa; border: 1px solid var(--border); border-radius: 
 .needs-input-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: #6f42c1; }
 .needs-input-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #8250df; color: white; font-size: 12px; }
 .needs-input ul { margin: 6px 0; padding-left: 20px; }
-.needs-input li { margin: 3px 0; line-height: 1.45; }
+.needs-input li { margin: 3px 0; line-height: 1.45; white-space: pre-line; }
+.question { white-space: pre-line; }
 .gate { margin: 8px 0; padding: 6px 8px; border-radius: 6px; font-size: 12px; }
 .gate.sound { background: #eef8f0; color: var(--ok); }
 .gate.unsound { background: #fff4e5; color: var(--warn); }

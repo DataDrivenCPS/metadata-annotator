@@ -675,3 +675,16 @@ def test_reply_can_remove_a_relationship_created_by_the_pending_draft(workspace,
     revision = p.apply_proposal(out.proposal.id)
     view = p.view(revision.id)
     assert len(view.spaces) == 1 and len(view.entities) == 1 and not view.relationships
+
+
+def test_structured_question_is_readable_without_publishing(sample_project, guidance):
+    head = sample_project.head()
+    llm = ScriptedLLM([{
+        "action": "propose", "operations": [],
+        "questions": [{"question": "Which equipment type?", "type": "choice",
+                       "options": [{"label": "Tank", "operations": []}]}],
+    }])
+    outcome, _ = run(sample_project, llm, guidance, SelectionScope(), "Identify the equipment")
+    assert outcome.questions == ["Which equipment type?\n• Tank"]
+    assert outcome.proposal is None
+    assert sample_project.head() == head

@@ -15,6 +15,7 @@ from .config import Settings
 from .events import EventBus
 from .llm import Cancelled, CancelToken, LLMError, make_client
 from .project import Project, StaleRevision
+from .questions import readable_questions
 from .schemas import AgentRun, ChangeProposal, ProgressEvent, SelectionScope, SourceRegion, now
 from .sources import SourceError
 
@@ -307,7 +308,9 @@ class RunManager:
             run.outcome = {
                 "proposal_id": proposal.id if proposal else None,
                 "dismissed_proposal_id": getattr(outcome, "dismissed_proposal_id", None),
-                "questions": getattr(outcome, "questions", []),
+                "questions": readable_questions(getattr(outcome, "questions", [])) + (
+                    readable_questions(getattr(outcome, "choices", []))
+                    if not proposal and not hasattr(outcome, "autofix") else []),
                 "explanation": getattr(outcome, "explanation", ""),
                 "steps": getattr(outcome, "steps", 0),
                 "input_tokens": run.outcome.get("input_tokens", getattr(outcome, "input_tokens", 0)),

@@ -93,3 +93,14 @@ def test_usage_endpoint_returns_all_recorded_runs(tmp_path, monkeypatch):
         }
     finally:
         app.state.runs.pool.shutdown()
+
+
+def test_choice_only_response_is_visible_in_chat_and_history(manager):
+    from workbench.runs import run_reply_text
+
+    run = make_run("correction")
+    choice = {"question": "Which type?", "options": [{"label": "Tank", "operations": []}]}
+    manager._execute(None, run, CancelToken(), lambda progress: SimpleNamespace(choices=[choice]))
+    assert run.status == "succeeded"
+    assert run.outcome["questions"] == ["Which type?\n• Tank"]
+    assert "Which type?\n• Tank" in run_reply_text(run)

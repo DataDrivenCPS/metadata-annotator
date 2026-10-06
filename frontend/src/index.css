@@ -413,6 +413,10 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .autofix-group.failed { border-left-color: var(--bad); }
 .autofix-group.fixed { border-left-color: var(--ok); }
 .autofix-actions { display: flex; gap: 10px; }
+.autofix-group.choice { border-left-color: var(--accent); }
+.autofix-choice { margin: 3px 0; }
+.autofix-options { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
+.autofix-options button { font-size: 12px; padding: 2px 8px; }
 .autofix-banner.done { border-color: var(--ok); background: #f6fbf7; }
 .autofix-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .autofix-head .spacer { flex: 1; }

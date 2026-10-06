@@ -128,11 +128,16 @@ export function formatDuration(ms: number): string {
 // ------------------------------------------------------------------ auto-fix
 
 /** How auto-fix left a group of issues (backend autofix.py): fixed automatically after its checks
- * passed, a proposal to review, the assistant's questions, a failure, or already fixed. */
-export type AutofixStatus = 'fixed' | 'review' | 'input' | 'failed' | 'resolved'
+ * passed, options to choose from, a proposal to review, the assistant's questions, a failure, or
+ * already fixed. */
+export type AutofixStatus = 'fixed' | 'choice' | 'review' | 'input' | 'failed' | 'resolved'
+/** An option is a checked pending proposal: choosing it applies it. */
+export interface AutofixOption { label: string; proposal_id: string; note?: string }
+export interface AutofixChoice { question: string; options: AutofixOption[] }
 export interface AutofixGroup {
   issues: string[]; explanations: string[]; status: AutofixStatus; reasons?: string[]
   proposal_id?: string; revision?: string; explanation?: string; questions?: string[]
+  choices?: AutofixChoice[]
 }
 export interface AutofixState { runId: string }
 

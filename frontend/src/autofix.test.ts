@@ -28,6 +28,8 @@ vi.mock('./api', () => ({
     cancelRun: vi.fn(async () => run('cancelled')),
     undo: vi.fn(async () => { head = `rev-${Number(head.slice(4)) - 1}`; return { head } }),
     proposal: vi.fn(async (_pid: string, id: string) => ({ id, status: 'pending' })),
+    applyProposal: vi.fn(async () => ({ id: 'rev-4' })),
+    dismissProposal: vi.fn(async () => ({})),
   },
 }))
 
@@ -74,5 +76,14 @@ describe('auto-fix', () => {
   it('opens a proposal left for review', async () => {
     await useStore.getState().reviewProposal('prop-7')
     expect(useStore.getState().proposal?.id).toBe('prop-7')
+  })
+
+  it('choosing an option applies it and discards the others', async () => {
+    const choice = { question: 'Which unit for CT-201?', options: [
+      { label: 'µS/cm', proposal_id: 'prop-a' }, { label: 'S/m', proposal_id: 'prop-b' }] }
+    await useStore.getState().chooseOption(choice, 'prop-a')
+    expect(vi.mocked(api.applyProposal).mock.calls[0][1]).toBe('prop-a')
+    expect(vi.mocked(api.dismissProposal).mock.calls.map((c) => c[1])).toEqual(['prop-b'])
+    expect(useStore.getState().proposalStates).toMatchObject({ 'prop-a': 'applied', 'prop-b': 'dismissed' })
   })
 })

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
   autofixReport, continuation, isActive, issueSelection, issuesPrompt, proposalStates, threadRuns,
-  type AutofixState, type ProposalState,
+  type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
@@ -83,6 +83,8 @@ interface State {
   undoAutofix: () => Promise<void>
   /** Open a proposal auto-fix left for review in the assistant panel. */
   reviewProposal: (proposalId: string) => Promise<void>
+  /** Pick an auto-fix option: apply its proposal (the person confirmed it) and discard the others. */
+  chooseOption: (choice: AutofixChoice, proposalId: string) => Promise<void>
   viewRevision: (revision: string | null) => Promise<void>
 }
 
@@ -440,6 +442,26 @@ export const useStore = create<State>((set, get) => ({
     if (!projectId) return
     const proposal = await api.proposal(projectId, proposalId)
     set({ proposal, proposalStates: { ...get().proposalStates, [proposal.id]: proposal.status } })
+  },
+
+  chooseOption: async (choice, proposalId) => {
+    const { projectId } = get()
+    if (!projectId || readOnly()) return
+    set({ busy: true })
+    try {
+      const rev = await api.applyProposal(projectId, proposalId)
+      const others = choice.options.map((o) => o.proposal_id).filter((id) => id !== proposalId)
+      await Promise.all(others.map((id) => api.dismissProposal(projectId, id).catch(() => {})))
+      set({ proposalStates: { ...get().proposalStates, [proposalId]: 'applied',
+                              ...Object.fromEntries(others.map((id) => [id, 'dismissed' as const])) } })
+      await get().reload()
+      const label = choice.options.find((o) => o.proposal_id === proposalId)?.label ?? 'the option'
+      get().notify({ kind: 'success', text: `Applied ${label} as ${rev.id}`, action: { label: 'Undo', run: () => void get().undo() } })
+    } catch (e) {
+      get().notify({ kind: 'error', text: `Could not apply: ${errorText(e)}` })
+    } finally {
+      set({ busy: false })
+    }
   },
 
   viewRevision: async (viewing) => {

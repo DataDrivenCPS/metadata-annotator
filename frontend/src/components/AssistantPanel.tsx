@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, isActive,
-  issuesOnSelection, startsExchange, summarizeChanges, threadRuns, type AutofixGroup, type AutofixStatus,
+  issuesOnSelection, startsExchange, summarizeChanges, threadRuns, type AutofixChoice, type AutofixGroup, type AutofixStatus,
   type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
@@ -158,7 +158,23 @@ function Composer() {
 }
 
 const STATUS_TEXT: Record<AutofixStatus, string> = {
-  fixed: 'fixed automatically', review: 'to review', input: 'need your input', failed: 'failed', resolved: 'already fixed',
+  fixed: 'fixed automatically', choice: 'need your choice', review: 'to review', input: 'need your input',
+  failed: 'failed', resolved: 'already fixed',
+}
+
+/** One question with its options as buttons; once one is applied, just the answer. */
+function ChoiceButtons({ choice }: { choice: AutofixChoice }) {
+  const choose = useStore((s) => s.chooseOption)
+  const states = useStore((s) => s.proposalStates)
+  const busy = useStore((s) => s.busy)
+  const chosen = choice.options.find((o) => states[o.proposal_id] === 'applied')
+  return <div className="autofix-choice">
+    <div className="small">{choice.question}</div>
+    {chosen ? <div className="small">✓ {chosen.label}</div>
+      : <div className="autofix-options">{choice.options.map((o) => <button key={o.proposal_id} disabled={busy}
+          title={o.note ? `Applies this choice; ${o.note}` : 'Applies this choice'}
+          onClick={() => void choose(choice, o.proposal_id)}>{o.label}{o.note && <span className="muted"> · {o.note}</span>}</button>)}</div>}
+  </div>
 }
 
 /** One group of issues in the auto-fix report, with what the person can do about it. */
@@ -174,14 +190,16 @@ function AutofixGroupLine({ group }: { group: AutofixGroup }) {
       {title}{group.explanations.length > 1 && <span className="muted"> (+{group.explanations.length - 1} like it)</span>}
     </div>
     {group.status === 'fixed' && group.explanation && <div className="muted small">{group.explanation}</div>}
-    {group.status !== 'fixed' && !!group.reasons?.length && <div className="muted small">Why not automatic: {group.reasons.join('; ')}</div>}
-    {group.questions?.map((q) => <div key={q} className="small">❓ {q}</div>)}
+    {group.status !== 'fixed' && group.status !== 'choice' && !!group.reasons?.length &&
+      <div className="muted small">Why not automatic: {group.reasons.join('; ')}</div>}
+    {group.status === 'choice' ? group.choices?.map((c, k) => <ChoiceButtons key={k} choice={c} />)
+      : group.questions?.map((q) => <div key={q} className="small">❓ {q}</div>)}
     <div className="autofix-actions">
       {group.status === 'review' && group.proposal_id && (proposal?.id === group.proposal_id
         ? <span className="muted small">shown below</span>
         : <button className="link" onClick={() => void reviewProposal(group.proposal_id!)}>Review the proposal</button>)}
-      {(group.status === 'input' || group.status === 'failed') && open.length > 0 &&
-        <button className="link" onClick={() => addIssuesToPrompt(open)}>Discuss in chat</button>}
+      {(group.status === 'input' || group.status === 'failed' || group.status === 'choice') && open.length > 0 &&
+        <button className="link" onClick={() => addIssuesToPrompt(open)}>{group.status === 'choice' ? 'Something else… (chat)' : 'Discuss in chat'}</button>}
     </div>
   </li>
 }
@@ -210,7 +228,7 @@ function AutofixBanner() {
     </div>
   }
   const byStatus = (st: AutofixStatus) => groups.filter((g) => g.status === st)
-  const pending = [...byStatus('review'), ...byStatus('input'), ...byStatus('failed')]
+  const pending = [...byStatus('choice'), ...byStatus('review'), ...byStatus('input'), ...byStatus('failed')]
   return <div className={`autofix-banner ${run.status === 'succeeded' ? 'done' : 'failed'}`}>
     <div className="autofix-head">
       <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>

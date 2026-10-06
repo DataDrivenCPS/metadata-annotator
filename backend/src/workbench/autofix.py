@@ -13,11 +13,12 @@ issue with the same cause. For each group the assistant proposes a fix on the cu
 - it is minimal: without any one of its operations (or updated fields) the issues would not
   all be resolved, so nothing rides along with the fix (a "while I'm here" change).
 
-An obvious fix is applied at once as an automatic (unlocked) revision; anything else is left
-as a proposal for review, or as the assistant's questions when it needs input. Groups run one
+An obvious fix is applied at once as an automatic (unlocked) revision. A group that needs a
+decision gets options to pick from (see "choices" below); anything else is left as a proposal
+for review, or as the assistant's questions when it needs input. Groups run one
 after another on the newest revision, so each sees the fixes before it.
 
-Interface: ``group_issues``, ``verify`` and ``run_autofix``.
+Interface: ``group_issues``, ``verify``, ``ungrounded_terms`` and ``run_autofix``.
 """
 
 from __future__ import annotations
@@ -90,8 +91,9 @@ def selection_for(issues: list[ReviewIssue], rows: dict[str, Any]) -> SelectionS
 
 # ---------------------------------------------------------------- verifying
 
-def verify(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue]) -> list[str]:
-    """Why this proposal is not an obvious fix for these issues; empty when it is."""
+def verify(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue], chosen: bool = False) -> list[str]:
+    """Why this proposal is not an obvious fix for these issues; empty when it is. ``chosen``: an
+    option the person picks, so its choices need no other grounding and it asks nothing."""
     reasons: list[str] = []
     if not proposal.operations:
         return ["it changes nothing" + (" (it dismisses the issues instead)" if proposal.issue_dismissals else "")]
@@ -109,11 +111,11 @@ def verify(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue]
         reasons.append(f"it changes other objects: {', '.join(outside[:3])}")
     if locked := [c.label for c in proposal.changes if c.overrides_locked]:
         reasons.append(f"it overrides your edits on {', '.join(locked[:3])}")
-    if proposal.questions:
+    if proposal.questions and not chosen:
         reasons.append("the assistant has questions")
     reasons += proposal.notes
-    if ungrounded := _ungrounded_terms(project, proposal, issues):
-        reasons.append("it chooses " + ", ".join(ungrounded[:4])
+    if not chosen and (ungrounded := ungrounded_terms(project, proposal, issues)):
+        reasons.append("it chooses " + ", ".join(project.vocab.curie(t) for _, _, t in ungrounded[:4])
                        + ", which nothing in the model, the issues or the evidence names")
     if not reasons and (extra := _unneeded_parts(project, proposal, issues)):
         reasons.append("it also makes changes the fix does not need: " + ", ".join(extra[:4]))
@@ -154,7 +156,9 @@ def _name(project: Project, proposal: ChangeProposal, eid: str) -> str:
     return getattr(row, "label", eid)
 
 
-def _ungrounded_terms(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue]) -> list[str]:
+def ungrounded_terms(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue]) -> list[tuple[int, str, str]]:
+    """(operation index, field, term) for each vocabulary term the proposal chooses that is not
+    already used in the model, named by the issues, or in the evidence of their objects."""
     vocab, pg = project.vocab, project.graph(proposal.base_revision)
     issue_text = json.dumps([[i.explanation, i.details] for i in issues], default=str).lower()
     evidence_text = ""
@@ -170,10 +174,97 @@ def _ungrounded_terms(project: Project, proposal: ChangeProposal, issues: list[R
         names = {iri.lower(), vocab.curie(iri).lower(), *([t.label.lower(), t.symbol.lower()] if t else [])} - {""}
         return any(n in issue_text for n in names) or any(n in evidence_text for n in names if len(n) > 2)
 
-    terms = {v for op in proposal.operations for k, v in op.model_dump(exclude_unset=True).items()
-             if k in TERM_FIELDS and isinstance(v, str)}
-    terms |= {op.object for op in proposal.operations if op.op == "relate" and ":" in op.object}
-    return sorted(vocab.curie(t) for t in terms if not grounded(t))
+    return [(k, f, v) for k, f, v in _term_choices(proposal) if not grounded(v)]
+
+
+def _term_choices(proposal: ChangeProposal) -> list[tuple[int, str, str]]:
+    out = []
+    for k, op in enumerate(proposal.operations):
+        for f, v in op.model_dump(exclude_unset=True).items():
+            if isinstance(v, str) and (f in TERM_FIELDS or (op.op == "relate" and f == "object" and ":" in v)):
+                out.append((k, f, v))
+    return out
+
+
+# ------------------------------------------------------------------ choices
+#
+# A group that needs a decision is offered options; each option is an ordinary pending proposal
+# (so choosing one is applying it, which locks what it sets: the person confirmed it), checked
+# like an automatic fix except that the person's choice is its grounding. Options come from the
+# assistant (choices with operations) or, when a fix was held back only for a term nothing
+# grounds, from substituting the other candidate terms of that kind and keeping those that work.
+
+MAX_OPTIONS = 6
+
+
+def _option(project: Project, base: str, issues: list[ReviewIssue], ops: list[dict], label: str,
+            selection: SelectionScope, request: str, run_id: str) -> dict | None:
+    """A checked option ({label, proposal_id, note?}), or None when it does not work."""
+    try:
+        cand = project.build_candidate(base, OperationList.validate_python(ops), selection)
+    except (OperationError, ValueError):
+        return None
+    if not cand.diff.added and not cand.diff.removed:
+        return None
+    rev = project.revision(base)
+    prop = project.save_proposal(cand, selection, request, label, [], [], run_id, rev.validation,  # type: ignore[arg-type]
+                                 project.issues(base))
+    return _checked(project, prop, issues, label)
+
+
+def _checked(project: Project, prop: ChangeProposal, issues: list[ReviewIssue], label: str) -> dict | None:
+    reasons = verify(project, prop, issues, chosen=True)
+    remain = [r for r in reasons if r.endswith("of the issues remain")]
+    if reasons and (reasons != remain or len(set(prop.validation.resolved if prop.validation else [])
+                                              & {i.explanation for i in issues}) == 0):
+        project.dismiss_proposal(prop.id)
+        return None
+    return {"label": label, "proposal_id": prop.id, **({"note": remain[0].replace("of the issues", "issue(s)")
+                                                        .replace("remain", "would remain")} if remain else {})}
+
+
+def _model_choices(project: Project, base: str, issues: list[ReviewIssue], choices: list[dict],
+                   selection: SelectionScope, request: str, run_id: str) -> list[dict]:
+    out = []
+    for choice in choices:
+        options = [o for o in (_option(project, base, issues, opt["operations"], opt["label"], selection, request, run_id)
+                               for opt in choice["options"][:MAX_OPTIONS] if opt.get("operations")) if o]
+        if options:
+            out.append({"question": choice["question"], "options": options})
+    return out
+
+
+def _term_alternatives(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue],
+                       run_id: str) -> list[dict]:
+    """The same fix with each candidate term in place of the one term nothing grounds."""
+    ungrounded = ungrounded_terms(project, proposal, issues)
+    if len(ungrounded) != 1:
+        return []
+    k, fname, term = ungrounded[0]
+    vocab, base = project.vocab, proposal.base_revision
+    pg, ops = project.graph(base), [op.model_dump(exclude_unset=True) for op in proposal.operations]
+    kind = vocab.kind_of(term)
+    pool = {str(o) for o in pg.model.objects() if isinstance(o, URIRef) and vocab.kind_of(str(o)) == kind}
+    if fname == "unit":  # the units valid for the point's quantity kind
+        row = project.view(base).rows().get(ops[k].get("id", ""))
+        qk = ops[k].get("quantity_kind") or getattr(getattr(row, "quantity_kind", None), "iri", None)
+        pool |= {t.iri for t in vocab.units_for(qk)} if qk else set()
+    alternatives = [term, *sorted(pool - {term}, key=lambda t: vocab.label(t).lower())][:MAX_OPTIONS + 6]
+    subject = _name(project, proposal, ops[k].get("id") or ops[k].get("subject") or "")
+    options = []
+    for alt in alternatives:
+        label = f"{vocab.label(alt)} ({vocab.curie(alt)})"
+        if alt == term:
+            option = _checked(project, proposal, issues, label)
+        else:
+            trial = [dict(op) for op in ops]
+            trial[k][fname] = alt
+            option = _option(project, base, issues, trial, label, proposal.selection, proposal.instruction, run_id)
+        if option:
+            options.append(option)
+        if len(options) >= MAX_OPTIONS:
+            break
+    return [{"question": f"Which {fname.replace('_', ' ')} for {subject}?", "options": options}] if options else []
 
 
 # ------------------------------------------------------------------ running
@@ -227,21 +318,33 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
             progress("group_done", f"Group {tag}: failed ({exc})", {"group": n, "status": "failed"})
             continue
         record.update(explanation=out.explanation, questions=out.questions)
-        if out.proposal is None:
-            record.update(status="input", reasons=["the assistant needs input" if out.questions else "no change proposed"])
-        else:
+        selection, request = selection_for(group, rows), instruction(group, rows)
+        reasons = verify(project, out.proposal, group) if out.proposal else []
+        if out.proposal is not None and not reasons:
             record["proposal_id"] = out.proposal.id
-            reasons = verify(project, out.proposal, group)
-            if reasons:
-                record.update(status="review", reasons=reasons)
+            try:
+                rev = project.apply_proposal(out.proposal.id, automatic=True)
+                record.update(status="fixed", revision=rev.id, reasons=[])
+            except Exception as exc:  # e.g. the model changed meanwhile: leave it for review
+                record.update(status="review", reasons=[f"could not apply automatically: {exc}"])
+        else:
+            progress("choices", f"{tag} · Checking the options", {"group": n})
+            choices = _model_choices(project, head, group, out.choices, selection, request, run_id)
+            if out.proposal is not None and all(r.startswith("it chooses ") for r in reasons):
+                choices += _term_alternatives(project, out.proposal, group, run_id)
+            offered = {o["proposal_id"] for c in choices for o in c["options"]}
+            if choices:
+                record.update(status="choice", choices=choices, reasons=reasons)
+                if out.proposal is not None and out.proposal.id not in offered:
+                    project.dismiss_proposal(out.proposal.id)
+            elif out.proposal is not None:
+                record.update(status="review", proposal_id=out.proposal.id, reasons=reasons)
             else:
-                try:
-                    rev = project.apply_proposal(out.proposal.id, automatic=True)
-                    record.update(status="fixed", revision=rev.id, reasons=[])
-                except Exception as exc:  # e.g. the model changed meanwhile: leave it for review
-                    record.update(status="review", reasons=[f"could not apply automatically: {exc}"])
+                record.update(status="input", reasons=["the assistant needs input" if out.questions or out.choices
+                                                       else "no change proposed"])
         progress("group_done", f"Group {tag}: {record['status']}", {"group": n, "status": record["status"],
                                                                    "reasons": record.get("reasons", [])})
-    counts = {s: sum(g["status"] == s for g in outcome.groups) for s in ("fixed", "review", "input", "failed", "resolved")}
+    counts = {s: sum(g["status"] == s for g in outcome.groups)
+              for s in ("fixed", "choice", "review", "input", "failed", "resolved")}
     outcome.explanation = ", ".join(f"{v} {k}" for k, v in counts.items() if v) or "nothing to fix"
     return outcome

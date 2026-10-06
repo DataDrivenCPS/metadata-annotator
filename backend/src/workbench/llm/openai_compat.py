@@ -8,6 +8,8 @@ llama-server).
 
 from __future__ import annotations
 
+import logging
+
 import base64
 import json
 from typing import Any
@@ -16,7 +18,7 @@ import httpx
 from urllib.parse import urlparse
 
 from ..config import ProviderConfig
-from .base import CancelToken, ImageInput, LLMError, LLMResult, ProgressFn, parse_reply, retry_malformed
+from .base import CancelToken, ImageInput, LLMError, LLMResult, MalformedOutput, ProgressFn, parse_reply, retry_malformed
 
 
 def unreachable_message(provider: str, base_url: str, exc: object) -> str:
@@ -26,6 +28,12 @@ def unreachable_message(provider: str, base_url: str, exc: object) -> str:
     return (f"Cannot reach model endpoint '{provider}' at {base_url}.{hint}"
             f" or choose another model in the assistant panel. ({exc})")
 
+
+log = logging.getLogger(__name__)
+# Schema-constrained decoding can get stuck emitting whitespace (allowed between JSON tokens)
+# until the token limit; past this many blank characters in a row the reply is abandoned and asked
+# again (retry_malformed).
+RUNAWAY_BLANK = 500
 
 class OpenAICompatClient:
     def __init__(self, cfg: ProviderConfig):
@@ -82,6 +90,7 @@ class OpenAICompatClient:
         text_parts: list[str] = []
         usage: dict[str, Any] = {}
         finish = None
+        blank = 0  # blank characters at the end of the reply so far
         try:
             with httpx.Client(timeout=httpx.Timeout(self.cfg.timeout_s, connect=10.0)) as client:
                 with client.stream("POST", f"{self.base_url}/chat/completions",
@@ -108,7 +117,12 @@ class OpenAICompatClient:
                         for choice in chunk.get("choices") or []:
                             delta = choice.get("delta") or {}
                             if delta.get("content"):
-                                text_parts.append(delta["content"])
+                                piece = delta["content"]
+                                text_parts.append(piece)
+                                blank = blank + len(piece) if not piece.strip() else len(piece) - len(piece.rstrip())
+                                if blank > RUNAWAY_BLANK:  # leaving the stream aborts the generation
+                                    log.warning("%s got stuck emitting blank space; asking again", self.provider)
+                                    raise MalformedOutput("the model got stuck emitting blank space")
                                 if on_progress:
                                     on_progress(sum(map(len, text_parts)))
                             finish = choice.get("finish_reason") or finish
@@ -118,6 +132,7 @@ class OpenAICompatClient:
             raise LLMError(f"{self.provider} timed out after {self.cfg.timeout_s:.0f}s") from None
         text = "".join(text_parts)
         if finish == "length":
+            log.warning("%s ran out of output tokens (%d chars); the reply ended: %r", self.provider, len(text), text[-400:])
             raise LLMError("the model ran out of output tokens before finishing its answer")
         tokens_in, tokens_out = int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
         return LLMResult(data=parse_reply(text, tokens_in, tokens_out), raw_text=text,

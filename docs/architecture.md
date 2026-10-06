@@ -269,13 +269,24 @@ Auto-fix works through issues without asking about each one. It is one backgroun
    is grounded — already used in the model, named by the issue, or in the evidence of the
    objects concerned.
 4. An obvious fix is applied at once as an `autofix` revision ("Automatic fix: …") that locks
-   no fields, since no person confirmed it. Otherwise the group is left as a pending proposal
-   ("review", with the failed checks as reasons), as questions ("input"), or "failed"; later
-   groups still run. Review proposals made stale by later fixes rebase when applied.
+   no fields, since no person confirmed it.
+5. A group that needs a decision gets **choices**: a question with options, each option an
+   ordinary pending proposal checked like an automatic fix except that the person's choice is
+   its grounding (it must still resolve issues, introduce none, stay in scope, delete nothing,
+   be minimal). Options that do not work are dropped before they are shown. They come from
+   the assistant (`choices` in its reply: options with complete operations, for alternatives
+   nothing settles) and from **term substitution**: when a fix is held back only because one
+   term it chose is ungrounded, the same fix is tried with each candidate term of that kind
+   (those used in the model, and for units those valid for the quantity kind). Choosing an
+   option applies its proposal, which locks what it sets, and discards the others.
+6. Otherwise the group is left as a pending proposal ("review", with the failed checks as
+   reasons), as questions ("input"), or "failed"; later groups still run. Proposals made
+   stale by later fixes rebase when applied.
 
 The run's outcome lists the groups and the automatic revisions; the interface shows progress,
-then the report: what to review (opens the proposal), what needs input (discuss in chat), what
-was fixed, and "Undo automatic fixes" while those revisions are still the newest.
+then the report: choices as buttons (with "Something else…" to discuss in chat), what to
+review (opens the proposal), what needs input (discuss in chat), what was fixed, and "Undo
+automatic fixes" while those revisions are still the newest.
 
 Runs execute in a thread pool with cooperative cancellation (checked between steps and
 between streamed tokens; closing the stream aborts generation in llama-server). Progress is

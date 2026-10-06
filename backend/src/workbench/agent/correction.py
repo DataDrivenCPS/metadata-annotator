@@ -168,7 +168,13 @@ Each reply is one JSON object. Start it with "thought": one or two sentences on 
 already know and why the next step is needed. Then either a tool call
   {{"thought": "...", "action": "<tool>", "args": {{...}}}}
 or your final answer
-  {{"thought": "...", "action": "propose", "explanation": "...", "operations": [...], "dismiss_issues": [...], "questions": [...]}}
+  {{"thought": "...", "action": "propose", "explanation": "...", "operations": [...], "dismiss_issues": [...], "questions": [...], "choices": [...]}}
+When the fix depends on a choice between a few alternatives that nothing in the model, the
+vocabulary or the sources settles (which of two units, which pump feeds a tank), do not pick
+one: return no operations for it and instead
+  "choices": [{{"question": "...", "options": [{{"label": "...", "operations": [...]}}, ...]}}]
+with 2-4 options, each with the complete operations for that alternative; the person picks one.
+Use "questions" only when you cannot list the alternatives.
 You have at most {max_steps} replies; each tool result says how many remain.
 
 Tools:
@@ -272,6 +278,14 @@ def step_schema() -> dict:
             }},
             "withdraw_dismissals": {"type": "array", "items": {"type": "string"}},
             "questions": {"type": "array", "items": {"type": "string"}},
+            "choices": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"question": {"type": "string"}, "options": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {"label": {"type": "string"}, "operations": {"type": "array", "items": operation_schema()}},
+                    "required": ["label", "operations"]}}},
+                "required": ["question", "options"],
+            }},
         },
         # Required and first, so constrained decoding makes the model reason before it acts.
         "required": ["thought", "action"],
@@ -472,6 +486,8 @@ class CorrectionOutcome:
     proposal: ChangeProposal | None
     dismissed_proposal_id: str | None = None
     questions: list[str] = field(default_factory=list)
+    # [{"question", "options": [{"label", "operations": [raw operation dicts]}]}], unchecked
+    choices: list[dict[str, Any]] = field(default_factory=list)
     explanation: str = ""
     steps: int = 0
     input_tokens: int = 0
@@ -668,6 +684,10 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
 
         outcome.explanation = str(data.get("explanation") or "")
         outcome.questions = [str(q) for q in data.get("questions") or []]
+        outcome.choices = [{"question": str(c.get("question") or ""),
+                            "options": [{"label": str(o.get("label") or ""), "operations": list(o.get("operations") or [])}
+                                        for o in c.get("options") or [] if isinstance(o, dict)]}
+                           for c in data.get("choices") or [] if isinstance(c, dict)]
         raw_ops = data.get("operations") or []
         token_updates = data.get("token_updates") or []
         if token_updates:
@@ -704,7 +724,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             if reconsider and prior_proposal and not outcome.questions:
                 project.dismiss_proposal(prior_proposal.id)
                 outcome.dismissed_proposal_id = prior_proposal.id
-            progress("done", "The assistant needs more information" if outcome.questions else "No change proposed", {})
+            progress("done", "The assistant offers choices" if outcome.choices else
+                     "The assistant needs more information" if outcome.questions else "No change proposed", {})
             return outcome
         try:
             if source_evidence:

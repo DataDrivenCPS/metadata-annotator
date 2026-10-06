@@ -312,6 +312,34 @@ def test_json_wrapped_in_a_list_is_accepted():
         parse_json_text('[{"a": 1}, {"b": 2}]')
 
 
+def test_a_reply_stuck_on_blank_space_is_abandoned_and_asked_again(monkeypatch):
+    # Schema-constrained decoding can emit whitespace until the token limit (seen with gemma on
+    # OpenRouter: 244k blank characters). The stream is left early and the request repeated.
+    import json as _json
+
+    import httpx
+
+    import workbench.llm.openai_compat as oc
+    from workbench.config import ProviderConfig
+
+    calls = []
+
+    def sse(pieces):
+        body = "".join(f"data: {_json.dumps({'choices': [{'delta': {'content': p}}]})}\n\n" for p in pieces)
+        return body + f"data: {_json.dumps({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})}\n\ndata: [DONE]\n\n"
+
+    def handler(request):
+        calls.append(request)
+        pieces = ['{"action": ', *[" " * 50] * 40, '"x"}'] if len(calls) == 1 else ['{"action": "propose"}']
+        return httpx.Response(200, text=sse(pieces), headers={"content-type": "text/event-stream"})
+
+    real = httpx.Client
+    monkeypatch.setattr(oc.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    client = oc.OpenAICompatClient(ProviderConfig(name="t", kind="openai", model="m", base_url="http://x/v1"))
+    result = client.complete_json("sys", [{"role": "user", "content": "hi"}], {"type": "object"})
+    assert result.data == {"action": "propose"} and len(calls) == 2
+
+
 def test_malformed_replies_are_retried_once_and_counted():
     from workbench.llm import LLMResult
     from workbench.llm.base import MalformedOutput, retry_malformed

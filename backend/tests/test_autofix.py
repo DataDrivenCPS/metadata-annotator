@@ -52,17 +52,42 @@ def test_a_grounded_fix_is_applied_automatically_and_unlocked(sample_project):
     assert ("group_done", "Group 1/1: fixed") in events
 
 
-def test_an_ungrounded_choice_is_left_for_review(sample_project):
+def test_an_ungrounded_choice_becomes_a_choice_between_the_terms_that_work(sample_project):
     p = sample_project
     ct, issue = unit_issue(p)
     base = p.head()
-    # S/m also fixes the dimensions, but nothing in the model, the issue or the evidence says S/m.
+    # S/m also fixes the dimensions, but nothing in the model, the issue or the evidence says S/m:
+    # the person picks between the units that work (the conductivity units), nothing is applied.
     out, _ = autofix(p, [{"action": "propose", "explanation": "Use siemens per metre.",
                           "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:S-PER-M"}]}], [issue.id])
     (group,) = out.groups
-    assert group["status"] == "review" and p.head() == base
-    assert any("unit:S-PER-M" in r for r in group["reasons"]), group["reasons"]
-    assert p.proposal(group["proposal_id"]).status == "pending"
+    assert group["status"] == "choice" and p.head() == base
+    (choice,) = group["choices"]
+    assert choice["question"] == "Which unit for CT-201?"
+    labels = [o["label"] for o in choice["options"]]
+    assert any("unit:S-PER-M" in label for label in labels) and any("unit:MicroS-PER-CentiM" in label for label in labels)
+    assert not any("MilliGM" in label for label in labels)  # the current unit does not fix it: not offered
+    # choosing is applying that option: the person confirmed it, so the unit is locked
+    option = next(o for o in choice["options"] if "MicroS" in o["label"])
+    p.apply_proposal(option["proposal_id"])
+    row = by_label(p.view(p.head()).points, "CT-201")
+    assert row.unit.iri.endswith("MicroS-PER-CentiM") and "unit" in row.locked
+    assert issue.id not in {i.id for i in p.issues(p.head())}
+
+
+def test_the_assistants_choices_are_checked_before_they_are_offered(sample_project):
+    p = sample_project
+    ct, issue = unit_issue(p)
+    out, _ = autofix(p, [{"action": "propose", "explanation": "Which unit does CT-201 report in?", "operations": [],
+                          "choices": [{"question": "What unit does CT-201 report?", "options": [
+                              {"label": "µS/cm", "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"}]},
+                              {"label": "mg/L (as now)", "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:MilliGM-PER-L"}]},
+                              {"label": "psi", "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:PSI"}]},
+                          ]}]}], [issue.id])
+    (group,) = out.groups
+    assert group["status"] == "choice"
+    # "as now" changes nothing and psi is the wrong dimension: only µS/cm is offered
+    assert [o["label"] for o in group["choices"][0]["options"]] == ["µS/cm"]
 
 
 def test_a_fix_with_a_change_it_does_not_need_is_left_for_review(sample_project):

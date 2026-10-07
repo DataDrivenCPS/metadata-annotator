@@ -196,6 +196,7 @@ pre.code { background: #f6f8fa; border: 1px solid var(--border); border-radius: 
 .author.agent { background: #f3e8ff; }
 .author.user { background: #e5efff; }
 .evidence-item { font-size: 12px; margin: 2px 0; }
+.evidence-excerpt { white-space: pre-wrap; max-height: 160px; overflow: auto; }
 
 /* ------------------------------------------------------------- assistant */
 .assistant { overflow: hidden; background: var(--panel); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -327,6 +328,12 @@ table.changes .after { color: var(--ok); font-weight: 500; }
 .source-list li { display: flex; gap: 8px; align-items: center; padding: 5px 12px; cursor: pointer; font-size: 13px; }
 .source-list li:hover { background: #f7f9fb; }
 .source-list li.active { background: var(--accent-soft); }
+.source-set-actions { display: flex; align-items: center; gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
+.source-set-build { margin: 0 12px 8px; max-height: 55vh; overflow: auto; }
+.source-role { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.source-role > label:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.source-role > label:first-child span { overflow: hidden; text-overflow: ellipsis; }
+.source-role select { max-width: 180px; flex-shrink: 0; }
 .src-kind { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: #eef1f4; }
 .src-kind.csv { background: #e6f4ea; color: var(--ok); }
 .src-kind.image { background: #f3e8ff; color: #6f42c1; }

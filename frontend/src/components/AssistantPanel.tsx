@@ -136,6 +136,10 @@ function Composer() {
             onClick={() => void startAutofix(fixable)}>· Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>}
         </> : <span className="muted">{summary}</span>}
       </div>
+      {selection.source_regions.length > 0 && <div className="composer-selection">
+        <span className="muted">Evidence attached: {selection.source_regions.length} source{selection.source_regions.length === 1 ? '' : 's'}</span>
+        <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>clear evidence</button>
+      </div>}
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
         {next ? <>
           <span>↩ {CONTINUE_LABEL[next.kind]}</span>
@@ -513,6 +517,7 @@ const FACE_LINES = 8
 function ProposalPreview({ proposal, running: runningProp }: {
   proposal: Proposal; running: boolean
 }) {
+  const projectId = useStore((s) => s.projectId)
   const runs = useStore((s) => s.runs)
   const running = runningProp || Object.values(runs).some(isActive)
   const applyProposal = useStore((s) => s.applyProposal)
@@ -555,6 +560,15 @@ function ProposalPreview({ proposal, running: runningProp }: {
         <h3>Proposed change</h3>
         {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>collapse</button>}
       </div>
+      {!!proposal.build_summary?.sources?.length && <details className="proposal-details">
+        <summary>Sources ({proposal.build_summary.sources.length})</summary>
+        <ul>{proposal.build_summary.sources.map((source) => <li key={source.id}>
+          <a href={`${api.sourceFileUrl(projectId!, source.id)}${source.pages?.length ? `#page=${source.pages[0]}` : ''}`}
+            target="_blank" rel="noreferrer">{source.filename}</a>
+          <span className="muted"> · {source.role === 'reference' ? 'Supporting evidence' : 'Build input'}
+            {source.pages?.length ? ` · pages ${source.pages.join(', ')}` : ''}</span>
+        </li>)}</ul>
+      </details>}
       {lines.length > 0 && <div className="proposal-changes">
         {(lines.length > 1 || outside > 0) && <div className="changes-head">{lines.length > 1 && headline}
           {outside > 0 && <span className="warn-text">{lines.length > 1 ? ' · ' : ''}{outside} outside your selection</span>}</div>}

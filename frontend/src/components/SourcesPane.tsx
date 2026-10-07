@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
-import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source } from '../types'
+import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
@@ -17,6 +17,8 @@ export function SourcesPane() {
   const [sources, setSources] = useState<Source[]>([])
   const [active, setActive] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [selected, setSelected] = useState<string[]>([])
+  const [choosing, setChoosing] = useState(false)
   const input = useRef<HTMLInputElement>(null)
 
   const load = useCallback(() => api.sources(projectId).then(setSources), [projectId])
@@ -65,6 +67,10 @@ export function SourcesPane() {
         <ul className="source-list">
           {sources.map((s) => (
             <li key={s.id} className={s.id === active ? 'active' : ''} onClick={() => setActive(s.id === active ? null : s.id)}>
+              <input type="checkbox" aria-label={`Select ${s.filename}`} checked={selected.includes(s.id)}
+                onClick={(e) => e.stopPropagation()} onChange={(e) => {
+                  setSelected((ids) => e.target.checked ? [...ids, s.id] : ids.filter((id) => id !== s.id))
+                }} />
               <span className={`src-kind ${s.kind}`}>{s.kind === 'csv' ? 'CSV' : s.kind === 'image' ? 'IMG' : s.kind === 'pdf' ? 'PDF' : 'DOC'}</span>
               <span className="src-name" title={s.filename}>{s.filename}</span>
               <span className="muted">{s.kind === 'csv'
@@ -76,6 +82,13 @@ export function SourcesPane() {
           ))}
         </ul>
       )}
+      {sources.length > 0 && <div className="source-set-actions">
+        <span className="muted small">{selected.length} selected</span>
+        <button className="primary" disabled={!selected.length} onClick={() => setChoosing(true)}>Build from selected sources…</button>
+        {selected.length > 0 && <button className="link" onClick={() => { setSelected([]); setChoosing(false) }}>Clear</button>}
+      </div>}
+      {choosing && selected.length > 0 && <SourceSetBuild
+        sources={sources.filter((source) => selected.includes(source.id))} onClose={() => setChoosing(false)} />}
       {current && (
         <div className="source-view">
           {current.kind === 'csv' ? <CsvSource source={current} onConfirmed={load} />
@@ -85,6 +98,84 @@ export function SourcesPane() {
       )}
     </aside>
   )
+}
+
+function SourceSetBuild({ sources, onClose }: { sources: Source[]; onClose: () => void }) {
+  const startBuild = useStore((s) => s.startBuild)
+  const notify = useStore((s) => s.notify)
+  const setSelection = useStore((s) => s.setSelection)
+  const focusAssistant = useStore((s) => s.focusAssistant)
+  const runs = useStore((s) => s.runs)
+  const viewing = useStore((s) => s.viewing)
+  const providers = useStore((s) => s.status?.providers)
+  const provider = useStore((s) => s.provider)
+  const [roles, setRoles] = useState<Record<string, SourceRole>>(() => Object.fromEntries(sources.map((s) => [s.id, 'input'])))
+  const [pages, setPages] = useState<Record<string, string>>(() => Object.fromEntries(sources.filter((s) => s.kind === 'pdf')
+    .map((s) => [s.id, (s.page_count ?? 1) > 1 ? `1-${s.page_count}` : '1'])))
+  const [hint, setHint] = useState('')
+  const [starting, setStarting] = useState(false)
+  const vision = providers?.find((p) => provider ? p.name === provider : p.default)?.supports_images ?? false
+  const running = Object.values(runs).some((r) => r.status === 'queued' || r.status === 'running')
+  const unmapped = sources.some((s) => s.kind === 'csv' && s.status !== 'configured')
+  const needsVision = sources.some((s) => s.kind === 'image') && !vision
+  const selectedRoles = Object.fromEntries(sources.map((s) => [s.id, roles[s.id] ?? 'input'])) as Record<string, SourceRole>
+  const inputs = sources.filter((s) => selectedRoles[s.id] === 'input')
+  const pageText = (source: Source) => pages[source.id] ?? ((source.page_count ?? 1) > 1 ? `1-${source.page_count}` : '1')
+  const readPages = () => Object.fromEntries(sources.filter((s) => s.kind === 'pdf').map((s) =>
+    [s.id, parsePageSelection(pageText(s), s.page_count ?? 0, s.page_count ?? 0)]))
+
+  const build = async () => {
+    try {
+      const selectedPages = readPages()
+      setStarting(true)
+      if (await startBuild(sources.map((s) => s.id), hint.trim(), selectedPages, selectedRoles)) onClose()
+    } catch (e) { notify({ kind: 'error', text: (e as Error).message }) }
+    finally { setStarting(false) }
+  }
+  const attach = () => {
+    try {
+      const selectedPages = readPages()
+      const selection = useStore.getState().selection
+      const ids = new Set(sources.map((s) => s.id))
+      setSelection({ ...selection, source_regions: [
+        ...selection.source_regions.filter((r) => !ids.has(r.source_id)),
+        ...sources.map((s) => ({ source_id: s.id, role: 'reference' as const, pages: selectedPages[s.id] })),
+      ] })
+      focusAssistant()
+      notify({ kind: 'info', text: 'Selected sources are attached as evidence for your next message.' })
+      onClose()
+    } catch (e) { notify({ kind: 'error', text: (e as Error).message }) }
+  }
+  return <div className="build-box source-set-build">
+    <div className="build-head"><strong>Build from {sources.length} selected source{sources.length === 1 ? '' : 's'}</strong>
+      <button onClick={onClose}>Close</button></div>
+    <p className="muted small">Build inputs supply equipment, points, and connections. Supporting evidence helps interpret and verify them.</p>
+    {sources.map((s) => <div className="source-role" key={s.id}>
+      <label><span title={s.filename}>{s.filename}</span>
+        <select aria-label={`Role for ${s.filename}`} value={selectedRoles[s.id]}
+          onChange={(e) => setRoles({ ...roles, [s.id]: e.target.value as SourceRole })}>
+          <option value="input">Build input</option>
+          <option value="reference">Supporting evidence</option>
+        </select>
+      </label>
+      {s.kind === 'pdf' && <label className="document-pages">Pages
+        <input aria-label={`Pages for ${s.filename}`} value={pageText(s)}
+          onChange={(e) => setPages({ ...pages, [s.id]: e.target.value })} placeholder="1-3, 5" />
+      </label>}
+    </div>)}
+    <p className="muted small">Files and pages are read in batches. You’ll review one combined proposal. Conflicting sources become questions.</p>
+    {unmapped && <p className="warn-text small">Confirm each CSV’s structure before building.</p>}
+    {needsVision && <p className="warn-text small">Choose a model that supports images in the assistant panel.</p>}
+    {!vision && sources.some((s) => s.kind === 'pdf') && <p className="muted small">This model reads PDF text only; scans and diagrams need a model with image support.</p>}
+    <textarea rows={3} value={hint} onChange={(e) => setHint(e.target.value)}
+      placeholder="What should it build? e.g. Build from the point list and drawing; use the manual to identify treatment stages." />
+    <div className="csv-actions">
+      <button className="primary" disabled={!inputs.length || unmapped || needsVision || starting || running || !!viewing}
+        onClick={() => void build()}>{starting ? 'Starting…' : 'Build model'}</button>
+      <button disabled={unmapped || needsVision || running || !!viewing || starting} onClick={attach}>Use as evidence in chat</button>
+    </div>
+    {!inputs.length && <p className="muted small">Choose at least one build input, or use these sources as evidence in chat.</p>}
+  </div>
 }
 
 // --------------------------------------------------------------------- CSV
@@ -449,7 +540,7 @@ function DocumentBuild({ source }: { source: Source }) {
 
   const build = async () => {
     try {
-      const sourcePages = source.kind === 'pdf' ? { [source.id]: parsePageSelection(pages, source.page_count ?? 0) } : undefined
+      const sourcePages = source.kind === 'pdf' ? { [source.id]: parsePageSelection(pages, source.page_count ?? 0, source.page_count ?? 0) } : undefined
       setStarting(true)
       await startBuild([source.id], hint.trim(), sourcePages)
     } catch (e) { notify({ kind: 'error', text: (e as Error).message }) }
@@ -460,7 +551,7 @@ function DocumentBuild({ source }: { source: Source }) {
     <p className="muted small">The assistant extracts equipment, points, and supported connections. Review the proposed changes before applying.</p>
     {source.kind === 'pdf' && <label className="document-pages">Pages to read
       <input value={pages} onChange={(e) => setPages(e.target.value)} placeholder="1-3, 5" />
-      <span className="muted small">Up to {MAX_BUILD_PAGES} pages per build; you can build more pages afterwards.</span>
+      <span className="muted small">Selected pages are read in batches of up to {MAX_BUILD_PAGES}.</span>
     </label>}
     <textarea rows={2} value={hint} onChange={(e) => setHint(e.target.value)}
       placeholder="What should it extract? Include any naming conventions or relevant context." />

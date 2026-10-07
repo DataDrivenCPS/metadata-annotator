@@ -6,7 +6,7 @@ import {
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
-  emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type Status,
+  emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
 } from './types'
 
 export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues' | `view:${string}`
@@ -74,7 +74,7 @@ interface State {
   sendMessage: (text: string) => Promise<boolean>
   assist: (instruction: string, parentRunId?: string) => Promise<boolean>
   replyToProposal: (instruction: string, parentRunId?: string) => Promise<boolean>
-  startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>) => Promise<boolean>
+  startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>) => Promise<boolean>
   cancelRun: () => Promise<void>
   applyProposal: () => Promise<void>
   dismissProposal: () => Promise<void>
@@ -409,12 +409,12 @@ export const useStore = create<State>((set, get) => ({
 
   replyToProposal: async (instruction, parentRunId) => {
     if (readOnly()) return false
-    const { projectId, proposal, provider } = get()
+    const { projectId, proposal, provider, selection } = get()
     if (!projectId || !proposal || proposal.status !== 'pending') return false
     const project = projectGeneration
     const request = ++assistantGeneration
     try {
-      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId)
+      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId, selection.source_regions)
       return acceptStartedRun(run, projectId, project, request)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false
@@ -424,14 +424,14 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  startBuild: async (sourceIds, instruction, sourcePages) => {
+  startBuild: async (sourceIds, instruction, sourcePages, sourceRoles) => {
     if (readOnly()) return false
     const { projectId, model, provider } = get()
     if (!projectId || !model) return false
     const project = projectGeneration
     const request = ++assistantGeneration
     try {
-      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages)
+      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages, sourceRoles)
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false

@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from .agent.correction import run_correction
+from .agent.multisource import run_source_build, run_with_evidence
 from .agent.guidance import SkillGuidance
 from .config import Settings
 from .events import EventBus
@@ -161,9 +162,9 @@ class RunManager:
             self.tokens[run.id] = token
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_correction(
+                         lambda progress: run_with_evidence(
                              project, self.tracked_client(cfg, project, run), self.guidance, base, selection,
-                             instruction, run.id, progress, token, history=history))
+                             instruction, run.id, progress, token, history=history, agent=self.settings.agent))
         return run
 
     def start_autofix(self, project: Project, base: str, issue_ids: list[str],
@@ -189,29 +190,40 @@ class RunManager:
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
                          lambda progress: run_autofix(project, self.tracked_client(cfg, project, run), self.guidance, issue_ids or None,
-                                                      run.id, progress, token))
+                                                      run.id, progress, token, agent=self.settings.agent))
         return run
 
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
-                    provider: str | None = None, source_pages: dict[str, list[int]] | None = None) -> AgentRun:
+                    provider: str | None = None, source_pages: dict[str, list[int]] | None = None,
+                    source_roles: dict[str, str] | None = None) -> AgentRun:
         """Build from confirmed CSV records or selected image/document evidence."""
         from .agent.build import run_build
 
         if base != project.head():
             raise StaleRevision(base, project.head())
         sources = [project.source(sid) for sid in source_ids]
-        documents = any(source.kind != "csv" for source in sources)
-        if documents and any(source.kind == "csv" for source in sources):
-            raise SourceError("Build CSV records separately from images and documents.")
+        documents = any(source.kind != "csv" for source in sources) or "reference" in (source_roles or {}).values()
+        if not sources or len(source_ids) != len(set(source_ids)):
+            raise SourceError("Select distinct sources, including at least one build input.")
+        if set(source_roles or {}) - set(source_ids):
+            raise SourceError("Source roles must refer to selected sources.")
+        roles = {sid: (source_roles or {}).get(sid, "input") for sid in source_ids}
+        if any(role not in ("input", "reference") for role in roles.values()):
+            raise SourceError("Choose build input or supporting evidence for each source.")
+        if "input" not in roles.values():
+            raise SourceError("Select at least one build input; supporting evidence alone cannot start a build.")
+        for source in sources:
+            if source.kind == "csv" and source.status != "configured":
+                raise SourceError("Confirm each CSV structure before using its records.")
         if source_pages and (set(source_pages) - set(source_ids) or any(
             source.kind != "pdf" and source.id in source_pages for source in sources
         )):
             raise SourceError("Page selections must refer to PDF sources in this build.")
         selection = SelectionScope(source_regions=[SourceRegion(
-            source_id=sid, pages=(source_pages or {}).get(sid)) for sid in source_ids]) if documents else None
+            source_id=sid, pages=(source_pages or {}).get(sid), role=roles[sid]) for sid in source_ids])
         if selection:
             from .documents import validate_regions
-            validate_regions(project, selection.source_regions)
+            validate_regions(project, selection.source_regions, batched=True)
         cfg = self.settings.provider(provider)
         if documents and any(source.kind == "image" for source in sources) and not (
             cfg.supports_images or cfg.kind == "anthropic"
@@ -230,11 +242,10 @@ class RunManager:
             self.tokens[run.id] = token
         self.save(project, run)
         if documents:
-            request = "Build a model from the attached sources. Extract equipment, points, and supported connections. " + instruction
             self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_correction(project, self.tracked_client(cfg, project, run), self.guidance, base,
-                                                             selection, request, run.id, progress, token,
-                                                             build_from_sources=True))
+                             lambda progress: run_source_build(
+                                 project, self.tracked_client(cfg, project, run), self.guidance, base,
+                                 selection.source_regions, instruction, run.id, progress, token, self.settings.agent))
         else:
             self.pool.submit(self._execute, project, run, token,
                              lambda progress: run_build(project, self.tracked_client(cfg, project, run), self.guidance, base, source_ids,
@@ -243,7 +254,8 @@ class RunManager:
 
     def start_revision(self, project: Project, proposal: ChangeProposal, instruction: str,
                        provider: str | None = None, reconsider: bool = False,
-                       parent_run_id: str | None = None) -> AgentRun:
+                       parent_run_id: str | None = None,
+                       source_regions: list[SourceRegion] | None = None) -> AgentRun:
         """Continue a pending proposal or reconsider it against the latest revision."""
         if proposal.status != "pending" and not (reconsider and proposal.status == "stale"):
             raise ValueError(f"proposal is {proposal.status}")
@@ -251,7 +263,9 @@ class RunManager:
         base = project.head()
         if not reconsider and proposal.base_revision != base:
             raise StaleRevision(proposal.base_revision, project.head())
-        selection = proposal.selection
+        inherited_regions = [] if (proposal.build_summary or {}).get("source_notes") else proposal.selection.source_regions
+        selection = proposal.selection.model_copy(update={"source_regions":
+                                                          inherited_regions if source_regions is None else source_regions})
         if reconsider and proposal.base_revision != base:
             live = project.view(base).rows()
             selection = selection.model_copy(update={
@@ -275,10 +289,11 @@ class RunManager:
             self.tokens[run.id] = token
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_correction(
+                         lambda progress: run_with_evidence(
                              project, self.tracked_client(cfg, project, run), self.guidance, base,
                              selection, instruction, run.id, progress, token,
-                             prior_proposal=proposal, reconsider=reconsider, history=history))
+                             prior_proposal=proposal, reconsider=reconsider, history=history,
+                             agent=self.settings.agent))
         return run
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:

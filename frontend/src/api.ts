@@ -1,5 +1,5 @@
 import type {
-  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
+  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
 } from './types'
 
 export class ApiError extends Error {
@@ -73,16 +73,16 @@ export const api = {
     req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id }),
   autofix: (pid: string, base_revision: string, issue_ids: string[], provider?: string) =>
     req<AgentRun>('POST', `${P(pid)}/autofix`, { base_revision, issue_ids, provider }),
-  build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>) =>
-    req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages }),
+  build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>, source_roles?: Record<string, SourceRole>) =>
+    req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages, source_roles }),
   run: (pid: string, id: string) => req<AgentRun>('GET', `${P(pid)}/runs/${id}`),
   runs: (pid: string) => req<AgentRun[]>('GET', `${P(pid)}/runs`),
   tokenUsage: (pid: string) => req<Record<string, TokenUsage>>('GET', `${P(pid)}/usage`),
   cancelRun: (pid: string, id: string) => req<AgentRun>('POST', `${P(pid)}/runs/${id}/cancel`),
   proposal: (pid: string, id: string) => req<Proposal>('GET', `${P(pid)}/proposals/${id}`),
   proposals: (pid: string) => req<Proposal[]>('GET', `${P(pid)}/proposals`),
-  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id }),
+  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[]) =>
+    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions }),
   applyProposal: (pid: string, id: string) => req<Revision>('POST', `${P(pid)}/proposals/${id}/apply`),
   dismissProposal: (pid: string, id: string) => req<Proposal>('POST', `${P(pid)}/proposals/${id}/dismiss`),
   regenerate: (pid: string, id: string, provider?: string) =>

@@ -99,7 +99,7 @@ class LiteLLMClient:
             "model": self.model, "messages": msgs, "max_tokens": max_tokens,
             "stream": True, "stream_options": {"include_usage": True},
             "response_format": {"type": "json_schema", "json_schema": {
-                "name": "response", "strict": True, "schema": schema}},
+                "name": "response", "strict": self.cfg.strict_schema, "schema": schema}},
             "timeout": self.cfg.timeout_s, "num_retries": 0,
         }
         opts = copy.deepcopy(self.cfg.request_options)

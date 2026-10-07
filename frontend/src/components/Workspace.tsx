@@ -174,7 +174,7 @@ export function Workspace() {
         ...(sourcesOpen ? [`${sourcesWidth}px`, `${HANDLE}px`] : []), 'minmax(0, 1fr)', `${HANDLE}px`, `${assistantWidth}px`,
       ].join(' ') }}>
         {sourcesOpen && <>
-          <SourcesPane />
+          <SourcesPane key={projectId} />
           <ResizeHandle direction="columns" label="Resize sources tray" onResize={resizeSources} onReset={resetSources} />
         </>}
         <section className="model-pane" style={{ gridTemplateRows: `auto minmax(100px, 1fr) 10px ${drawerHeight}px` }}>

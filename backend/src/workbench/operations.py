@@ -60,6 +60,7 @@ class _Op(BaseModel):
     with every omitted field turned into a clear."""
 
     model_config = ConfigDict(extra="forbid")
+    evidence: list[str] | None = Field(None, description="Source observation ids supporting this change")
 
     @model_serializer(mode="wrap")
     def _only_set_fields(self, handler):
@@ -67,7 +68,7 @@ class _Op(BaseModel):
         return {k: v for k, v in data.items() if k == "op" or k in self.model_fields_set}
 
     def provided(self) -> set[str]:
-        return set(self.model_fields_set) - {"op", "id"}
+        return set(self.model_fields_set) - {"op", "id", "evidence"}
 
 
 class CreateEquipment(_Op):
@@ -290,7 +291,7 @@ FAMILY_FIELDS = {
         "equipment": {"label", "type", "contained_in", "location", "evidence"},
         "space": {"label", "type", "part_of", "evidence"},
         "entity": {"label", "type", "evidence"},
-        "relationship": {"subject", "relation", "object"},
+        "relationship": {"subject", "relation", "object", "evidence"},
         "point": {"label", "point_kind", "point_type", "unit", "equipment", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "evidence"},
     },
@@ -298,7 +299,7 @@ FAMILY_FIELDS = {
         "equipment": {"label", "type", "process", "contained_in", "location", "evidence"},
         "space": {"label", "type", "part_of", "evidence"},
         "entity": {"label", "type", "evidence"},
-        "relationship": {"subject", "relation", "object"},
+        "relationship": {"subject", "relation", "object", "evidence"},
         "point": {"label", "point_kind", "quantity_kind", "unit", "equipment", "medium", "substance",
                   "sensor_type", "enumeration_kind", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type",
@@ -590,7 +591,9 @@ class GenericOps:
         if t is not None and t.symmetric:
             g.add((o, p, s))
         self.relations.append((s, p, o))
-        self.r.touch(relationship_id(relationship_key(self.vocab, s, p, o)), "created")
+        rid = relationship_id(relationship_key(self.vocab, s, p, o))
+        self.pg.add_evidence(self.pg.ns[rid], op.evidence or [])
+        self.r.touch(rid, "created")
 
     def _drop(self, s, p, o) -> None:
         g = self.pg.model
@@ -600,7 +603,9 @@ class GenericOps:
             g.remove((o, p, s))
         if t is not None and t.inverse:
             g.remove((o, URIRef(t.inverse), s))
-        self.r.touch(relationship_id(relationship_key(self.vocab, s, p, o)), "deleted")
+        rid = relationship_id(relationship_key(self.vocab, s, p, o))
+        self.pg.ann.remove((self.pg.ns[rid], None, None))
+        self.r.touch(rid, "deleted")
 
     def unrelate(self, op: Unrelate) -> None:
         found = find_relationship(self.pg, self.vocab, op.id)
@@ -1204,6 +1209,10 @@ def apply(pg: ProjectGraph, vocab: Vocabulary, resolved_ops: list, lock: bool = 
                     probe.model.remove((o, URIRef(term.inverse), s))
                 confirmed_rows = project_view(probe, vocab).rows()
         getattr(comp, op.op)(op)
+        if op.op.startswith("update_") and op.evidence:
+            node = entity_iri(pg, op.id)
+            if node is not None:
+                pg.add_evidence(node, op.evidence)
         if before_rows is not None:
             for eid, row in project_view(pg, vocab).rows().items():
                 before = before_rows.get(eid)

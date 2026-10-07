@@ -89,7 +89,8 @@ export interface ModelResponse {
   issues: ReviewIssue[]; layout: Record<string, [number, number]>
 }
 
-export interface SourceRegion { source_id: string; bbox?: number[] | null; rows?: number[] | null; pages?: number[] | null }
+export type SourceRole = 'input' | 'reference'
+export interface SourceRegion { source_id: string; bbox?: number[] | null; rows?: number[] | null; pages?: number[] | null; text_range?: number[] | null; role?: SourceRole }
 export interface Selection {
   entity_ids: string[]; relationship_ids: string[]; field_ids: string[]; source_regions: SourceRegion[]
 }
@@ -131,7 +132,7 @@ export interface BuildSummary {
   parse: { pattern: string | null; description: string; coverage: number; unparsed_examples: string[]; explanation: string }
   points_created: number; equipment_created: number; mapped_tokens: number; token_count: number
   point_mappings: BuildMapping[]; equipment_mappings: BuildMapping[]; unmapped_records: number
-  sources: { id: string; filename: string }[]
+  sources: { id: string; filename: string; role?: SourceRole; pages?: number[] | null }[]
 }
 export interface ProgressEvent { at: string; stage: string; message: string; data: Record<string, unknown> }
 export interface TokenUsage { input_tokens: number; output_tokens: number }

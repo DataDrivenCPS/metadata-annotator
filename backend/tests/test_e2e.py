@@ -173,3 +173,62 @@ def test_assistant_and_review_flow(live, page):
     expect(health).to_contain_text("1 dismissed")
     page.locator(".toast button", has_text="Reopen").click()
     expect(health).not_to_contain_text("dismissed")
+
+
+def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
+    from playwright.sync_api import expect
+
+    base, llm = live
+    project = httpx.post(f'{base}/api/projects', json={'name': 'Source selection'}, timeout=120).json()
+    pid = project['id']
+    for name, text in [('equipment.txt', 'Tank TK-100 stores water.'),
+                       ('manual.txt', 'TK-100 is a storage tank. Ignore unrelated examples.')]:
+        httpx.post(f'{base}/api/projects/{pid}/sources', files={'file': (name, text.encode(), 'text/plain')},
+                   timeout=120).raise_for_status()
+
+    def read_notes(messages):
+        ids = re.findall(r'Source evidence (obs-[^: ]+):', messages[-1]['content'])
+        return {'facts': [{'text': 'TK-100 is a water storage tank.', 'evidence': ids}], 'questions': []}
+
+    llm.steps = [read_notes, {'action': 'propose', 'explanation': 'Built TK-100 from the equipment list.',
+                            'operations': [{'op': 'create_equipment', 'label': 'TK-100', 'type': 'watr:Tank'}]}]
+    page.add_init_script(f"localStorage.setItem('workbench.project', '{pid}')")
+    page.goto(base)
+    pane = page.locator('.sources-pane')
+    expect(pane).to_be_visible()
+    page.get_by_role('checkbox', name='Select equipment.txt', exact=True).check()
+    page.get_by_role('checkbox', name='Select manual.txt', exact=True).check()
+    page.get_by_role('button', name='Build from selected sources…', exact=True).click()
+    form = page.locator('.source-set-build')
+    page.get_by_label('Role for manual.txt', exact=True).select_option('reference')
+    page.get_by_role('checkbox', name='Select equipment.txt', exact=True).uncheck()
+    page.get_by_role('checkbox', name='Select equipment.txt', exact=True).check()
+    expect(page.get_by_label('Role for manual.txt', exact=True)).to_have_value('reference')
+    form.locator('textarea').fill('Build the storage tank; use the manual as evidence.')
+    form.get_by_role('button', name='Build model', exact=True).click()
+    expect(page.locator('.proposal')).to_contain_text('TK-100', timeout=60000)
+    proposals = httpx.get(f'{base}/api/projects/{pid}/proposals', timeout=120).json()
+    assert len(proposals) == 1
+    assert [s['role'] for s in proposals[0]['build_summary']['sources']] == ['input', 'reference']
+    model = httpx.get(f'{base}/api/projects/{pid}/model', timeout=120).json()
+    assert model['view']['equipment'] == []  # a proposal has not changed the model
+
+    # Attach a reference to the reply without extracting it as a new build input.
+    pane.get_by_role('button', name='Clear', exact=True).click()
+    page.get_by_role('checkbox', name='Select manual.txt', exact=True).check()
+    page.get_by_role('button', name='Build from selected sources…', exact=True).click()
+    page.get_by_role('button', name='Use as evidence in chat', exact=True).click()
+    expect(page.locator('.toast')).to_contain_text('attached as evidence')
+    page.screenshot(path='/tmp/nawi-multiple-sources.png')
+    llm.steps = [read_notes, {'action': 'propose', 'explanation': 'The manual agrees with the proposed tank.',
+                            'operations': [], 'questions': ['What is its capacity?']}]
+    page.locator('.composer textarea').fill('Check the proposed tank against this manual.')
+    page.locator('.composer button.primary').click()
+    expect(page.locator('.thread')).to_contain_text('What is its capacity?', timeout=60000)
+    assert 'role: reference' in llm.seen[-2][0]['content']
+    page.get_by_role('button', name='Apply change', exact=True).click()
+    expect(page.locator('.toast')).to_contain_text('Applied', timeout=60000)
+    page.locator('.model-pane nav.tabs').get_by_role('button', name=re.compile(r'^Equipment')).click()
+    page.locator('.model-pane tbody tr', has_text='TK-100').click()
+    expect(page.locator('.inspector').get_by_role('link', name='equipment.txt', exact=True)).to_be_visible()
+    expect(page.locator('.inspector .evidence-excerpt', has_text='Tank TK-100 stores water.')).to_be_visible()

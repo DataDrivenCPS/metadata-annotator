@@ -8,7 +8,7 @@ import logging
 import threading
 from pathlib import Path
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
@@ -27,7 +27,8 @@ from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
 from .projection import POINT_KIND_LABELS, entity_iri, sensors_of, typed_field
 from .runs import ProviderUnavailable, RunManager
-from .schemas import CsvImportConfig, SelectionScope
+from .relations import find as find_relationship
+from .schemas import CsvImportConfig, SelectionScope, SourceRegion
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
 from .vocabulary import BRICK, QUDT, S223, VALUE_KINDS, Vocabulary, VocabularyRegistry
 
@@ -65,12 +66,14 @@ class BuildRequest(BaseModel):
     instruction: str = Field("", max_length=4000)
     provider: str | None = None
     source_pages: dict[str, list[int]] = Field(default_factory=dict)
+    source_roles: dict[str, Literal["input", "reference"]] = Field(default_factory=dict)
 
 
 class ProposalReplyRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=4000)
     provider: str | None = None
     parent_run_id: str | None = None
+    source_regions: list[SourceRegion] | None = None
 
 
 class LayoutRequest(BaseModel):
@@ -317,10 +320,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pg = p.graph(rid)
         vocab = p.vocab
         node = entity_iri(pg, eid)
-        if node is None or (node, None, None) not in pg.model:
+        relationship = find_relationship(pg, vocab, eid) if eid.startswith('rl-') else None
+        if relationship:
+            node = pg.ns[eid]
+        if node is None or ((node, None, None) not in pg.model and relationship is None):
             raise HTTPException(404, f"No entity {eid} in {rid}")
         row = p.view(rid).rows().get(eid)
-        sub = entity_subgraph(pg, node)
+        if relationship:
+            sub = Graph()
+            sub.add(relationship)
+        else:
+            sub = entity_subgraph(pg, node)
         for prefix, ns in [*vocab.namespaces.items(), ("s223", str(S223)), ("brick", str(BRICK)),
                            ("qudt", str(QUDT)), ("unit", "http://qudt.org/vocab/unit/"),
                            ("quantitykind", "http://qudt.org/vocab/quantitykind/"), ("", pg.ns)]:
@@ -328,6 +338,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 sub.bind(prefix, ns, override=True)
         sub.bind("rdfs", RDFS)
         evidence = [p.store.get_body("observations", o) for o in pg.evidence(node)]
+        evidence = [e | {'content': {'filename': p.source(e['source_id']).filename, **e['content']}}
+                    for e in evidence if e]
         return {"id": eid, "iri": str(node), "revision": rid, "row": asdict(row) if row else None,
                 "types": [{"iri": str(t), "label": vocab.label(str(t))} for t in pg.model.objects(node, RDF.type)],
                 "turtle": sub.serialize(format="turtle"),
@@ -565,8 +577,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for sid in body.source_ids:
             source_or_404(p, sid)
         try:
-            run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider, body.source_pages)
-        except SourceError as exc:
+            run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider,
+                                   body.source_pages, body.source_roles)
+        except (SourceError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except KeyError as exc:
             raise HTTPException(400, str(exc)) from None
@@ -615,7 +628,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p = project(pid)
         try:
             prop = p.proposal(prop_id)
-            run = runs.start_revision(p, prop, instruction, body.provider, parent_run_id=body.parent_run_id)
+            run = runs.start_revision(p, prop, instruction, body.provider, parent_run_id=body.parent_run_id,
+                                      source_regions=body.source_regions)
         except KeyError:
             raise HTTPException(404, f"No proposal {prop_id}") from None
         except ValueError as exc:

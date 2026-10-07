@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import threading
 import zipfile
 from contextlib import closing
@@ -89,7 +90,7 @@ def pdf_page(data: bytes, page_number: int, render: bool = True) -> tuple[str, b
         raise SourceError(f"Could not read PDF page {page_number}: {exc}") from None
 
 
-def validate_regions(project, regions) -> None:
+def validate_regions(project, regions, *, batched: bool = False) -> None:
     count = 0
     for region in regions:
         source = project.source(region.source_id)
@@ -106,8 +107,56 @@ def validate_regions(project, regions) -> None:
             count += 1
         else:
             raise SourceError(f"Cannot extract from {source.kind} sources.")
-    if count > MAX_BUILD_PAGES:
+    if count > MAX_BUILD_PAGES and not batched:
         raise SourceError(f"Select at most {MAX_BUILD_PAGES} pages or images per build. Build additional pages afterwards.")
+
+
+def source_batches(project, regions, *, max_pages: int = MAX_BUILD_PAGES, max_text: int = 12000):
+    """Expand selected PDFs and long text into bounded batches, preserving roles and locations."""
+    from .schemas import SourceRegion
+
+    validate_regions(project, regions, batched=True)
+    parts = []
+    for region in regions:
+        source = project.source(region.source_id)
+        if source.kind == 'csv':
+            observations = [o for o in project.observations(source.id) if o.status != 'superseded'
+                            and (region.rows is None or o.location.row in region.rows)]
+            if not observations:
+                raise SourceError(f'Confirm the CSV structure for {source.filename} before using its evidence.')
+            parts.extend(region.model_copy(update={'observation_ids': [o.id for o in observations[start:start + 20]]})
+                         for start in range(0, len(observations), 20))
+            continue
+        if source.kind == 'pdf':
+            data = project.source_file(source.id).read_bytes()
+            for page in region.pages if region.pages is not None else range(1, (source.page_count or 0) + 1):
+                text, _ = pdf_page(data, page, render=False)
+                if len(text) > max_text and region.text_range is None:
+                    parts.extend(region.model_copy(update={'pages': [page], 'text_range': [start, min(start + max_text, len(text))]})
+                                 for start in range(0, len(text), max_text))
+                else:
+                    parts.append(region.model_copy(update={'pages': [page]}))
+        elif source.kind == 'document' and region.text_range is None:
+            text = document_text(project.source_file(source.id).read_bytes(), source.filename)
+            parts.extend(SourceRegion(source_id=source.id, role=region.role,
+                                      text_range=[start, min(start + min(MAX_PAGE_TEXT, max_text), len(text))])
+                         for start in range(0, max(len(text), 1), min(MAX_PAGE_TEXT, max_text)))
+        else:
+            parts.append(region)
+    batches, batch, chars = [], [], 0
+    for part in parts:
+        source = project.source(part.source_id)
+        size = (part.text_range[1] - part.text_range[0] if part.text_range else
+                len(pdf_page(project.source_file(source.id).read_bytes(), part.pages[0], render=False)[0])
+                if source.kind == 'pdf' else MAX_PAGE_TEXT if source.kind == 'csv' else 0)
+        if batch and (len(batch) == max_pages or chars + size > max_text):
+            batches.append(batch)
+            batch, chars = [], 0
+        batch.append(part)
+        chars += size
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 def source_context(project, regions, llm, cancel):
@@ -120,6 +169,15 @@ def source_context(project, regions, llm, cancel):
         cancel.check()
         source = project.source(region.source_id)
         if source.kind == 'csv':
+            for oid in region.observation_ids or []:
+                body = project.store.get_body('observations', oid)
+                if not body or body['source_id'] != source.id or body['status'] == 'superseded':
+                    raise SourceError('CSV evidence must cite current records from this source.')
+                location = body['location']
+                label = f"{source.filename}, row {location['row'] + 1}" if location.get('row') is not None else (
+                    f"{source.filename}, column {location['column'] + 1}" if location.get('column') is not None else source.filename)
+                evidence.append(EvidenceRef(kind='observation', ref=oid, summary=label))
+                lines.append(f'Source evidence {oid}: {label} (role: {region.role})\n' + json.dumps(body['content']))
             continue
         data = project.source_file(source.id).read_bytes()
         pages = region.pages if source.kind == 'pdf' and region.pages is not None else (
@@ -131,8 +189,19 @@ def source_context(project, regions, llm, cancel):
                 text, pixels = pdf_page(data, number, render=llm.supports_images)
                 if not llm.supports_images and not text.strip():
                     raise LLMError(f"{source.filename}, page {number} has no readable text. Choose a vision-capable model for scans and diagrams.")
+                if region.text_range is not None:
+                    if len(region.text_range) != 2 or not 0 <= region.text_range[0] <= region.text_range[1] <= len(text):
+                        raise SourceError('The selected passage is outside this PDF page.')
+                    text = text[region.text_range[0]:region.text_range[1]]
             elif source.kind == 'document':
                 text = document_text(data, source.filename)
+                if region.text_range is not None:
+                    if len(region.text_range) != 2:
+                        raise SourceError('A text passage needs start and end character offsets.')
+                    start, end = region.text_range
+                    if start < 0 or end < start or end > len(text):
+                        raise SourceError('The selected passage is outside this document.')
+                    text = text[start:end]
             else:
                 if not llm.supports_images:
                     raise LLMError("Choose a vision-capable model in the assistant panel to read images.")
@@ -152,18 +221,25 @@ def source_context(project, regions, llm, cancel):
             if len(text) > MAX_PAGE_TEXT and not pixels:
                 raise SourceError(f"{source.filename}, page {number} exceeds {MAX_PAGE_TEXT} characters of text. "
                                   "Split the document into smaller sections, or use a vision-capable model for PDF pages.")
-            digest = hashlib.sha256(f'{source.sha256}:{number}:{region.bbox}'.encode()).hexdigest()[:16]
+            key = f'{source.sha256}:{number}:{region.bbox}'
+            if region.text_range is not None:
+                key += f':{region.text_range}'
+            digest = hashlib.sha256(key.encode()).hexdigest()[:16]
             oid = f'obs-{source.id}-{digest}'
             obs = Observation(id=oid, source_id=source.id, kind='label',
-                              content={'filename': source.filename, 'page': number, 'text': text[:MAX_PAGE_TEXT]},
+                              content={'filename': source.filename, 'page': number if source.kind == 'pdf' else None,
+                                       'text': text[:MAX_PAGE_TEXT]},
                               location=SourceLocation(source_id=source.id, kind='document' if source.kind != 'image' else 'image_region',
-                                                      page=number, bbox=region.bbox))
+                                                      page=number if source.kind == 'pdf' else None,
+                                                      bbox=region.bbox, text_range=region.text_range))
             if project.store.get_body('observations', oid) is None:
                 project.store.put_body('observations', oid, obs.model_dump(mode='json'),
                                        source_id=source.id, run_id=None, status=obs.status)
             ref = f'{source.filename}, page {number}' if source.kind == 'pdf' else source.filename
+            if region.text_range is not None:
+                ref += f', characters {region.text_range[0] + 1}–{region.text_range[1]}'
             evidence.append(EvidenceRef(kind='observation', ref=oid, summary=ref))
-            lines.append(f'Source evidence {oid}: {ref}')
+            lines.append(f'Source evidence {oid}: {ref} (role: {region.role})')
             if pixels:
                 images.append(ImageInput(data=pixels))
                 lines.append(f'Attached image {len(images)} shows this source/page.')

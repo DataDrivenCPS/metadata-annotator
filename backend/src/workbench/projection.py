@@ -609,7 +609,8 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
             id=relationship_id(key), label=f"{slabel} {rel.label} {target}",  # type: ignore[union-attr]
             subject=EntityRef(sid, slabel), relation=rel,  # type: ignore[arg-type]
             object=EntityRef(obj[0], obj[2]) if obj else None, value=value,
-            symmetric=bool(term and term.symmetric), virtual=str(p) in vocab.virtual))
+            symmetric=bool(term and term.symmetric), virtual=str(p) in vocab.virtual,
+            evidence=pg.evidence(pg.ns[relationship_id(key)])))
         for eid in (sid, obj[0] if obj else None) if str(p) not in vocab.virtual else ():
             if eid:
                 counts[eid] = counts.get(eid, 0) + 1

@@ -34,6 +34,9 @@ class ProviderConfig:
     # Tokens one request may hold (prompt + reply). Unset: asked from the endpoint (llama-server
     # /props, Lemonade /health, a /models entry, Anthropic's Models API), else a conservative default.
     context_tokens: int | None = None
+    # False permits optional keys with providers that enforce OpenAI's strict schema subset.
+    # Keep omission distinct from explicit null (graph updates use null to clear a field).
+    strict_schema: bool = True
 
     @property
     def api_key(self) -> str | None:
@@ -82,6 +85,18 @@ DEFAULT_PROFILES = {
 
 
 @dataclass
+class AgentConfig:
+    max_steps: int = 8
+    max_repairs: int = 2
+
+    def __post_init__(self) -> None:
+        for name, minimum in (("max_steps", 1), ("max_repairs", 0)):
+            value = getattr(self, name)
+            if type(value) is not int or value < minimum:
+                raise ValueError(f"agent.{name} must be an integer >= {minimum}")
+
+
+@dataclass
 class Settings:
     data_dir: Path
     profiles: dict[str, ProfileConfig]
@@ -97,6 +112,7 @@ class Settings:
     views: dict[str, dict] = field(default_factory=dict)
     # [virtual.<id>] tables: extra or overriding virtual relations (see relations.py)
     virtual: dict[str, dict] = field(default_factory=dict)
+    agent: AgentConfig = field(default_factory=AgentConfig)
 
     @property
     def cache_dir(self) -> Path:
@@ -169,4 +185,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         samples_dir=resolve(wb.get("samples_dir"), BACKEND_DIR.parent / "samples"),
         views={k: dict(v) for k, v in raw.get("views", {}).items()},
         virtual={k: dict(v) for k, v in raw.get("virtual", {}).items()},
+        agent=AgentConfig(**raw.get("agent", {})),
     )

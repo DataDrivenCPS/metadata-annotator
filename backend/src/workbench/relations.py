@@ -305,9 +305,11 @@ def expand(pg: ProjectGraph, vocab: Vocabulary, ops: list[dict]) -> tuple[list[t
             done.add(key)
             mid = f"{PLACEHOLDER}~{v.id}-{len(done)}"
             label = v.spec.via_label.format(subject=name(a, na), object=name(b, nb), via=vocab.label(v.via))
-            out.append((i, {"op": "create_entity", "id": mid, "label": label, "type": v.via}))
+            out.append((i, {"op": "create_entity", "id": mid, "label": label, "type": v.via,
+                            "evidence": op.get('evidence')}))
             for s, p, o in v.links(a, mid, b):
-                out.append((i, {"op": "relate", "subject": str(s), "relation": str(p), "object": str(o)}))
+                out.append((i, {"op": "relate", "subject": str(s), "relation": str(p), "object": str(o),
+                                "evidence": op.get('evidence')}))
             for rel in v.via_copy:  # e.g. a zone's domain onto its new domain space
                 values = [str(x) for x in (g.objects(na, URIRef(rel)) if na is not None else ())]
                 values += [o["object"] for o in ops[:i] if o["op"] == "relate" and o["subject"] == a

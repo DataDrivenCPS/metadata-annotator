@@ -526,6 +526,7 @@ class Project:
                       conversation: list[dict[str, str]] | None = None,
                       issue_dismissals: list | None = None,
                       gate: dict | None = None,
+                      persist: bool = True,
                       ) -> ChangeProposal:
         before_expl = {i.explanation for i in before_issues if i.severity != "suggestion"}
         after_expl = {i.explanation for i in cand.issues if i.severity != "suggestion"}
@@ -558,7 +559,8 @@ class Project:
             issue_dismissals=issue_dismissals or [],
             gate=gate or (self.gate(cand) if cand.diff.added or cand.diff.removed else None),
         )
-        self._put_proposal(prop)
+        if persist:
+            self._put_proposal(prop)
         return prop
 
     def _put_proposal(self, prop: ChangeProposal) -> None:
@@ -726,13 +728,18 @@ class Project:
     def evidence_map(self, rid: str) -> dict[str, str]:
         """observation id -> id of the live entity that cites it, in a revision."""
         pg = self.graph(rid)
-        out: dict[str, str] = {}
+        view = self.view(rid)
+        # A point record is modeled only when a live point cites it. Equipment may also
+        # cite the record as classification evidence, including unresolved point tokens.
+        out = {oid: point.id for point in view.points for oid in point.evidence}
         for eid in pg.entity_ids():
             node = pg.iri(eid)
             if node is not None:
                 for obs in pg.evidence(node):
+                    if obs not in out and (body := self.store.get_body('observations', obs)) and body['kind'] == 'point_record':
+                        continue
                     out.setdefault(obs, eid)
-        live = self.view(rid).rows()
+        live = view.rows()
         return {o: e for o, e in out.items() if e in live}
 
     # --------------------------------------------------------------- sources

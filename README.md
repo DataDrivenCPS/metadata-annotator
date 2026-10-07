@@ -38,6 +38,12 @@ Use a model with image support to extract from diagrams or scanned PDFs.
 Replies default to 32,768 output tokens; smaller context windows and known native
 model output limits reduce that budget.
 
+Set `[agent]` → `max_steps` to increase the assistant's reply budget (default 8).
+Each tool call consumes one step, and the last step must propose. `max_repairs`
+(default 2) permits extra replies for corrections or validation feedback; the hard
+cap is `max_steps + max_repairs`. These settings apply to chat, proposal revisions,
+document builds, and each autofix group. Restart the backend after changing them.
+
 **4. Start the app:**
 
 ```bash
@@ -62,6 +68,18 @@ and ontologies, so give it a little time; later launches reuse the cache.
    you want to extract, such as “Identify the tanks, pumps, and pipes” or “These
    point names belong to the air handlers.” You can also leave the hint blank and
    see what it finds.
+   To combine files, check them in **Sources** and choose **Build from selected sources…**.
+   Mark each as a **Build input** or **Supporting evidence**: inputs supply model objects;
+   references help interpret and verify them. You can combine confirmed CSV point lists,
+   PDFs, images, Word files, and text documents, and select pages from each PDF. Long files
+   and source sets are processed in batches into one proposal. Conflicting assertions are
+   surfaced as questions; duplicate CSV records with matching assertions share one point
+   with citations to both records. Each CSV can have its own naming convention.
+   Choose **Use as evidence in chat** to attach selected sources to a correction or a
+   reply to a pending proposal. Source citations in the inspector link to the file and
+   identify the supporting page, row, column, or text passage. Word extraction reads text
+   and tables; upload embedded diagrams separately as images or PDF. Scans and diagrams
+   require an image-capable model.
 4. **Review and apply.** Inspect the proposed changes and their source evidence.
    Answer questions or ask for adjustments in chat, then choose **Apply** when
    you're happy with the draft.

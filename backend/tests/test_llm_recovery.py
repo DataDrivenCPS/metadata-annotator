@@ -274,6 +274,44 @@ def test_real_litellm_openai_transport_preserves_wire_request(monkeypatch):
     assert requests[0]["provider"] == {"require_parameters": True}
 
 
+def test_non_strict_openai_transport_preserves_optional_update_fields(monkeypatch):
+    from openai import OpenAI
+    from workbench.agent.correction import step_schema
+    from workbench.operations import OperationList
+
+    schema = step_schema()
+    reply = {"thought": "Correct only the unit", "action": "propose", "operations": [
+        {"op": "update_point", "id": "pt-test", "unit": "unit:PSI"},
+        {"op": "update_point", "id": "pt-clear", "unit": None},
+    ]}
+    requests = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        response_schema = body["response_format"]["json_schema"]
+        if response_schema["strict"]:
+            return httpx.Response(400, json={"error": {"message": "Missing required query",
+                                                     "type": "invalid_request_error"}})
+        payload = {"id": "chat-test", "object": "chat.completion.chunk", "created": 0, "model": "model",
+                   "choices": [{"index": 0, "delta": {"content": json.dumps(reply)}, "finish_reason": "stop"}]}
+        return httpx.Response(200, text=f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n",
+                              headers={"content-type": "text/event-stream"})
+
+    real_complete = litellm.completion
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        sdk = OpenAI(api_key="unused", base_url="https://api.openai.com/v1", http_client=http_client)
+        monkeypatch.setattr(litellm, "completion", lambda **params: real_complete(**params, client=sdk))
+        result = client(strict_schema=False).complete_json("system", MESSAGES, schema)
+    assert requests[0]["response_format"]["json_schema"]["schema"] == schema
+    assert result.data == reply
+    operations = OperationList.validate_python(result.data["operations"])
+    assert operations[0].provided() == {"unit"}
+    assert operations[0].unit == "unit:PSI"
+    assert operations[1].provided() == {"unit"}
+    assert operations[1].unit is None
+
+
 @pytest.mark.parametrize("status", [400, 429])
 def test_real_litellm_transport_errors_are_not_retried(monkeypatch, status):
     from openai import OpenAI

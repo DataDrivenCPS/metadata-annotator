@@ -121,6 +121,11 @@ def test_pdf_preview_build_and_review_flow(client, monkeypatch):
     body = {'base_revision': base, 'source_ids': [sid], 'source_pages': {sid: [2]}}
     invalid = client.post(f'/api/projects/{pid}/build', json={**body, 'source_pages': {sid: [3]}})
     assert invalid.status_code == 400
+    reference_only = client.post(f'/api/projects/{pid}/build', json={**body, 'source_roles': {sid: 'reference'}})
+    assert reference_only.status_code == 400
+    assert 'at least one build input' in reference_only.json()['detail']
+    duplicate = client.post(f'/api/projects/{pid}/build', json={**body, 'source_ids': [sid, sid]})
+    assert duplicate.status_code == 400
     response = client.post(f'/api/projects/{pid}/build', json=body)
     assert response.status_code == 200, response.text
     run = client.get(f'/api/projects/{pid}/runs/{response.json()["id"]}').json()

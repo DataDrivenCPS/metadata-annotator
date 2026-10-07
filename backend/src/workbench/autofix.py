@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from rdflib import URIRef
 
+from .config import AgentConfig
 from .llm import Cancelled
 from .operations import TERM_FIELDS, OperationError, OperationList
 from .schemas import ChangeProposal, ReviewIssue, SelectionScope
@@ -283,7 +284,8 @@ class AutofixOutcome:
 
 
 def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue_ids: list[str] | None,
-                run_id: str, progress: Callable[[str, str, dict], None], cancel: CancelToken) -> AutofixOutcome:
+                run_id: str, progress: Callable[[str, str, dict], None], cancel: CancelToken,
+                agent: AgentConfig | None = None) -> AutofixOutcome:
     """Fix the given open issues (default: every open violation), group by group."""
     from .agent.correction import run_correction
 
@@ -309,7 +311,7 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
         rows = project.view(head).rows()
         try:
             out = run_correction(project, llm, guidance, head, selection_for(group, rows), instruction(group, rows),
-                                 run_id, lambda s, m, d: progress(s, f"{tag} · {m}", {**d, "group": n}), cancel)
+                                 run_id, lambda s, m, d: progress(s, f"{tag} · {m}", {**d, "group": n}), cancel, agent=agent)
         except Cancelled:
             raise
         except Exception as exc:  # one group failing does not stop the others

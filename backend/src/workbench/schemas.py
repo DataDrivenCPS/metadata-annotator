@@ -57,6 +57,7 @@ class SourceLocation(BaseModel):
     # image regions: x, y, width, height in source pixels
     bbox: list[float] | None = None
     page: int | None = None
+    text_range: list[int] | None = None  # character offsets in a text document
 
 
 class Observation(BaseModel):
@@ -102,6 +103,9 @@ class SourceRegion(BaseModel):
     bbox: list[float] | None = None
     rows: list[int] | None = None
     pages: list[int] | None = None  # PDF page numbers, starting at 1
+    text_range: list[int] | None = None
+    role: Literal["input", "reference"] = "reference"
+    observation_ids: list[str] | None = None  # bounded CSV evidence batches
 
 
 class SelectionScope(BaseModel):

@@ -12,8 +12,8 @@ import pytest
 from conftest import by_label
 from workbench.agent.correction import run_correction
 from workbench.agent.guidance import SkillGuidance
-from workbench.config import load_settings
-from workbench.llm import CancelToken, Cancelled, LLMResult, make_client
+from workbench.config import AgentConfig, load_settings
+from workbench.llm import CancelToken, Cancelled, LLMError, LLMResult, make_client
 from workbench.schemas import SelectionScope
 
 
@@ -25,9 +25,11 @@ class ScriptedLLM:
     def __init__(self, steps):
         self.steps = list(steps)
         self.seen: list[list[dict]] = []
+        self.systems: list[str] = []
 
     def complete_json(self, system, messages, schema, **kw):
         self.seen.append([dict(m) for m in messages])
+        self.systems.append(system)
         step = self.steps.pop(0)
         data = step(messages) if callable(step) else step
         return LLMResult(data=data, raw_text="", input_tokens=10, output_tokens=5)
@@ -101,6 +103,54 @@ def test_repair_budget_is_bounded(sample_project, guidance):
     llm = ScriptedLLM([bad] * 5)
     with pytest.raises(Exception, match="could not produce valid operations"):
         run(p, llm, guidance, SelectionScope(), "rename")
+
+
+def test_configured_budget_allows_more_than_eight_replies(sample_project, guidance):
+    p = sample_project
+    search = {"action": "search_terms", "args": {"query": "AHU", "kind": "equipment"}}
+    llm = ScriptedLLM([search] * 9 + [{"action": "propose", "operations": []}])
+    out = run_correction(p, llm, guidance, p.head(), SelectionScope(), "inspect", None,
+                         lambda *_: None, CancelToken(),
+                         agent=AgentConfig(max_steps=10, max_repairs=0))
+    assert out.steps == 10
+    assert "at most 10 replies" in llm.systems[0]
+    assert "must now answer" not in llm.seen[8][-1]["content"]
+    assert 'must now answer with action "propose"' in llm.seen[9][-1]["content"]
+    assert "next reply must propose" in llm.seen[9][-1]["content"]
+
+
+def test_configured_hard_cap_stops_tool_calls(sample_project, guidance):
+    p = sample_project
+    search = {"action": "search_terms", "args": {"query": "AHU", "kind": "equipment"}}
+    llm = ScriptedLLM([search] * 5)
+    events = []
+    with pytest.raises(LLMError, match="within the step limit"):
+        run_correction(p, llm, guidance, p.head(), SelectionScope(), "inspect", None,
+                       lambda *event: events.append(event), CancelToken(),
+                       agent=AgentConfig(max_steps=2, max_repairs=1))
+    assert len(llm.seen) == 3
+    assert sum(event[0] == "tool" for event in events) == 1
+
+
+def test_zero_repair_budget_rejects_first_bad_proposal(sample_project, guidance):
+    p = sample_project
+    llm = ScriptedLLM([{"action": "propose", "operations": [
+        {"op": "update_point", "id": "pt-nope", "label": "x"}]}])
+    with pytest.raises(LLMError, match="could not produce valid operations"):
+        run_correction(p, llm, guidance, p.head(), SelectionScope(), "rename", None,
+                       lambda *_: None, CancelToken(), agent=AgentConfig(max_repairs=0))
+    assert len(llm.seen) == 1
+
+
+def test_configured_repair_budget_allows_three_corrections(sample_project, guidance):
+    p = sample_project
+    bad = {"action": "propose", "operations": [
+        {"op": "update_point", "id": "pt-nope", "label": "x"}]}
+    llm = ScriptedLLM([bad] * 3 + [{"action": "propose", "operations": []}])
+    out = run_correction(p, llm, guidance, p.head(), SelectionScope(), "rename", None,
+                         lambda *_: None, CancelToken(),
+                         agent=AgentConfig(max_steps=1, max_repairs=3))
+    assert out.steps == 4
 
 
 def test_mistyped_equipment_id_gets_exact_reference_feedback(sample_project, guidance):

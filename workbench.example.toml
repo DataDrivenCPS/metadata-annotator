@@ -18,47 +18,105 @@
 # family = "s223"                      # s223 or brick: how points/equipment are written
 # sources = ["https://open223.info/223p.ttl", "/path/to/extensions.ttl"]
 
+[agent]
+# Model replies per request (each tool call consumes one); last reply must propose.
+max_steps = 8
+# Extra replies for repairs/validation feedback; hard cap is max_steps + max_repairs.
+max_repairs = 2
+
+# Select a provider by table name: local, anthropic, openai, or openrouter.
+# WORKBENCH_PROVIDER overrides this default; the UI also offers a per-request choice.
+# Export keys in the environment that starts the backend (examples below). Only
+# providers you use need credentials. Restart the backend after changing this file.
 [llm]
 default = "local"
 
-# llama.cpp server, started separately, e.g. with llama (https://llama.app):
-#   llama serve -hf <user>/<model-GGUF>:<quant> --port 8081 -c 32768
-# or a plain llama-server binary: llama-server -m <model>.gguf --port 8081 --jinja -c 32768
-# Use a vision model (+ --mmproj) and set supports_images = true for diagram extraction.
+# Shared provider settings:
+# - kind = "openai" means an OpenAI-compatible Chat Completions endpoint, including
+#   llama.cpp and OpenRouter. kind = "anthropic" uses the native Messages API.
+# - supports_images must match the selected model/server. Enable for diagrams and
+#   scanned PDFs; text files and PDFs with extractable text work without vision.
+# - timeout_s limits each model request, not the whole agent run.
+# - concurrency limits simultaneous requests in parallel build batches. Agent step
+#   limits are separate: configure them in [agent] above.
+# - context_tokens optionally sets the deployed capacity (prompt + reply). Unset:
+#   discover from llama-server /props, Lemonade /health, the model's /models entry on
+#   OpenRouter/vLLM, or Anthropic's Models API; otherwise use 32768.
+# - strict_schema defaults to true. Use false for OpenAI: strict mode requires every
+#   object property, while updates distinguish omission (leave unchanged) from null
+#   (clear). The application still validates returned operations.
+# - request_options forwards provider-specific fields; use only options supported
+#   by your model. Native kind = "litellm" uses SDK options instead.
+
+# LOCAL LLAMA.CPP — no key needed for an unauthenticated localhost server.
+# Download an instruction-tuned GGUF (Llama, Qwen, etc.), then start separately:
+#   llama-server -m /path/to/model.gguf --alias local --port 8081 --jinja -c 32768 -np 1
+# model matches --alias local; change both together. Keep /v1 on base_url.
+# Match concurrency to -np and context_tokens to the context available per slot.
+# For vision, load a compatible multimodal model with its --mmproj projector.gguf
+# and set supports_images = true. If using --api-key, export that key and add
+# api_key_env = "LOCAL_API_KEY" here.
+# Server docs: https://github.com/ggml-org/llama.cpp/tree/master/tools/server
 [llm.providers.local]
 kind = "openai"
 base_url = "http://127.0.0.1:8081/v1"
 model = "local"
 supports_images = false
+strict_schema = true
 timeout_s = 600
-# Requests sent at once by parallel work (a source build's mapping batches). Match the
-# server's -np (parallel slots); remote providers default to 4.
 concurrency = 1
-# Tokens one request may hold (prompt + reply); the assistant sizes the model listing it
-# sends to fit. Unset, it is asked from the endpoint (llama-server /props, Lemonade /health,
-# the model's /models entry on OpenRouter/vLLM, Anthropic's Models API), else 32768.
 # context_tokens = 32768
 
-# Any OpenAI-compatible remote endpoint, e.g. OpenRouter
-[llm.providers.openrouter]
-kind = "openai"
-base_url = "https://openrouter.ai/api/v1"
-model = "google/gemma-4-31b-it"
-api_key_env = "OPENROUTER_API_KEY"
-supports_images = true
-# OpenRouter routing option: only use endpoints that support the requested parameters,
-# including the JSON schema. Other endpoints can use their own request_options.
-request_options = { provider = { require_parameters = true } }
-# Reasoning models spend thousands of hidden tokens on each structured call; turning
-# reasoning off made builds several times faster in testing (OpenRouter's unified option).
-# To disable reasoning, add reasoning = { enabled = false } to request_options above.
-
-# Anthropic Messages API through LiteLLM; reads ANTHROPIC_API_KEY
+# ANTHROPIC — set: export ANTHROPIC_API_KEY="your-anthropic-api-key"
+# Uses the native API; no base_url needed. Use a Claude API ID without a provider
+# prefix. This example supports images. Optional effort controls reasoning effort
+# on models that support it.
+# Models: https://platform.claude.com/docs/en/models/overview
 [llm.providers.anthropic]
 kind = "anthropic"
 model = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"
+supports_images = true
+timeout_s = 300
+concurrency = 4
 # request_options = { effort = "medium" }
+
+# OPENAI — set: export OPENAI_API_KEY="your-openai-api-key"
+# Use the official /v1 endpoint and an OpenAI model ID available to your account.
+# Luna supports images and JSON schema output. Keep strict_schema = false for
+# optional graph-update fields (see shared settings above).
+# Model: https://developers.openai.com/api/docs/models/gpt-6-luna
+# Schema rules: https://developers.openai.com/api/docs/guides/structured-outputs
+[llm.providers.openai]
+kind = "openai"
+base_url = "https://api.openai.com/v1"
+model = "gpt-6-luna"
+api_key_env = "OPENAI_API_KEY"
+supports_images = true
+strict_schema = false
+timeout_s = 300
+concurrency = 4
+
+# OPENROUTER — set: export OPENROUTER_API_KEY="your-openrouter-api-key"
+# The key comes from OpenRouter, independently of an OpenAI key. Use the full
+# catalog ID (vendor/model), and keep /api/v1 on base_url. Recheck image and schema
+# support when changing models. Keep strict_schema = false for OpenAI upstreams.
+# require_parameters routes only to endpoints supporting requested parameters,
+# including JSON schema output.
+# Quickstart: https://openrouter.ai/docs/quickstart
+# Model: https://openrouter.ai/openai/gpt-6-luna
+[llm.providers.openrouter]
+kind = "openai"
+base_url = "https://openrouter.ai/api/v1"
+model = "openai/gpt-6-luna"
+api_key_env = "OPENROUTER_API_KEY"
+supports_images = true
+strict_schema = false
+timeout_s = 300
+concurrency = 4
+request_options = { provider = { require_parameters = true } }
+# For a model supporting OpenRouter's unified reasoning option, add
+# reasoning = { enabled = false } inside request_options to disable reasoning.
 
 # Other providers through LiteLLM's native provider/model routes. Existing openai
 # and anthropic entries above keep their configuration format. For kind = litellm,

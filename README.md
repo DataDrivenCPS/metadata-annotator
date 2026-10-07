@@ -5,6 +5,11 @@ The assistant helps identify equipment, sensors, and connections; you inspect th
 result in tables and a graph, review changes, and export the model. This is a local
 alpha application.
 
+https://github.com/user-attachments/assets/18f2883d-f453-43d3-ba54-6dcb3c045eae
+
+*Demo (about 11 minutes): build a model from a source, review validation issues, and
+let the assistant auto-fix them.*
+
 ## Install and run
 
 You'll need Git and Node.js with npm, plus [uv](https://docs.astral.sh/uv/getting-started/installation/)

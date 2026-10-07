@@ -33,7 +33,7 @@ CI: `.github/workflows/ci.yml` runs the frontend lint/test/build and the full ba
 
 Scripts: `backend/scripts/build_sample.py` regenerates `samples/ro-train/*` deterministically (the sample model contains three deliberate mistakes used by the walkthrough — don't "fix" them). `backend/scripts/integration_proof.py` is a standalone BuildingMOTIF + WaTr smoke check.
 
-Config: `workbench.toml` (gitignored; copy `workbench.example.toml`) or `WORKBENCH_CONFIG`. Env overrides: `WORKBENCH_DATA_DIR`, `WORKBENCH_PROVIDER`. The local LLM provider expects llama.cpp's server on port 8081 (`run_server.sh` is the author's local launch command).
+Config: `workbench.toml` (gitignored; copy `workbench.example.toml`) or `WORKBENCH_CONFIG`. Env overrides: `WORKBENCH_DATA_DIR`, `WORKBENCH_PROVIDER`. The local LLM provider expects llama.cpp's server on port 8081 (`run_local_qwen.sh` is the author's local `llama serve` command).
 
 First use of each vocabulary downloads it and its `owl:imports` (~30 s, needs network); afterwards it loads from `workbench-data/cache/`. The test session fixture loads the `watr` vocabulary, so the first test run is slow and needs network.
 
@@ -55,7 +55,7 @@ Agent/LLM layer:
 - `agent/build.py`: builds a model from confirmed source records following the skill's point-list workflow (pattern → token mapping table → deterministic operations). Unmapped tokens are never guessed.
 - `autofix.py`: groups open issues by cause (severity, shape, path), has the correction agent propose a fix per group, and classifies each by checks (resolves the issues, introduces none, stays in scope, deletes nothing, no locked overrides, every chosen term grounded in the model/issue/evidence). Obvious fixes are applied as unlocked `autofix` revisions. Decisions become choices: options (from the assistant's `choices`, or by substituting candidate terms for the one ungrounded term) are pending proposals, checked before they are offered; choosing one applies it. The rest stay as proposals to review or questions.
 - `runs.py`: thread pool with cooperative cancellation; progress persisted on the run record and pushed over SSE (`events.py`).
-- `llm/`: `complete_json(system, messages, schema, images?, cancel?)` with `openai_compat.py` (llama-server / OpenRouter, `response_format: json_schema`) and `anthropic_client.py` adapters.
+- `llm/`: one interface, `complete_json(system, messages, schema, images?, cancel?)`, implemented by a single LiteLLM adapter (`litellm_client.py`) for every provider kind (`openai` = any OpenAI-compatible endpoint such as llama-server/OpenRouter, `anthropic`, `litellm` = any native LiteLLM route). `base.py` has the error types (`MalformedOutput` gets retried; `TruncatedOutput` means no partial answer may be used) and context-window sizing; `endpoint.py` does health checks and detects the deployed context size. LiteLLM runs on its bundled offline model catalog (`LITELLM_LOCAL_MODEL_COST_MAP`), so startup works without network.
 - `sources.py` / `documents.py`: uploaded CSV/TSV, images, PDFs (pypdfium2; all PDFium access must hold `PDF_LOCK` — it is not thread-safe), .docx, and text. Observations from sources are not assertions; model entities link to them via `wb:evidence`.
 
 `backend/skill/` is a vendored copy of the BuildingMOTIF agent skill (`UPSTREAM.yml` records the commit); treat it as upstream content, not app code.

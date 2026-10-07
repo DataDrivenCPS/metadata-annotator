@@ -10,10 +10,15 @@ https://github.com/user-attachments/assets/d80214d7-b960-4571-86a4-365929aaf2aa
 *Demo (about 4 minutes): build the ASM1 model from WaterTAP flowsheet diagram image,
 review validation issues, and let the assistant auto-fix them. Uses GPT-6-luna.*
 
+<details>
+<summary>Watch the local-model demo (about 11 minutes)</summary>
+
 https://github.com/user-attachments/assets/18f2883d-f453-43d3-ba54-6dcb3c045eae
 
 *Demo (about 11 minutes): build a model from a source, review validation issues, and
 let the assistant auto-fix them. Uses Gemma 4 31B (I believe) so this is an example of running the metadata annotator on a locally-hostable model.*
+
+</details>
 
 ## Install and run
 

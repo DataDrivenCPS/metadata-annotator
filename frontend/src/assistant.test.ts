@@ -258,24 +258,24 @@ describe('what a reply is about', () => {
     selection: about('eq-rooms'), outcome: { questions: ['Which areas?'] },
   })
   const next = continuation([asked], null, false)
-  const before = Date.parse('2026-01-01T09:00:00Z')
-  const after = Date.parse('2026-01-01T11:00:00Z')
+  const left = false  // not picked since the request
+  const picked = true
 
   it('ignores a selection left over from before the request being answered', () => {
-    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, before))
+    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, left))
       .toEqual({ selection: about('eq-rooms'), source: 'conversation' })
   })
   it('uses a selection made since the request', () => {
-    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, after).source).toBe('current')
+    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, picked).source).toBe('current')
   })
   it('is about nothing once the person drops the conversation scope', () => {
-    expect(effectiveSelection(next, emptySelection(), [asked], null, before, true))
+    expect(effectiveSelection(next, emptySelection(), [asked], null, left, true))
       .toEqual({ selection: emptySelection(), source: 'current' })
-    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, before, true).selection.entity_ids).toEqual([])
+    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, left, true).selection.entity_ids).toEqual([])
   })
   it('is about nothing when the earlier request had nothing selected', () => {
     const open = run('open', '2026-01-01T10:00:00Z', { selection: emptySelection(), outcome: { questions: ['?'] } })
-    expect(effectiveSelection(continuation([open], null, false), about('eq-rtu4'), [open], null, before).selection.entity_ids)
+    expect(effectiveSelection(continuation([open], null, false), about('eq-rtu4'), [open], null, left).selection.entity_ids)
       .toEqual([])
   })
 })

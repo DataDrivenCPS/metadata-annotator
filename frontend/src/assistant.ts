@@ -66,14 +66,13 @@ const noObjects = (s: Selection) => !s.entity_ids.length && !s.relationship_ids.
  * left selected from before is not what they are answering about.
  */
 export function effectiveSelection(next: Continuation | null, current: Selection, thread: AgentRun[],
-                                   proposal: Proposal | null, selectionAt = Infinity, noScope = false,
+                                   proposal: Proposal | null, pickedSince = true, noScope = false,
 ): { selection: Selection; source: SelectionSource } {
   if (next?.kind === 'proposal' && proposal) return { selection: proposal.selection, source: 'proposal' }
   const parent = next?.runId ? thread.find((r) => r.id === next.runId) : null
   if (!parent) return { selection: current, source: 'current' }
   if (noScope) return { selection: { ...emptySelection(), source_regions: current.source_regions }, source: 'current' }
-  const requestedAt = Date.parse(parent.created_at)
-  const stale = !noObjects(current) && selectionAt <= requestedAt  // picked before that request, not since
+  const stale = !noObjects(current) && !pickedSince  // picked before that request, not since
   if (noObjects(current) || stale) {
     const own = parent.selection ?? emptySelection()
     if (!noObjects(own) || stale) {

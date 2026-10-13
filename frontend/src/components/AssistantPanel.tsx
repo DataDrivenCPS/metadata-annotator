@@ -105,10 +105,11 @@ function Composer() {
   const running = !!last && isActive(last)
   const next = continuation(thread, proposal, newRequest)
   const canContinue = continuation(thread, proposal, false) !== null
-  const selectionAt = useStore((s) => s.selectionAt)
+  const selectionVersion = useStore((s) => s.selectionVersion)
+  const requestVersion = useStore((s) => (next?.runId ? s.runSelectionVersion[next.runId] : undefined) ?? 0)
   const noScope = useStore((s) => s.assistantNoScope)
   const dropScope = useStore((s) => s.dropConversationScope)
-  const { selection: about, source } = effectiveSelection(next, selection, thread, proposal, selectionAt, noScope)
+  const { selection: about, source } = effectiveSelection(next, selection, thread, proposal, selectionVersion > requestVersion, noScope)
   const summary = summarize(about, rows)
   const chosen = [...about.entity_ids, ...about.relationship_ids].map((id) => rows.get(id)).filter(Boolean)
   const fixable = source === 'current' && !autofixing && !viewing ? issuesOnSelection(issues ?? [], selection) : []

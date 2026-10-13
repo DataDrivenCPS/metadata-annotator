@@ -148,8 +148,8 @@ def test_assistant_and_review_flow(live, page):
     expect(page.locator(".needs-input")).to_contain_text(question)
     expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
 
-    # Answer with nothing selected: the message stays about RO-1 and carries the conversation
-    page.locator(".composer-selection button", has_text="clear").click()
+    # The answer stays about what the question was about (RO-1), though RO-1 is still selected from
+    # before the request; it carries the conversation
     expect(page.locator(".composer-selection")).to_contain_text("About (from the conversation)")
     expect(page.locator(".composer-selection .chip")).to_contain_text("RO-1")
     page.locator(".needs-input button", has_text="Answer below").click()

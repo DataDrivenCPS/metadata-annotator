@@ -35,8 +35,9 @@ interface State {
   assistantDraftVersion: number
   /** The next message starts a new request instead of continuing the conversation. */
   assistantNewRequest: boolean
-  /** When the person last changed the selection (ms): one made before the assistant's last turn is stale for a reply. */
-  selectionAt: number
+  /** Counts the person's selection changes; with runSelectionVersion it tells a selection made since a request from a leftover one. */
+  selectionVersion: number
+  runSelectionVersion: Record<string, number>
   /** The person removed the conversation's own scope: the next message is about nothing in particular. */
   assistantNoScope: boolean
   dropConversationScope: () => void
@@ -165,7 +166,8 @@ export const useStore = create<State>((set, get) => ({
   assistantIssueContext: null,
   assistantDraftVersion: 0,
   assistantNewRequest: false,
-  selectionAt: 0,
+  selectionVersion: 0,
+  runSelectionVersion: {},
   assistantNoScope: false,
   assistantCleared: { runs: [], proposals: [] },
   provider: null,
@@ -282,10 +284,10 @@ export const useStore = create<State>((set, get) => ({
 
   click: (target, mods, order) => {
     const selection = applyClick(get().selection, target, mods, order, get().anchor)
-    set({ selection, anchor: mods.shift ? get().anchor : target.id, inspectId: target.id, selectionAt: Date.now(), assistantNoScope: false })
+    set({ selection, anchor: mods.shift ? get().anchor : target.id, inspectId: target.id, selectionVersion: get().selectionVersion + 1, assistantNoScope: false })
   },
-  setSelection: (selection) => set({ selection, selectionAt: Date.now(), assistantNoScope: false }),
-  clearSelection: () => set({ selection: emptySelection(), anchor: null, selectionAt: Date.now() }),
+  setSelection: (selection) => set({ selection, selectionVersion: get().selectionVersion + 1, assistantNoScope: false }),
+  clearSelection: () => set((s) => ({ selection: emptySelection(), anchor: null, selectionVersion: s.selectionVersion + 1 })),
   dropConversationScope: () => set({ assistantNoScope: true }),
   setTab: (tab) => set({ tab }),
   setDrawerTab: (drawerTab) => set({ drawerTab }),
@@ -321,7 +323,7 @@ export const useStore = create<State>((set, get) => ({
     const previous = assistantIssueContext && assistantDraft.includes(assistantIssueContext.text) ? assistantIssueContext : null
     const merged = [...new Map([...(previous?.issues ?? []), ...issues].map((issue) => [issue.id, issue])).values()]
     const text = issuesPrompt(merged, rows)
-    set((s) => ({ selection: issueSelection(merged, rows), selectionAt: Date.now(), assistantNoScope: false,
+    set((s) => ({ selection: issueSelection(merged, rows), selectionVersion: s.selectionVersion + 1, assistantNoScope: false,
       assistantDraft: previous ? assistantDraft.replace(previous.text, () => text)
         : [assistantDraft.trim(), text].filter(Boolean).join('\n\n'),
       assistantIssueContext: { issues: merged, text }, assistantNewRequest: true,
@@ -400,7 +402,7 @@ export const useStore = create<State>((set, get) => ({
 
   assist: async (instruction, parentRunId) => {
     if (readOnly()) return false
-    const { projectId, model, selection, provider, runs, assistantCleared, proposal, selectionAt, assistantNoScope } = get()
+    const { projectId, model, selection, provider, runs, assistantCleared, proposal, selectionVersion, runSelectionVersion, assistantNoScope } = get()
     if (!projectId || !model) return false
     const project = projectGeneration
     const request = ++assistantGeneration
@@ -409,12 +411,14 @@ export const useStore = create<State>((set, get) => ({
     const thread = threadRuns(runs, assistantCleared.runs)
     const parent = parentRunId ? thread.find((r) => r.id === parentRunId) : undefined
     const next = parent ? continuation(thread, proposal, false) : null
-    const about = effectiveSelection(next, selection, thread, proposal, selectionAt, assistantNoScope)
+    const picked = !!parent && selectionVersion > (runSelectionVersion[parent.id] ?? 0)
+    const about = effectiveSelection(next, selection, thread, proposal, picked, assistantNoScope)
     const sent = about.source === 'current' ? about.selection
       : { ...emptySelection(), source_regions: selection.source_regions }
     try {
       const run = await api.assist(projectId, model.head, sent, instruction, provider ?? undefined, parentRunId,
         !(parent && assistantNoScope))
+      set((s) => ({ runSelectionVersion: { ...s.runSelectionVersion, [run.id]: selectionVersion } }))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false

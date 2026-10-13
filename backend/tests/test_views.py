@@ -87,7 +87,7 @@ def test_typed_table_extensions_merge():
                                                  "columns": [{"key": "parts", "label": "Parts", "path": "rec:hasPart"}]}})
     brick = views.for_project(specs, "brick", "brick")
     (spaces,) = [s for s in brick if s.builtin == "spaces"]
-    assert [c.key for c in spaces.columns] == ["adjacent", "parts"]
+    assert [c.key for c in spaces.columns] == ["area", "volume", "adjacent", "parts"]
     assert "building_elements" in {s.id for s in brick} and "zones" not in {s.id for s in brick}
 
 
@@ -140,3 +140,25 @@ def test_media_lists_kinds_of_water_with_what_carries_and_measures_them(sample_p
     assert "CT-201" in [c["label"] for c in rows["Water-Freshwater"]["measured_by"]]
     col = next(c for c in out["columns"] if c["key"] == "carried_by")
     assert col["candidates"] and all(c["label"].startswith("L-") for c in col["candidates"])
+
+
+def test_property_columns_show_and_edit_entity_properties(workspace, registry):
+    from conftest import by_label
+    from test_relationships import ops
+
+    p = workspace.create("Props", "brick")
+    rev, _ = p.edit(p.head(), ops({"op": "create_space", "id": "new:r", "label": "Room 1", "type": "rec:Room"}))
+    room = by_label(p.view(rev.id).spaces, "Room 1")
+    rev, _ = p.edit(rev.id, ops({"op": "set_property", "id": room.id, "property": "brick:area", "value": 250,
+                                 "unit": "unit:M2"}))
+    specs, errors = views.load_specs()
+    assert not errors
+    spec = next(s for s in views.for_project(specs, "brick", "brick") if s.builtin == "spaces")
+    assert not views.check_spec(p.vocab, spec)
+    out = views.evaluate(p.graph(rev.id), p.vocab, p.view(rev.id), spec)
+    area = next(c for c in out["columns"] if c["key"] == "area")
+    assert area["editor"] == "property" and area["lock"] == "properties"
+    assert "unit:M2" in {p.vocab.curie(u["iri"]) for u in area["value_spec"]["unit_terms"]}
+    row = next(r for r in out["rows"] if r["id"] == room.id)
+    assert row["cells"]["area"][0]["value"] == "250" and row["cells"]["area"][0]["label"].startswith("250")
+    assert row["cells"]["volume"] == []

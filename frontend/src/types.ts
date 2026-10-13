@@ -227,11 +227,13 @@ export interface EntityRelations { allowed: AllowedRelation[]; relationships: Re
 export interface ViewInfo { id: string; label: string; builtin: string | null; table?: string | null; errors: string[] }
 export interface ViewCellItem {
   id?: string; iri?: string; curie?: string; label: string; kind?: string
+  value?: string  // property cells: the bare value (iri is then its unit)
   relationship?: string  // the rl- id behind the value, for removing it
   fits?: boolean  // candidates: what the vocabulary's shapes expect (others are allowed; validation checks)
 }
 export interface ViewColumn {
-  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'none'
+  key: string; label: string; editor: 'label' | 'type' | 'relation' | 'property' | 'none'
+  property?: string; value_spec?: EntityPropertySpec  // property columns: the Brick entity property and its value shape
   lock?: string  // the row field a lock covers (label, type)
   relation?: string; inverse?: boolean; relation_label?: string; relation_curie?: string
   candidates?: ViewCellItem[]

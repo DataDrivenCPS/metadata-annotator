@@ -4,7 +4,7 @@ import { api } from '../api'
 import type { Column } from '../selection'
 import { useStore } from '../store'
 import type { ViewCellItem, ViewData, ViewRow } from '../types'
-import { RelationCellEditor, TextEditor } from './cells'
+import { PropertyEditor, RelationCellEditor, TextEditor } from './cells'
 import { TermPicker } from './TermPicker'
 
 const UPDATE_OP: Record<string, string> = {
@@ -47,6 +47,15 @@ export function cellEditor(view: ViewData, prefix: string, byId: Map<string, Vie
     if (!column || !row) return null
     const items = row.cells[column.key] ?? []
     if (column.editor === 'relation') return <RelationCellEditor row={row} column={column} items={items} done={done} />
+    if (column.editor === 'property' && column.property && column.value_spec) {
+      const property = column.property
+      return <PropertyEditor spec={column.value_spec} value={items[0]?.value ?? ''} unit={items[0]?.iri ?? ''} onCancel={done}
+        onCommit={(value, unit) => {
+          done()
+          if (value) void edit([{ op: 'set_property', id: row.id, property, value, ...(unit ? { unit } : {}) }])
+          else if (items.length) void edit([{ op: 'remove_property', id: row.id, property }])
+        }} />
+    }
     const op = UPDATE_OP[row.kind]
     if (column.editor === 'label' && op) return <TextEditor initial={row.label} onCancel={done}
       onCommit={(label) => { done(); void edit([{ op, id: row.id, label }]) }} />

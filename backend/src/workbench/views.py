@@ -27,7 +27,7 @@ from rdflib import URIRef
 from rdflib.namespace import RDF
 
 from .graph import ProjectGraph
-from .projection import ModelView
+from .projection import ModelView, entity_properties
 from .relations import Path, PathError, relationship_id, relationship_key
 from .vocabulary import VALUE_KINDS, Vocabulary, expand_term
 
@@ -43,7 +43,7 @@ class ColumnSpec(BaseModel):
     key: str
     label: str
     path: str
-    editor: Literal["label", "type", "relation", "none"] = "none"
+    editor: Literal["label", "type", "relation", "property", "none"] = "none"  # property: path is a Brick entity property
     # "vocabulary": follow the path through the loaded ontologies (a term's parent, description...)
     source: Literal["model", "vocabulary"] = "model"
     only: str | None = None  # keep values (and edit candidates) of this class, e.g. s223:Connection
@@ -112,6 +112,11 @@ def check_spec(vocab: Vocabulary, spec: ViewSpec) -> list[str]:
     for col in spec.columns:
         if col.path in SPECIAL:
             continue
+        if col.editor == "property":
+            term = vocab.term(expand_term(vocab, col.path))
+            if term is None or term.kind != "entity_property":
+                errors.append(f"column {col.key}: {col.path!r} is not an entity property in the loaded vocabulary")
+            continue
         try:
             path = Path.parse(vocab, col.path)
         except PathError as exc:
@@ -125,6 +130,13 @@ def check_spec(vocab: Vocabulary, spec: ViewSpec) -> list[str]:
 
 
 # --------------------------------------------------------------- evaluation
+
+def property_spec(vocab: Vocabulary, term) -> dict[str, Any]:
+    """What an entity property's value takes, with the allowed units labelled for a picker."""
+    return {**term.value_spec, "unit_terms": [
+        {"iri": u, "label": vocab.label(u), "symbol": (ut.symbol if (ut := vocab.term(u)) else "")}
+        for u in term.value_spec.get("units") or []]}
+
 
 def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpec) -> dict[str, Any]:
     """Columns (with whether and how they can be edited) and rows with their cell values."""
@@ -153,6 +165,12 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
     columns, paths = [], {}
     for col in spec.columns:
         meta: dict[str, Any] = {"key": col.key, "label": col.label, "editor": "none"}
+        if col.editor == "property":
+            prop = vocab.term(expand_term(vocab, col.path))
+            if prop is not None and prop.kind == "entity_property":
+                meta.update(editor="property", property=prop.iri, lock="properties", value_spec=property_spec(vocab, prop))
+            columns.append(meta)
+            continue
         if col.path in SPECIAL:
             meta["editor"] = col.editor if col.editor in ("label", "type") else "none"
             if col.path in ("label", "type"):
@@ -176,8 +194,15 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
     for r in rows:
         node = URIRef(r.iri)  # type: ignore[attr-defined]
         cells: dict[str, Any] = {}
+        props = {p["property"]["iri"]: p for p in entity_properties(pg, vocab, node)} \
+            if any(c.editor == "property" for c in spec.columns) else {}
         for col in spec.columns:
-            if col.path == "label":
+            if col.editor == "property":
+                have = props.get(expand_term(vocab, col.path))
+                unit = have and (have["unit_symbol"] or (have["unit"] or {}).get("label", ""))
+                cells[col.key] = [{"label": f"{have['value']} {unit}".strip(), "value": have["value"],
+                                   "iri": (have["unit"] or {}).get("iri")}] if have else []
+            elif col.path == "label":
                 cells[col.key] = [{"label": r.label}]  # type: ignore[attr-defined]
             elif col.path == "type":
                 t = getattr(r, "type", None)  # (term rows have none)

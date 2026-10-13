@@ -71,6 +71,25 @@ columns = [
   { key = "part_of", label = "Part of", path = "rec:isPartOf", editor = "relation" },
 ]
 
+# Common Brick entity properties, as columns of the typed tables (a value, with its unit).
+[views.space_properties]
+label = "Space properties"
+families = ["brick"]
+builtin = "spaces"
+columns = [
+  { key = "area", label = "Area", path = "brick:area", editor = "property" },
+  { key = "volume", label = "Volume", path = "brick:volume", editor = "property" },
+]
+
+[views.equipment_properties]
+label = "Equipment properties"
+families = ["brick"]
+builtin = "equipment"
+columns = [
+  { key = "cooling_capacity", label = "Cooling capacity", path = "brick:coolingCapacity", editor = "property" },
+  { key = "rated_power", label = "Rated power", path = "brick:ratedPowerInput", editor = "property" },
+]
+
 # --------------------------------------------------------------------------- 223P / WaTr
 
 [views.zones]

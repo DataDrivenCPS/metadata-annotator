@@ -208,9 +208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if t.kind in ("equipment", "sensor", "connection", "point_class"):
             out["shape"] = vocab.describe_class(iri)
         if t.kind == "entity_property":  # the units its value takes, with labels for a picker
-            out["value_spec"] = {**t.value_spec, "unit_terms": [
-                {"iri": u, "label": vocab.label(u), "symbol": (ut.symbol if (ut := vocab.term(u)) else "")}
-                for u in t.value_spec.get("units") or []]}
+            out["value_spec"] = views_mod.property_spec(vocab, t)
         return out
 
     # ----------------------------------------------------------- projects

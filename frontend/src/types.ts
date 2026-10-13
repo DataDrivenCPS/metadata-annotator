@@ -163,9 +163,18 @@ export interface Status {
   version: string; skill_version: string; data_dir: string; providers: Provider[]
   vocabulary: VocabularyStatus; vocabularies: VocabularyStatus[]; default_vocabulary: string
 }
+/** A static Brick entity property of an entity (e.g. area 250 m²). */
+export interface EntityPropertyValue {
+  property: TermRef; value: string | null; unit: TermRef | null; unit_symbol: string
+}
+export interface EntityPropertySpec {
+  datatype: string | null; numeric: boolean; values: string[] | null
+  units: string[] | null; unit_terms: { iri: string; label: string; symbol: string }[]
+}
 export interface EntityDetail {
   id: string; iri: string; revision: string; row: Row | null
   types: { iri: string; label: string }[]; turtle: string; locked: string[]
+  properties: EntityPropertyValue[]
   evidence: { id: string; content: Record<string, unknown>; location: Record<string, unknown> }[]
   issues: ReviewIssue[]
   history: { revision_id: string; field: string; before: string; after: string; origin: string; created_at: string }[]

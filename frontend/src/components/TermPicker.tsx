@@ -24,7 +24,7 @@ export function TermPicker({ kind, quantityKind, initial = '', allowClear = true
   useEffect(() => { input.current?.select() }, [])
   useEffect(() => {
     if (kind === 'unit' && quantityKind) api.options('unit', quantityKind, profile).then(setPreloaded).catch(() => setPreloaded(null))
-    else if (['process', 'sensor', 'connection', 'medium', 'equipment', 'location'].includes(kind))
+    else if (['process', 'sensor', 'connection', 'medium', 'equipment', 'location', 'entity_property'].includes(kind))
       api.options(kind, null, profile).then(setPreloaded)
   }, [kind, quantityKind, profile])
 

@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from rdflib import Graph
+from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
 
 from . import operations as ops_mod
@@ -27,7 +27,7 @@ from .events import EventBus
 from .graph import ProjectGraph, model_shell
 from .issues import group_findings, issues_from_validation, recount, render_iri, render_repair, summarize
 from .operations import ApplyResult, OperationError, OperationList
-from .projection import ModelView, ensure_ids, project
+from .projection import ModelView, ensure_ids, extra_facts, project
 from .schemas import (
     ChangeProposal,
     CsvImportConfig,
@@ -130,8 +130,15 @@ DISPLAY_FIELDS = {
 
 
 def compute_changes(before: ModelView, after: ModelView, selected: set[str],
-                    before_pg: ProjectGraph) -> list[EntityChange]:
-    """Every entity whose projection differs, whether or not the operations named it."""
+                    before_pg: ProjectGraph, after_pg: ProjectGraph | None = None,
+                    vocab: Vocabulary | None = None) -> list[EntityChange]:
+    """Every entity whose projection differs, whether or not the operations named it. With both
+    graphs and the vocabulary, also facts the rows do not show: all classes and entity properties."""
+
+    def extras(pg: ProjectGraph | None, row) -> dict[str, str]:
+        node = URIRef(row.iri) if pg is not None and vocab is not None and getattr(row, "iri", "") else None
+        return extra_facts(pg, vocab, node) if node is not None else {}  # type: ignore[arg-type]
+
     b, a = before.rows(), after.rows()
     out: list[EntityChange] = []
     changed_connections: set[str] = set()
@@ -145,24 +152,32 @@ def compute_changes(before: ModelView, after: ModelView, selected: set[str],
         if minted and (rb is None or ra is None):
             continue
         getters = [(f, g) for f, g in DISPLAY_FIELDS[kind] if not (minted and f in ("label", "connection"))]
+        eb, ea = extras(before_pg, rb) if rb else {}, extras(after_pg, ra) if ra else {}
         if rb is None:
             change = "created"
             fields = [FieldChange(field=f, after=g(ra)) for f, g in getters if g(ra) not in (None, "")]
+            fields += [FieldChange(field=f, after=v) for f, v in ea.items()]
         elif ra is None:
             change = "deleted"
             fields = [FieldChange(field=f, before=g(rb)) for f, g in getters if g(rb) not in (None, "")]
+            fields += [FieldChange(field=f, before=v) for f, v in eb.items()]
         else:
             fields = [FieldChange(field=f, before=g(rb), after=g(ra)) for f, g in getters if g(rb) != g(ra)]
+            fields += [FieldChange(field=f, before=eb.get(f), after=ea.get(f)) for f in [*eb, *(k for k in ea if k not in eb)]
+                       if eb.get(f) != ea.get(f)]
             if not fields:
                 continue
             change = "updated"
         if kind == "connection":
             changed_connections.add(row.iri)  # type: ignore[union-attr]
         locked = set(rb.locked) if rb else set()  # type: ignore[union-attr]
+        # extra facts are locked as "type" (classes) and "properties"
+        named = {f.field: ("type" if f.field == "types" else "properties" if f.field in {*eb, *ea} else f.field)
+                 for f in fields}
         out.append(EntityChange(
             entity_id=eid, entity_kind=kind, label=row.label, change=change,  # type: ignore[arg-type,union-attr]
             fields=fields, in_selection=(not selected) or eid in selected or _part_of_selection(row, selected),
-            overrides_locked=sorted(locked & {f.field for f in fields}) if change == "updated" else [],
+            overrides_locked=sorted(locked & set(named.values())) if change == "updated" else [],
         ))
     return sorted(out, key=lambda c: c.entity_id)
 
@@ -425,7 +440,7 @@ class Project:
         result = ops_mod.apply(after, self.vocab, resolved, lock=lock)
         run, issues, summary = self.validate_graph(after)
         selected = set(selection.entity_ids + selection.relationship_ids) if selection else set()
-        changes = compute_changes(self.view(base), project(after, self.vocab), selected, before)
+        changes = compute_changes(self.view(base), project(after, self.vocab), selected, before, after, self.vocab)
         return Candidate(base, resolved, before, after, result, run, issues, summary, changes,
                          triple_diff(before.model, after.model))
 

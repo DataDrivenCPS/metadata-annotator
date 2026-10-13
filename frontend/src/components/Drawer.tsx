@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
-import { type EntityDetail, type EntityRelations, type Revision } from '../types'
+import { type EntityDetail, type EntityPropertySpec, type EntityPropertyValue, type EntityRelations, type Revision } from '../types'
 import { CandidateOptions } from './cells'
 import { DismissalNote, IssueDetails } from './IssuesView'
-import { shortIri } from './TermPicker'
+import { shortIri, TermPicker } from './TermPicker'
 
 export function Drawer() {
   const inspectId = useStore((s) => s.inspectId)
@@ -80,6 +80,41 @@ function TermInspector({ iri }: { iri: string }) {
   </div>
 }
 
+/** Locked fields are ones a person set: automatic fixes leave them alone (the assistant can still be asked to change them). */
+function LocksEditor({ eid, locked }: { eid: string; locked: string[] }) {
+  const viewing = useStore((s) => s.viewing)
+  const edit = useStore((s) => s.edit)
+  return <>
+    {locked.length ? locked.map((f) => <span key={f} className="lock-chip">{f}
+      {!viewing && <button className="link" title={`Unlock ${f}: automatic fixes may change it`}
+        onClick={() => void edit([{ op: 'set_lock', id: eid, locked: false, fields: [f] }])}>×</button>}
+    </span>) : <span className="muted">—</span>}
+    {!viewing && <div>
+      <button className="link" title="Keep automatic fixes from changing any of this row's fields"
+        onClick={() => void edit([{ op: 'set_lock', id: eid, locked: true }])}>Lock all</button>
+      {locked.length > 0 && <button className="link" title="Let automatic fixes change this row"
+        onClick={() => void edit([{ op: 'set_lock', id: eid, locked: false }])}>Unlock all</button>}
+    </div>}
+  </>
+}
+
+/** An entity's classes: it can be an instance of several; add one or drop one (it keeps at least one). */
+function TypesEditor({ eid, types }: { eid: string; types: { iri: string; label: string }[] }) {
+  const viewing = useStore((s) => s.viewing)
+  const edit = useStore((s) => s.edit)
+  const [adding, setAdding] = useState(false)
+  return <>
+    {types.map((t) => <div key={t.iri} title={t.iri}>{t.label} <code>{shortIri(t.iri)}</code>
+      {!viewing && types.length > 1 && <button className="link" title="Remove this type"
+        onClick={() => void edit([{ op: 'remove_type', id: eid, type: t.iri }])}>×</button>}
+    </div>)}
+    {!viewing && (adding
+      ? <TermPicker kind="class" allowClear={false} onCancel={() => setAdding(false)}
+        onPick={(iri) => { setAdding(false); if (iri) void edit([{ op: 'add_type', id: eid, type: iri }]) }} />
+      : <button className="link" onClick={() => setAdding(true)}>+ Add type</button>)}
+  </>
+}
+
 function Inspector() {
   const projectId = useStore((s) => s.projectId)!
   const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
@@ -98,8 +133,8 @@ function Inspector() {
       <dl>
         <dt>Id</dt><dd><code>{detail.id}</code></dd>
         <dt>IRI</dt><dd><code>{detail.iri}</code></dd>
-        <dt>Types</dt><dd>{detail.types.map((t) => <div key={t.iri} title={t.iri}>{t.label} <code>{shortIri(t.iri)}</code></div>)}</dd>
-        <dt>Set or confirmed by a person</dt><dd>{detail.locked.length ? detail.locked.join(', ') : <span className="muted">—</span>}</dd>
+        <dt>Types</dt><dd><TypesEditor eid={detail.id} types={detail.types} /></dd>
+        <dt>Set or confirmed by a person</dt><dd><LocksEditor eid={detail.id} locked={detail.locked} /></dd>
       </dl>
       <h5>Issues on this object</h5>
       {detail.issues.length ? (
@@ -132,6 +167,7 @@ function Inspector() {
           ))}
         </ul>
       ) : <p className="muted">No issues recorded for this object.</p>}
+      <PropertiesPanel eid={detail.id} properties={detail.properties ?? []} />
       <RelationsPanel eid={detail.id} />
       <h5>Evidence</h5>
       {detail.evidence.length ? detail.evidence.map((e) => (
@@ -155,6 +191,66 @@ function Inspector() {
       ) : <p className="muted">No changes recorded.</p>}
     </div>
   )
+}
+
+/** Static entity properties (Brick: area, tilt, year built...): a value, with a unit where the property has one. */
+function PropertiesPanel({ eid, properties }: { eid: string; properties: EntityPropertyValue[] }) {
+  const brick = useStore((s) => s.model?.info.family === 'brick')
+  const profile = useStore((s) => s.model?.info.profile ?? 'brick')
+  const viewing = useStore((s) => s.viewing)
+  const edit = useStore((s) => s.edit)
+  const [editing, setEditing] = useState<{ iri: string; label: string; value: string; unit: string } | 'pick' | null>(null)
+  const [spec, setSpec] = useState<EntityPropertySpec | null>(null)
+  const iri = editing && editing !== 'pick' ? editing.iri : null
+  useEffect(() => {
+    if (!iri) return
+    let alive = true
+    api.term(iri, profile).then((t) => alive && setSpec((t as { value_spec?: EntityPropertySpec }).value_spec ?? null))
+      .catch(() => alive && setSpec(null))
+    return () => { alive = false; setSpec(null) }
+  }, [iri, profile])
+  if (!brick) return null
+  const save = () => {
+    if (!editing || editing === 'pick' || editing.value.trim() === '') return
+    const unit = editing.unit || (spec?.unit_terms.length === 1 ? spec.unit_terms[0].iri : '')
+    void edit([{ op: 'set_property', id: eid, property: editing.iri, value: editing.value.trim(), ...(unit ? { unit } : {}) }])
+    setEditing(null)
+  }
+  return <>
+    <h5>Properties</h5>
+    {properties.length ? <ul className="relations">
+      {properties.map((p) => <li key={p.property.iri ?? p.property.label}>
+        <span className="rel-name">{p.property.label}</span> {p.value}{(p.unit_symbol || p.unit?.label) ? ` ${p.unit_symbol || p.unit?.label}` : ''}
+        {!viewing && <>
+          <button className="link" title="Change this value"
+            onClick={() => setEditing({ iri: p.property.iri ?? '', label: p.property.label, value: p.value ?? '', unit: p.unit?.iri ?? '' })}>edit</button>
+          <button className="link" title="Remove this property"
+            onClick={() => void edit([{ op: 'remove_property', id: eid, property: p.property.iri }])}>×</button>
+        </>}
+      </li>)}
+    </ul> : <p className="muted">No static properties.</p>}
+    {!viewing && (editing === null
+      ? <button className="link" onClick={() => setEditing('pick')}>+ Add property</button>
+      : editing === 'pick'
+        ? <TermPicker kind="entity_property" allowClear={false} onCancel={() => setEditing(null)}
+          onPick={(i) => i && setEditing({ iri: i, label: '', value: '', unit: '' })} />
+        : <div className="relation-add">
+          <div><span className="rel-name">{editing.label || shortIri(editing.iri)}</span></div>
+          {spec?.values?.length ? <select autoFocus value={editing.value} onChange={(e) => setEditing({ ...editing, value: e.target.value })}>
+            <option value="" disabled>choose…</option>
+            {spec.values.map((v) => <option key={v} value={v}>{v}</option>)}
+          </select> : <input autoFocus placeholder={spec?.numeric ? 'number' : 'value'} value={editing.value}
+            onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+            onKeyDown={(e) => { if (e.key === 'Enter') save(); else if (e.key === 'Escape') setEditing(null) }} />}
+          {spec && spec.unit_terms.length > 0 && <select value={editing.unit || (spec.unit_terms.length === 1 ? spec.unit_terms[0].iri : '')}
+            onChange={(e) => setEditing({ ...editing, unit: e.target.value })}>
+            {spec.unit_terms.length > 1 && <option value="" disabled>unit…</option>}
+            {spec.unit_terms.map((u) => <option key={u.iri} value={u.iri}>{u.symbol || u.label}</option>)}
+          </select>}
+          <button className="link" onClick={save}>save</button>
+          <button className="link" onClick={() => setEditing(null)}>cancel</button>
+        </div>)}
+  </>
 }
 
 /** The entity's ontology relations, and adding one the vocabulary allows (from its shapes). */

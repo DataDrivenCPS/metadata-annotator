@@ -26,7 +26,7 @@ from rdflib import Literal as RDFLiteral
 from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
-from .graph import ProjectGraph, new_id
+from .graph import WB, ProjectGraph, new_id
 from .projection import (
     ACTUATABLE_KINDS,
     OBSERVABLE_KINDS,
@@ -45,11 +45,12 @@ from .projection import (
     port_id,
     port_iri,
     port_label,
+    property_node,
     sensors_of,
 )
 from .relations import expand, relationship_id, relationship_key
 from .relations import find as find_relationship
-from .vocabulary import CLASS_KINDS, QUDT, S223, Vocabulary, expand_term
+from .vocabulary import BRICK, CLASS_KINDS, QUDT, S223, Vocabulary, expand_term
 
 PLACEHOLDER = "new:"
 
@@ -205,6 +206,43 @@ class DeleteEntity(_Op):
     id: str
 
 
+class AddType(_Op):
+    op: Literal["add_type"] = "add_type"
+    id: str = Field(description="Id of the entity (any kind)")
+    type: str = Field(description="An extra class for it to be an instance of, besides its current ones")
+
+
+class SetProperty(_Op):
+    op: Literal["set_property"] = "set_property"
+    id: str = Field(description="Id of the entity (any kind)")
+    property: str = Field(description="A Brick entity property, e.g. brick:area, brick:tilt, brick:yearBuilt")
+    value: str | int | float | bool
+    unit: str | None = Field(None, description="A unit, e.g. unit:FT2; implied when the property allows only one")
+    evidence: list[str] | None = None
+
+
+class RemoveProperty(_Op):
+    op: Literal["remove_property"] = "remove_property"
+    id: str = Field(description="Id of the entity (any kind)")
+    property: str = Field(description="The entity property to remove")
+
+
+class SetLock(_Op):
+    """Mark fields as set by a person (so automatic fixes leave them alone), or release them.
+    Not offered to the assistant."""
+
+    op: Literal["set_lock"] = "set_lock"
+    id: str = Field(description="Id of any row: an entity or a relationship")
+    locked: bool
+    fields: list[str] | None = Field(None, description="Fields to lock or unlock; omit for all of the row's")
+
+
+class RemoveType(_Op):
+    op: Literal["remove_type"] = "remove_type"
+    id: str = Field(description="Id of the entity (any kind)")
+    type: str = Field(description="One of its classes to drop; it must keep at least one")
+
+
 class Relate(_Op):
     op: Literal["relate"] = "relate"
     subject: str = Field(description="Id of the entity the relation starts from (any kind)")
@@ -256,7 +294,7 @@ Operation = Annotated[
         CreateConnection, UpdateConnection, DeleteConnection,
         CreateConnectionPoint, UpdateConnectionPoint, DeleteConnectionPoint,
         CreateSpace, UpdateSpace, DeleteSpace,
-        CreateEntity, UpdateEntity, DeleteEntity, Relate, Unrelate,
+        CreateEntity, UpdateEntity, DeleteEntity, AddType, RemoveType, SetProperty, RemoveProperty, SetLock, Relate, Unrelate,
     ],
     Field(discriminator="op"),
 ]
@@ -271,7 +309,15 @@ LOCKABLE_FIELDS = {
               "substance", "sensor_type", "enumeration_kind"},
     "connection": {"label", "from_equipment", "to_equipment", "from_point", "to_point", "medium", "type"},
     "connection_point": {"label", "equipment", "direction", "medium", "paired_with", "maps_to"},
+    "relationship": set(),  # only lockable as a whole, by set_lock
 }
+for _fields in LOCKABLE_FIELDS.values():
+    _fields.add("properties")  # entity properties (Brick) can be set on any entity
+
+def lockable_fields(row_kind: str) -> set[str]:
+    """What can be locked on a row: its fields, or for a relationship the row as a whole."""
+    return {"relationship"} if row_kind == "relationship" else LOCKABLE_FIELDS.get(row_kind, set())
+
 
 TERM_FIELDS = {
     "type": None,  # depends on entity kind
@@ -283,6 +329,7 @@ TERM_FIELDS = {
     "sensor_type": "sensor",
     "enumeration_kind": "enumeration",
     "point_type": "point_class",
+    "property": "entity_property",
 }
 
 # Fields that exist in each model family; anything else is rejected with an explanation.
@@ -290,7 +337,7 @@ FAMILY_FIELDS = {
     "brick": {
         "equipment": {"label", "type", "contained_in", "location", "evidence"},
         "space": {"label", "type", "part_of", "evidence"},
-        "entity": {"label", "type", "evidence"},
+        "entity": {"label", "type", "property", "value", "unit", "evidence"},
         "relationship": {"subject", "relation", "object", "evidence"},
         "point": {"label", "point_kind", "point_type", "unit", "equipment", "evidence"},
         "connection": {"label", "from_equipment", "to_equipment", "evidence"},
@@ -349,12 +396,36 @@ class ApplyResult:
 def entity_kind_of_op(op) -> str:
     if op.op in ("relate", "unrelate"):
         return "relationship"
+    if op.op in ("add_type", "remove_type", "set_property", "remove_property", "set_lock"):
+        return "entity"
     return op.op.split("_", 1)[1]  # create_connection_point -> connection_point
 
 
 # The row kind a node of a catalogued class kind projects as (create_entity takes any of them).
 ROW_KIND_OF_TERM = {"equipment": "equipment", "location": "space", "point_class": "point", "property": "point",
                     "connection": "connection", "port": "connection_point", "class": "entity"}
+
+
+def property_literal(spec: dict, value) -> RDFLiteral:
+    """An entity property's value as a typed literal, per its value shape: the datatype it names,
+    a number where it takes any numeric type, else as given. Raises ValueError for a value that
+    cannot be that type."""
+    if isinstance(value, bool):
+        return RDFLiteral(value)
+    datatype = spec.get("datatype")
+    if datatype:
+        lit = RDFLiteral(str(value), datatype=URIRef(datatype))
+        if lit.value is None:
+            raise ValueError(f"{value!r} is not a valid {datatype.rsplit('#', 1)[-1]}")
+        return lit
+    if spec.get("numeric") or isinstance(value, (int, float)):
+        if isinstance(value, (int, float)):
+            return RDFLiteral(value)
+        try:
+            return RDFLiteral(int(value)) if str(value).strip().lstrip("+-").isdigit() else RDFLiteral(float(value))
+        except ValueError:
+            raise ValueError(f"{value!r} is not a number") from None
+    return RDFLiteral(str(value))
 
 
 def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
@@ -395,6 +466,21 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
         data = op.model_dump(exclude_unset=True)
         data["op"] = op.op
         kind = entity_kind_of_op(op)
+        if op.op == "set_lock":  # any row, whatever its family: only the fields must be lockable
+            eid = placeholders.get(data["id"], data["id"])
+            data["id"] = eid
+            row_kind = created.get(eid) or (None if eid in deleted else entity_kind(pg, vocab, eid))
+            if row_kind is None:
+                problems.append(f"{where}: no row with id {eid!r}")
+                unknown_entities.append((eid, "entity"))
+                continue
+            bad = sorted(set(data.get("fields") or []) - lockable_fields(row_kind))
+            if bad:
+                problems.append(f"{where}: {', '.join(bad)} cannot be locked on a {row_kind.replace('_', ' ')} "
+                                f"(lockable: {', '.join(sorted(lockable_fields(row_kind)))})")
+                continue
+            out.append(type(op).model_validate(data))
+            continue
         if kind not in allowed:
             problems.append(f"{where}: {kind.replace('_', ' ')}s do not exist in {FAMILY_NAMES[vocab.family]} models")
             continue
@@ -514,6 +600,16 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                 elif t.abstract:
                     problems.append(f"{where}: {fname} {t.label!r} is abstract and cannot be instantiated")
 
+        prop_term = vocab.term(data["property"]) if op.op == "set_property" else None
+        if prop_term is not None and prop_term.kind == "entity_property":
+            spec = prop_term.value_spec
+            try:
+                property_literal(spec, data["value"])
+            except ValueError as e:
+                problems.append(f"{where}: {e}")
+            if not data.get("unit") and spec.get("units") and len(spec["units"]) == 1:
+                data["unit"] = spec["units"][0]
+
         if "label" in data and data["label"] is not None and not str(data["label"]).strip():
             problems.append(f"{where}: label cannot be empty")
         if op.op.startswith("delete_"):
@@ -567,8 +663,70 @@ class GenericOps:
             g.add((n, RDF.type, URIRef(op.type)))
         self.r.touch(op.id, *fields)
 
+    def add_type(self, op: AddType) -> None:
+        n = self.any_node(op.id)
+        if (n, RDF.type, URIRef(op.type)) not in self.pg.model:
+            self.pg.model.add((n, RDF.type, URIRef(op.type)))
+            self.r.touch(op.id, "type")
+
+    def remove_type(self, op: RemoveType) -> None:
+        n = self.any_node(op.id)
+        g = self.pg.model
+        if (n, RDF.type, URIRef(op.type)) not in g:
+            return
+        if sum(1 for t in g.objects(n, RDF.type) if isinstance(t, URIRef)) < 2:
+            raise OperationError([f"{self._name(n)} would be left without a type; add its new type first"])
+        g.remove((n, RDF.type, URIRef(op.type)))
+        self.r.touch(op.id, "type")
+
+    def set_lock(self, op: SetLock) -> None:
+        eid = op.id
+        node = self.pg.ns[eid] if eid.startswith("rl-") else self.any_node(eid)
+        kind = entity_kind(self.pg, self.vocab, eid)
+        every = lockable_fields(kind or "")
+        fields = set(op.fields) if op.fields else (every if op.locked else self.pg.locked_fields(node))
+        if op.locked:
+            self.pg.lock(node, fields)
+        else:
+            for f in fields:
+                self.pg.ann.remove((node, WB.locked, RDFLiteral(f)))
+
+    def _drop_properties(self, n, prop=None) -> None:
+        g = self.pg.model
+        for p, o in list(g.predicate_objects(n)):
+            if (prop is None and self.vocab.kind_of(str(p)) == "entity_property") or p == prop:
+                g.remove((n, p, o))
+                if not isinstance(o, RDFLiteral) and (None, None, o) not in g:
+                    g.remove((o, None, None))
+
+    def set_property(self, op: SetProperty) -> None:
+        n = self.any_node(op.id)
+        prop = URIRef(op.property)
+        term = self.vocab.term(op.property)
+        spec = term.value_spec if term else {}
+        lit = property_literal(spec, op.value)
+        self._drop_properties(n, prop)
+        node = property_node(n, prop)
+        g = self.pg.model
+        g.add((n, prop, node))
+        g.add((node, BRICK.value, lit))
+        if op.unit:
+            g.add((node, BRICK.hasUnit, URIRef(op.unit)))
+        name = self.vocab.label(op.property)
+        if spec.get("values") and str(lit) not in spec["values"]:
+            self.r.notes.append(f"{name} {str(lit)!r} is not one of the values Brick lists for it")
+        if spec.get("units") and op.unit and op.unit not in spec["units"]:
+            self.r.notes.append(f"{self.vocab.label(op.unit)} is not a unit Brick allows for {name}")
+        self.pg.add_evidence(n, op.evidence or [])
+        self.r.touch(op.id, "properties")
+
+    def remove_property(self, op: RemoveProperty) -> None:
+        self._drop_properties(self.any_node(op.id), URIRef(op.property))
+        self.r.touch(op.id, "properties")
+
     def delete_entity(self, op: DeleteEntity) -> None:
         n = self.any_node(op.id)
+        self._drop_properties(n)
         self.pg.model.remove((n, None, None))
         self.pg.model.remove((None, None, n))
         self.pg.unregister(op.id)

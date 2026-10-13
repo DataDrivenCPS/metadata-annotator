@@ -45,7 +45,7 @@ QUDT = Namespace("http://qudt.org/schema/qudt/")
 QK = Namespace("http://qudt.org/vocab/quantitykind/")
 UNIT = Namespace("http://qudt.org/vocab/unit/")
 
-CATALOG_VERSION = 15
+CATALOG_VERSION = 16
 
 # Resolve one closure at a time (each downloads its sources and imports).
 _RESOLVE_LOCK = threading.Lock()
@@ -84,6 +84,9 @@ class Term:
     # units only: quantity kinds the unit applies to; symbol
     quantity_kinds: list[str] = field(default_factory=list)
     symbol: str = ""
+    # entity properties (Brick) only: what its value node takes, from the property's value shape:
+    # {"datatype": xsd IRI | None, "numeric": bool, "values": [allowed literals] | None, "units": [unit IRIs] | None}
+    value_spec: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -365,6 +368,12 @@ class Vocabulary:
         for kind, members in groups.items():
             for iri in members:
                 add(iri, kind)
+        if self.family == "brick":
+            # Entity properties (area, azimuth...): static values of an entity, held as a value node.
+            for prop in sorted(set(g.subjects(RDF.type, BRICK.EntityProperty))):
+                if isinstance(prop, URIRef):
+                    add(str(prop), "entity_property")
+                    terms[str(prop)]["value_spec"] = _value_spec(g, prop)
 
         # Every other class in the ontologies (walls, zones, systems...): generic entities.
         for iri in sorted({*parents, *children}):
@@ -743,6 +752,34 @@ _VALUE_SHAPES = ("https://brickschema.org/schema/BrickShape#",)
 VALUE_KINDS = {"enumeration", "medium", "role", "substance", "process"}
 # Term kinds that are classes an entity can have ("class" is every class without its own editor).
 CLASS_KINDS = {"class", "equipment", "location", "point_class", "property", "sensor", "connection", "port"}
+
+
+def _value_spec(g: Graph, prop: URIRef) -> dict:
+    """What a Brick entity property's value node takes, read from the shape its ``sh:node`` names
+    (sh:path brick:value for the value, brick:hasUnit for the unit)."""
+    spec: dict = {"datatype": None, "numeric": False, "values": None, "units": None}
+
+    def items(lst) -> list:
+        try:
+            return list(Collection(g, lst))
+        except Exception:  # noqa: BLE001 - a malformed list is just not a constraint
+            return []
+
+    for shape in g.subjects(SH.path, prop):
+        for node in g.objects(shape, SH.node):
+            for ps in g.objects(node, SH.property):
+                path = g.value(ps, SH.path)
+                allowed = g.value(ps, SH["in"])
+                if path == BRICK.value:
+                    if (ps, SH["or"], None) in g:
+                        spec["numeric"] = True
+                    dt = g.value(ps, SH.datatype)
+                    spec["datatype"] = str(dt) if dt is not None else spec["datatype"]
+                    if allowed is not None:
+                        spec["values"] = [str(v) for v in items(allowed)]
+                elif path == BRICK.hasUnit and allowed is not None:
+                    spec["units"] = [str(u) for u in items(allowed)]
+    return spec
 
 
 def _meta(iri: str) -> bool:

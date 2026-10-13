@@ -25,7 +25,7 @@ from . import views as views_mod
 from .llm import LLMError, make_client
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
-from .projection import POINT_KIND_LABELS, entity_iri, sensors_of, typed_field
+from .projection import POINT_KIND_LABELS, entity_iri, entity_properties, sensors_of, typed_field
 from .runs import ProviderUnavailable, RunManager
 from .relations import find as find_relationship
 from .schemas import CsvImportConfig, SelectionScope, SourceRegion
@@ -206,6 +206,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out = asdict(t)
         if t.kind in ("equipment", "sensor", "connection", "point_class"):
             out["shape"] = vocab.describe_class(iri)
+        if t.kind == "entity_property":  # the units its value takes, with labels for a picker
+            out["value_spec"] = {**t.value_spec, "unit_terms": [
+                {"iri": u, "label": vocab.label(u), "symbol": (ut.symbol if (ut := vocab.term(u)) else "")}
+                for u in t.value_spec.get("units") or []]}
         return out
 
     # ----------------------------------------------------------- projects
@@ -342,6 +346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     for e in evidence if e]
         return {"id": eid, "iri": str(node), "revision": rid, "row": asdict(row) if row else None,
                 "types": [{"iri": str(t), "label": vocab.label(str(t))} for t in pg.model.objects(node, RDF.type)],
+                "properties": entity_properties(pg, vocab, node),
                 "turtle": sub.serialize(format="turtle"),
                 "locked": sorted(pg.locked_fields(node)),
                 "evidence": [e for e in evidence if e],

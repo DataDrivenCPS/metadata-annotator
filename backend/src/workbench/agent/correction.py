@@ -144,6 +144,11 @@ these reach everything):
 - create_entity {{label, type}}; update_entity {{id, fields...}}; delete_entity {{id}} - an instance of any
   class (e.g. a zone, a wall, a system). For equipment, points and connections prefer their own
   operations, which also write the parts the vocabulary expects.
+- add_type {{id, type}}; remove_type {{id, type}} - give any entity an extra class (or drop one; it keeps
+  at least one). update_entity type replaces its class instead.
+- set_property {{id, property, value, unit?}}; remove_property {{id, property}} - a static Brick entity
+  property of any entity (brick:area, brick:tilt, brick:yearBuilt...; Brick models only). The unit is
+  implied when Brick allows just one; give numbers as numbers. Not for live readings: those are points.
 - relate {{subject, relation, object}}; unrelate {{id}} - any relation the vocabulary defines between any
   two entities (by id), or from an entity to a vocabulary value (e.g. an enumeration member). This
   includes relations the fields above also show, when a field cannot say it (a second parent, a
@@ -246,8 +251,12 @@ def operation_schema(vocab=None, evidence: bool = True) -> dict:
     for model in get_args(get_args(ops_mod.Operation)[0]):  # every operation type
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
-        kind = "relationship" if name in ("relate", "unrelate") else name.split("_", 1)[1]
-        if allowed is not None and kind not in allowed:
+        kind = ("relationship" if name in ("relate", "unrelate")
+                else "entity" if name in ("add_type", "remove_type", "set_property", "remove_property")
+                else name.split("_", 1)[1])
+        if name == "set_lock":
+            continue  # people lock and unlock; the assistant does not
+        if allowed is not None and (kind not in allowed or (name.endswith("_property") and "property" not in allowed[kind])):
             continue
         keep = {"op", "id", *(allowed[kind] if allowed is not None else sch["properties"])} - (
             set() if evidence else {"evidence"})

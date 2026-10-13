@@ -5,7 +5,7 @@ from rdflib import URIRef
 
 from conftest import by_label
 from workbench.operations import OperationError, OperationList
-from workbench.vocabulary import REC, S223
+from workbench.vocabulary import BRICK, REC, S223, UNIT
 
 
 def ops(*raw):
@@ -181,3 +181,67 @@ def test_generic_location_edits_lock_the_owning_entity(workspace, profile, equip
     removal = p.build_candidate(rev.id, ops({"op": "unrelate", "id": rid}))
     assert "location" in removal.result.changes[pump.id]
     assert next(c for c in removal.changes if c.entity_id == pump.id).overrides_locked
+
+
+def test_entities_can_have_several_types(zones):
+    p = zones
+    zone = by_label(p.view(p.head()).entities, "Zone A")
+    rev, _ = p.edit(p.head(), ops({"op": "add_type", "id": zone.id, "type": "s223:DomainSpace"}))
+    types = set(p.graph(rev.id).model.objects(URIRef(zone.iri), URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")))
+    assert {S223.Zone, S223.DomainSpace} <= types
+    rev2, _ = p.edit(rev.id, ops({"op": "remove_type", "id": zone.id, "type": "s223:DomainSpace"}))
+    assert S223.DomainSpace not in p.graph(rev2.id).model.objects(URIRef(zone.iri), URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"))
+    with pytest.raises(OperationError):
+        p.edit(rev2.id, ops({"op": "remove_type", "id": zone.id, "type": "s223:Zone"}))
+
+
+def test_brick_entity_properties(workspace, registry):
+    brick = registry.get("brick")
+    area = brick.term(str(BRICK.area))
+    assert area.kind == "entity_property" and area.value_spec["numeric"]
+    assert {str(UNIT.FT2), str(UNIT.M2)} <= set(area.value_spec["units"])
+    assert brick.term(str(BRICK.yearBuilt)).value_spec["datatype"].endswith("nonNegativeInteger")
+
+    p = workspace.create("Props", "brick")
+    rev, _ = p.edit(p.head(), ops({"op": "create_entity", "id": "new:r", "label": "Room 1", "type": "rec:Room"}))
+    room = by_label(p.view(rev.id).spaces, "Room 1")
+    rev, cand = p.edit(rev.id, ops({"op": "set_property", "id": room.id, "property": "brick:area", "value": "250",
+                                                           "unit": "unit:M2"}))
+    g = p.graph(rev.id).model
+    (node,) = g.objects(URIRef(room.iri), BRICK.area)
+    assert g.value(node, BRICK.value).toPython() == 250 and g.value(node, BRICK.hasUnit) == UNIT.M2
+    assert [(c.entity_id, [f.field for f in c.fields]) for c in cand.changes] == [(room.id, ["Area"])]
+    # setting again replaces the value; same value nodes each time (stable diffs)
+    rev2, _ = p.edit(rev.id, ops({"op": "set_property", "id": room.id, "property": "brick:area", "value": 300,
+                                                             "unit": "unit:M2"}))
+    g2 = p.graph(rev2.id).model
+    assert list(g2.objects(URIRef(room.iri), BRICK.area)) == [node] and g2.value(node, BRICK.value).toPython() == 300
+    # a value that cannot be the property's type is refused
+    with pytest.raises(OperationError):
+        p.edit(rev2.id, ops({"op": "set_property", "id": room.id, "property": "brick:yearBuilt", "value": "soon"}))
+    rev3, _ = p.edit(rev2.id, ops({"op": "remove_property", "id": room.id, "property": "brick:area"}))
+    assert not list(p.graph(rev3.id).model.objects(URIRef(room.iri), BRICK.area))
+    assert (node, None, None) not in p.graph(rev3.id).model
+    # not a 223P concept
+    p223 = workspace.create("P", "watr")
+    with pytest.raises(OperationError):
+        p223.edit(p223.head(), ops({"op": "set_property", "id": "x", "property": "brick:area", "value": 1}))
+
+
+def test_any_row_can_be_locked_and_unlocked(zones):
+    p = zones
+    v = p.view(p.head())
+    zone, rid = by_label(v.entities, "Zone A"), rel(v, "hasDomainSpace", "Zone A")[0].id
+    rev, _ = p.edit(p.head(), ops({"op": "set_lock", "id": zone.id, "locked": True},
+                                  {"op": "set_lock", "id": rid, "locked": True}))
+    v = p.view(rev.id)
+    assert by_label(v.entities, "Zone A").locked == ["label", "properties", "type"] and v.rows()[rid].locked == ["relationship"]
+    rev, _ = p.edit(rev.id, ops({"op": "set_lock", "id": zone.id, "locked": False, "fields": ["type"]},
+                                {"op": "set_lock", "id": rid, "locked": False}))
+    v = p.view(rev.id)
+    assert by_label(v.entities, "Zone A").locked == ["label", "properties"] and v.rows()[rid].locked == []
+    with pytest.raises(OperationError):
+        p.edit(rev.id, ops({"op": "set_lock", "id": zone.id, "locked": True, "fields": ["colour"]}))
+    # a person's direct edit still locks what it sets
+    rev, _ = p.edit(rev.id, ops({"op": "update_entity", "id": zone.id, "label": "Zone B"}))
+    assert by_label(p.view(rev.id).entities, "Zone B").locked == ["label", "properties"]

@@ -211,6 +211,40 @@ def _first(g, s, p):
     return next(iter(g.objects(s, p)), None)
 
 
+def property_node(node, prop) -> URIRef:
+    """The value node of an entity property: a minted IRI (not a blank node), so the same edit
+    always produces the same triples and a proposal re-applies to exactly its previewed diff."""
+    return URIRef(f"{node}-{local_name(str(prop))}")
+
+
+def entity_properties(pg: ProjectGraph, vocab: Vocabulary, node) -> list[dict]:
+    """Static entity properties (brick:area, brick:tilt...) the entity has: the property, its
+    value as written, and its unit."""
+    g = pg.model
+    out = []
+    for p, o in sorted(g.predicate_objects(node), key=lambda po: str(po[0])):
+        if vocab.kind_of(str(p)) != "entity_property":
+            continue
+        value = g.value(o, BRICK.value)
+        unit = g.value(o, BRICK.hasUnit)
+        unit_term = vocab.term(str(unit)) if unit is not None else None
+        out.append({"property": asdict(TermRef.of(vocab, p)),  # type: ignore[arg-type]
+                    "value": None if value is None else str(value),
+                    "unit": asdict(TermRef.of(vocab, unit)) if unit is not None else None,  # type: ignore[arg-type]
+                    "unit_symbol": unit_term.symbol if unit_term else ""})
+    return out
+
+
+def extra_facts(pg: ProjectGraph, vocab: Vocabulary, node) -> dict[str, str]:
+    """What the typed rows do not show about an entity, for change listings: every class when it
+    has several, and its entity properties."""
+    types = sorted({vocab.label(str(t)) for t in pg.model.objects(node, RDF.type) if isinstance(t, URIRef)})
+    out = {"types": ", ".join(types)} if len(types) > 1 else {}
+    for prop in entity_properties(pg, vocab, node):
+        out[prop["property"]["label"]] = f"{prop['value']} {prop['unit_symbol'] or (prop['unit'] or {}).get('label', '')}".strip()
+    return out
+
+
 def most_specific(vocab: Vocabulary, types: list[str], kind: str | None = None) -> str | None:
     """Pick the most specific of several asserted classes (ignores unknown terms)."""
     known = [t for t in types if vocab.term(t) and (kind is None or vocab.kind_of(t) == kind)]
@@ -610,6 +644,7 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
             subject=EntityRef(sid, slabel), relation=rel,  # type: ignore[arg-type]
             object=EntityRef(obj[0], obj[2]) if obj else None, value=value,
             symmetric=bool(term and term.symmetric), virtual=str(p) in vocab.virtual,
+            locked=sorted(pg.locked_fields(pg.ns[relationship_id(key)])),
             evidence=pg.evidence(pg.ns[relationship_id(key)])))
         for eid in (sid, obj[0] if obj else None) if str(p) not in vocab.virtual else ():
             if eid:

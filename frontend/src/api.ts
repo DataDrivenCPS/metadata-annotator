@@ -69,8 +69,8 @@ export const api = {
   describeSelection: (pid: string, sel: Selection) =>
     req<{ summary: string }>('POST', `${P(pid)}/selection/describe`, sel),
   assist: (pid: string, base_revision: string, selection: Selection, instruction: string, provider?: string,
-    parent_run_id?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id }),
+    parent_run_id?: string, inherit_selection = true) =>
+    req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id, inherit_selection }),
   autofix: (pid: string, base_revision: string, issue_ids: string[], provider?: string) =>
     req<AgentRun>('POST', `${P(pid)}/autofix`, { base_revision, issue_ids, provider }),
   build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>, source_roles?: Record<string, SourceRole>) =>

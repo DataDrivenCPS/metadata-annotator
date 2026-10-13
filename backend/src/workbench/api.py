@@ -52,6 +52,7 @@ class AssistRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=4000)
     provider: str | None = None
     parent_run_id: str | None = None  # continue this run's conversation, e.g. answer its questions
+    inherit_selection: bool = True  # with nothing selected, keep the continued run's scope
 
 
 class AutofixRequest(BaseModel):
@@ -557,7 +558,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p = project(pid)
         try:
             run = runs.start_correction(p, body.base_revision, body.selection, body.instruction, body.provider,
-                                        body.parent_run_id)
+                                        body.parent_run_id, body.inherit_selection)
         except (KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except ProviderUnavailable as exc:

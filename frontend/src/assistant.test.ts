@@ -251,3 +251,31 @@ describe('auto-fix on a selection', () => {
     expect(issuesOnSelection([issue], { ...emptySelection(), entity_ids: ['https://example.org/term'] })).toEqual([])
   })
 })
+
+describe('what a reply is about', () => {
+  const about = (...ids: string[]) => ({ ...emptySelection(), entity_ids: ids })
+  const asked = run('asked', '2026-01-01T10:00:00Z', {
+    selection: about('eq-rooms'), outcome: { questions: ['Which areas?'] },
+  })
+  const next = continuation([asked], null, false)
+  const before = Date.parse('2026-01-01T09:00:00Z')
+  const after = Date.parse('2026-01-01T11:00:00Z')
+
+  it('ignores a selection left over from before the request being answered', () => {
+    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, before))
+      .toEqual({ selection: about('eq-rooms'), source: 'conversation' })
+  })
+  it('uses a selection made since the request', () => {
+    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, after).source).toBe('current')
+  })
+  it('is about nothing once the person drops the conversation scope', () => {
+    expect(effectiveSelection(next, emptySelection(), [asked], null, before, true))
+      .toEqual({ selection: emptySelection(), source: 'current' })
+    expect(effectiveSelection(next, about('eq-rtu4'), [asked], null, before, true).selection.entity_ids).toEqual([])
+  })
+  it('is about nothing when the earlier request had nothing selected', () => {
+    const open = run('open', '2026-01-01T10:00:00Z', { selection: emptySelection(), outcome: { questions: ['?'] } })
+    expect(effectiveSelection(continuation([open], null, false), about('eq-rtu4'), [open], null, before).selection.entity_ids)
+      .toEqual([])
+  })
+})

@@ -56,16 +56,29 @@ export function proposalStates(proposals: Proposal[]): Record<string, ProposalSt
 
 export type SelectionSource = 'current' | 'conversation' | 'proposal'
 
-const isEmpty = (s: Selection) =>
-  !s.entity_ids.length && !s.relationship_ids.length && !s.field_ids.length && !s.source_regions.length
 
-/** The selection the next message will be about, matching what the server uses. */
+const noObjects = (s: Selection) => !s.entity_ids.length && !s.relationship_ids.length && !s.field_ids.length
+
+/**
+ * The selection the next message will be about, matching what the server uses. A reply to the
+ * assistant (its questions, or the conversation) stays about what that exchange was about unless the
+ * person selected something since the assistant last answered, or dropped that scope. Whatever was
+ * left selected from before is not what they are answering about.
+ */
 export function effectiveSelection(next: Continuation | null, current: Selection, thread: AgentRun[],
-                                   proposal: Proposal | null): { selection: Selection; source: SelectionSource } {
+                                   proposal: Proposal | null, selectionAt = Infinity, noScope = false,
+): { selection: Selection; source: SelectionSource } {
   if (next?.kind === 'proposal' && proposal) return { selection: proposal.selection, source: 'proposal' }
   const parent = next?.runId ? thread.find((r) => r.id === next.runId) : null
-  if (parent?.selection && isEmpty(current) && !isEmpty(parent.selection)) {
-    return { selection: parent.selection, source: 'conversation' }
+  if (!parent) return { selection: current, source: 'current' }
+  if (noScope) return { selection: { ...emptySelection(), source_regions: current.source_regions }, source: 'current' }
+  const requestedAt = Date.parse(parent.created_at)
+  const stale = !noObjects(current) && selectionAt <= requestedAt  // picked before that request, not since
+  if (noObjects(current) || stale) {
+    const own = parent.selection ?? emptySelection()
+    if (!noObjects(own) || stale) {
+      return { selection: { ...own, source_regions: current.source_regions }, source: 'conversation' }
+    }
   }
   return { selection: current, source: 'current' }
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
-  autofixReport, continuation, isActive, issueSelection, issuesPrompt, proposalStates, threadRuns,
+  autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, proposalStates, threadRuns,
   type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
@@ -35,6 +35,11 @@ interface State {
   assistantDraftVersion: number
   /** The next message starts a new request instead of continuing the conversation. */
   assistantNewRequest: boolean
+  /** When the person last changed the selection (ms): one made before the assistant's last turn is stale for a reply. */
+  selectionAt: number
+  /** The person removed the conversation's own scope: the next message is about nothing in particular. */
+  assistantNoScope: boolean
+  dropConversationScope: () => void
   /** Conversation items cleared locally, retained on the server for project history. */
   assistantCleared: { runs: string[]; proposals: string[] }
   provider: string | null
@@ -135,7 +140,7 @@ function acceptStartedRun(run: AgentRun, pid: string, project: number, request: 
     return true
   }
   useStore.setState({ runs: { ...state.runs, [run.id]: latest }, activeRunId: run.id,
-    assistantNewRequest: false, ...(clearProposal ? { proposal: null } : {}) })
+    assistantNewRequest: false, assistantNoScope: false, ...(clearProposal ? { proposal: null } : {}) })
   // Completion may have arrived before this became the active run; recover its proposal.
   useStore.getState().handleEvent({ type: 'run', run: latest })
   return true
@@ -160,6 +165,8 @@ export const useStore = create<State>((set, get) => ({
   assistantIssueContext: null,
   assistantDraftVersion: 0,
   assistantNewRequest: false,
+  selectionAt: 0,
+  assistantNoScope: false,
   assistantCleared: { runs: [], proposals: [] },
   provider: null,
   toast: null,
@@ -275,10 +282,11 @@ export const useStore = create<State>((set, get) => ({
 
   click: (target, mods, order) => {
     const selection = applyClick(get().selection, target, mods, order, get().anchor)
-    set({ selection, anchor: mods.shift ? get().anchor : target.id, inspectId: target.id })
+    set({ selection, anchor: mods.shift ? get().anchor : target.id, inspectId: target.id, selectionAt: Date.now(), assistantNoScope: false })
   },
-  setSelection: (selection) => set({ selection }),
-  clearSelection: () => set({ selection: emptySelection(), anchor: null }),
+  setSelection: (selection) => set({ selection, selectionAt: Date.now(), assistantNoScope: false }),
+  clearSelection: () => set({ selection: emptySelection(), anchor: null, selectionAt: Date.now() }),
+  dropConversationScope: () => set({ assistantNoScope: true }),
   setTab: (tab) => set({ tab }),
   setDrawerTab: (drawerTab) => set({ drawerTab }),
   setAssistantDraft: (assistantDraft) => set((s) => ({ assistantDraft,
@@ -313,7 +321,7 @@ export const useStore = create<State>((set, get) => ({
     const previous = assistantIssueContext && assistantDraft.includes(assistantIssueContext.text) ? assistantIssueContext : null
     const merged = [...new Map([...(previous?.issues ?? []), ...issues].map((issue) => [issue.id, issue])).values()]
     const text = issuesPrompt(merged, rows)
-    set((s) => ({ selection: issueSelection(merged, rows),
+    set((s) => ({ selection: issueSelection(merged, rows), selectionAt: Date.now(), assistantNoScope: false,
       assistantDraft: previous ? assistantDraft.replace(previous.text, () => text)
         : [assistantDraft.trim(), text].filter(Boolean).join('\n\n'),
       assistantIssueContext: { issues: merged, text }, assistantNewRequest: true,
@@ -392,12 +400,21 @@ export const useStore = create<State>((set, get) => ({
 
   assist: async (instruction, parentRunId) => {
     if (readOnly()) return false
-    const { projectId, model, selection, provider } = get()
+    const { projectId, model, selection, provider, runs, assistantCleared, proposal, selectionAt, assistantNoScope } = get()
     if (!projectId || !model) return false
     const project = projectGeneration
     const request = ++assistantGeneration
+    // Send what the composer shows as the scope; the server fills in the conversation's own scope
+    // when it gets none (and not when the person dropped it).
+    const thread = threadRuns(runs, assistantCleared.runs)
+    const parent = parentRunId ? thread.find((r) => r.id === parentRunId) : undefined
+    const next = parent ? continuation(thread, proposal, false) : null
+    const about = effectiveSelection(next, selection, thread, proposal, selectionAt, assistantNoScope)
+    const sent = about.source === 'current' ? about.selection
+      : { ...emptySelection(), source_regions: selection.source_regions }
     try {
-      const run = await api.assist(projectId, model.head, selection, instruction, provider ?? undefined, parentRunId)
+      const run = await api.assist(projectId, model.head, sent, instruction, provider ?? undefined, parentRunId,
+        !(parent && assistantNoScope))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false

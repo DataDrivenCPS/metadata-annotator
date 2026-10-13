@@ -105,7 +105,10 @@ function Composer() {
   const running = !!last && isActive(last)
   const next = continuation(thread, proposal, newRequest)
   const canContinue = continuation(thread, proposal, false) !== null
-  const { selection: about, source } = effectiveSelection(next, selection, thread, proposal)
+  const selectionAt = useStore((s) => s.selectionAt)
+  const noScope = useStore((s) => s.assistantNoScope)
+  const dropScope = useStore((s) => s.dropConversationScope)
+  const { selection: about, source } = effectiveSelection(next, selection, thread, proposal, selectionAt, noScope)
   const summary = summarize(about, rows)
   const chosen = [...about.entity_ids, ...about.relationship_ids].map((id) => rows.get(id)).filter(Boolean)
   const fixable = source === 'current' && !autofixing && !viewing ? issuesOnSelection(issues ?? [], selection) : []
@@ -123,7 +126,7 @@ function Composer() {
   return (
     <div className="composer">
       <div className="composer-selection" title={source === 'conversation'
-        ? 'Nothing is selected, so this message stays about what the conversation was about. Select something to change it.'
+        ? 'This message stays about what the conversation was about, since you have not selected anything since that request. Select something to change it.'
         : source === 'proposal' ? 'A reply revises the proposal, so it keeps the proposal’s selection.' : undefined}>
         <span className="muted">{source === 'current' ? 'Selected:'
           : source === 'conversation' ? 'About (from the conversation):' : 'About (the proposal’s selection):'}</span>
@@ -131,6 +134,7 @@ function Composer() {
           {chosen.slice(0, 6).map((r) => <span key={r!.id} className={`chip ${r!.kind}`}>{r!.label}</span>)}
           {chosen.length > 6 && <span className="muted">+{chosen.length - 6} more</span>}
           {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
+          {source === 'conversation' && <button className="link" onClick={dropScope}>clear</button>}
           {fixable.length > 0 && <button className="link" disabled={running}
             title="The assistant fixes these issues group by group; fixes that pass every check are applied (and can be undone), the rest wait for you"
             onClick={() => void startAutofix(fixable)}>· Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>}

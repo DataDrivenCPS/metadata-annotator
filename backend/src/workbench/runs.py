@@ -116,8 +116,7 @@ class RunManager:
     def continued_selection(self, project: Project, parent_run_id: str | None,
                             selection: SelectionScope) -> SelectionScope:
         """A follow-up with nothing selected keeps talking about what the earlier run was about."""
-        empty = not (selection.entity_ids or selection.relationship_ids or selection.field_ids
-                     or selection.source_regions)
+        empty = not (selection.entity_ids or selection.relationship_ids or selection.field_ids)
         if not parent_run_id or not empty:
             return selection
         inherited = self.get(project, parent_run_id).selection or SelectionScope()
@@ -125,6 +124,7 @@ class RunManager:
         return inherited.model_copy(update={
             "entity_ids": [i for i in inherited.entity_ids if i in live],
             "relationship_ids": [i for i in inherited.relationship_ids if i in live],
+            "source_regions": selection.source_regions or inherited.source_regions,
         })
 
     def recover(self, project: Project) -> None:
@@ -141,11 +141,12 @@ class RunManager:
 
     def start_correction(self, project: Project, base: str, selection: SelectionScope,
                          instruction: str, provider: str | None = None,
-                         parent_run_id: str | None = None) -> AgentRun:
+                         parent_run_id: str | None = None, inherit_selection: bool = True) -> AgentRun:
         if base != project.head():
             raise StaleRevision(base, project.head())
         history = self.history(project, parent_run_id)
-        selection = self.continued_selection(project, parent_run_id, selection)
+        if inherit_selection:
+            selection = self.continued_selection(project, parent_run_id, selection)
         cfg = self.settings.provider(provider)
         if cfg.kind == "openai":  # fail fast instead of starting a run that cannot reach its model
             health = make_client(cfg).health()  # type: ignore[attr-defined]

@@ -214,3 +214,8 @@ def test_follow_up_without_selection_keeps_the_conversation_selection(client, mo
         "base_revision": head, "selection": {"entity_ids": [p201["id"]]}, "instruction": "And this one?",
         "parent_run_id": second["id"]}).json()
     assert third["selection"]["entity_ids"] == [p201["id"]]
+    # the person dropped the conversation's scope: this reply is about nothing in particular
+    fourth = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "instruction": "In general?", "parent_run_id": third["id"],
+        "inherit_selection": False}).json()
+    assert fourth["selection"]["entity_ids"] == []

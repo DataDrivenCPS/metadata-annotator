@@ -214,7 +214,7 @@ def _first(g, s, p):
 def property_node(node, prop) -> URIRef:
     """The value node of an entity property: a minted IRI (not a blank node), so the same edit
     always produces the same triples and a proposal re-applies to exactly its previewed diff."""
-    return URIRef(f"{node}-{local_name(str(prop))}")
+    return URIRef(f"{node}-{local_name(str(prop))}-{hashlib.sha1(str(prop).encode()).hexdigest()[:6]}")
 
 
 def entity_properties(pg: ProjectGraph, vocab: Vocabulary, node) -> list[dict]:
@@ -235,13 +235,14 @@ def entity_properties(pg: ProjectGraph, vocab: Vocabulary, node) -> list[dict]:
     return out
 
 
-def extra_facts(pg: ProjectGraph, vocab: Vocabulary, node) -> dict[str, str]:
+def extra_facts(pg: ProjectGraph, vocab: Vocabulary, node) -> dict[str, tuple[str, str]]:
     """What the typed rows do not show about an entity, for change listings: every class when it
-    has several, and its entity properties."""
+    has several, and its entity properties. Maps the field shown to (the lock that covers it, its value)."""
     types = sorted({vocab.label(str(t)) for t in pg.model.objects(node, RDF.type) if isinstance(t, URIRef)})
-    out = {"types": ", ".join(types)} if len(types) > 1 else {}
+    out = {"types": ("type", ", ".join(types))} if len(types) > 1 else {}
     for prop in entity_properties(pg, vocab, node):
-        out[prop["property"]["label"]] = f"{prop['value']} {prop['unit_symbol'] or (prop['unit'] or {}).get('label', '')}".strip()
+        out[prop["property"]["label"]] = (
+            "properties", f"{prop['value']} {prop['unit_symbol'] or (prop['unit'] or {}).get('label', '')}".strip())
     return out
 
 

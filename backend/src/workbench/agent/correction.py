@@ -251,12 +251,10 @@ def operation_schema(vocab=None, evidence: bool = True) -> dict:
     for model in get_args(get_args(ops_mod.Operation)[0]):  # every operation type
         sch = _clean_schema(model.model_json_schema())
         name = model.model_fields["op"].default
-        kind = ("relationship" if name in ("relate", "unrelate")
-                else "entity" if name in ("add_type", "remove_type", "set_property", "remove_property")
-                else name.split("_", 1)[1])
+        kind = ops_mod.kind_of_op_name(name)
         if name == "set_lock":
             continue  # people lock and unlock; the assistant does not
-        if allowed is not None and (kind not in allowed or (name.endswith("_property") and "property" not in allowed[kind])):
+        if allowed is not None and (kind not in allowed or (name in ops_mod.PROPERTY_OPS and "property" not in allowed[kind])):
             continue
         keep = {"op", "id", *(allowed[kind] if allowed is not None else sch["properties"])} - (
             set() if evidence else {"evidence"})

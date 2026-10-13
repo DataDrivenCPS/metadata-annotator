@@ -36,6 +36,7 @@ from .projection import (
     connection_ends,
     entity_iri,
     entity_kind,
+    entity_properties,
     owner_of_port,
     paired_port,
     point_owner,
@@ -311,8 +312,9 @@ LOCKABLE_FIELDS = {
     "connection_point": {"label", "equipment", "direction", "medium", "paired_with", "maps_to"},
     "relationship": set(),  # only lockable as a whole, by set_lock
 }
-for _fields in LOCKABLE_FIELDS.values():
-    _fields.add("properties")  # entity properties (Brick) can be set on any entity
+for _kind, _fields in LOCKABLE_FIELDS.items():
+    if _kind != "relationship":
+        _fields.add("properties")  # entity properties (Brick) can be set on any entity
 
 def lockable_fields(row_kind: str) -> set[str]:
     """What can be locked on a row: its fields, or for a relationship the row as a whole."""
@@ -393,12 +395,21 @@ class ApplyResult:
         self.changes.setdefault(eid, set()).update(fields)
 
 
-def entity_kind_of_op(op) -> str:
-    if op.op in ("relate", "unrelate"):
+# Operations that take any entity, whatever its kind.
+GENERIC_ENTITY_OPS = {"add_type", "remove_type", "set_property", "remove_property", "set_lock"}
+PROPERTY_OPS = {"set_property", "remove_property"}  # Brick only
+
+
+def kind_of_op_name(name: str) -> str:
+    if name in ("relate", "unrelate"):
         return "relationship"
-    if op.op in ("add_type", "remove_type", "set_property", "remove_property", "set_lock"):
+    if name in GENERIC_ENTITY_OPS:
         return "entity"
-    return op.op.split("_", 1)[1]  # create_connection_point -> connection_point
+    return name.split("_", 1)[1]  # create_connection_point -> connection_point
+
+
+def entity_kind_of_op(op) -> str:
+    return kind_of_op_name(op.op)
 
 
 # The row kind a node of a catalogued class kind projects as (create_entity takes any of them).
@@ -683,8 +694,17 @@ class GenericOps:
         eid = op.id
         node = self.pg.ns[eid] if eid.startswith("rl-") else self.any_node(eid)
         kind = entity_kind(self.pg, self.vocab, eid)
-        every = lockable_fields(kind or "")
-        fields = set(op.fields) if op.fields else (every if op.locked else self.pg.locked_fields(node))
+        if op.fields:
+            fields = set(op.fields)
+        elif not op.locked:
+            fields = self.pg.locked_fields(node)
+        elif kind == "relationship":
+            fields = {"relationship"}
+        else:  # lock what the row has set: its fields with a value
+            row = project_view(self.pg, self.vocab).rows().get(eid)
+            fields = {f for f in lockable_fields(kind or "")
+                      if (f == "properties" and entity_properties(self.pg, self.vocab, node))
+                      or getattr(row, f, None) not in (None, "")}
         if op.locked:
             self.pg.lock(node, fields)
         else:

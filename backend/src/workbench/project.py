@@ -135,9 +135,18 @@ def compute_changes(before: ModelView, after: ModelView, selected: set[str],
     """Every entity whose projection differs, whether or not the operations named it. With both
     graphs and the vocabulary, also facts the rows do not show: all classes and entity properties."""
 
-    def extras(pg: ProjectGraph | None, row) -> dict[str, str]:
-        node = URIRef(row.iri) if pg is not None and vocab is not None and getattr(row, "iri", "") else None
-        return extra_facts(pg, vocab, node) if node is not None else {}  # type: ignore[arg-type]
+    # Only entities whose triples changed (or that point at a changed value node) can differ in extras.
+    touched: set | None = None
+    if after_pg is not None and vocab is not None:
+        old, new = set(before_pg.model), set(after_pg.model)
+        touched = {t[0] for t in old ^ new}
+        touched |= {s for n in list(touched) for g in (before_pg.model, after_pg.model) for s in g.subjects(None, n)}
+
+    def extras(pg: ProjectGraph | None, row, always: bool) -> dict[str, tuple[str, str]]:
+        iri = getattr(row, "iri", "")
+        if touched is None or pg is None or not iri or not (always or URIRef(iri) in touched):
+            return {}
+        return extra_facts(pg, vocab, URIRef(iri))  # type: ignore[arg-type]
 
     b, a = before.rows(), after.rows()
     out: list[EntityChange] = []
@@ -152,28 +161,27 @@ def compute_changes(before: ModelView, after: ModelView, selected: set[str],
         if minted and (rb is None or ra is None):
             continue
         getters = [(f, g) for f, g in DISPLAY_FIELDS[kind] if not (minted and f in ("label", "connection"))]
-        eb, ea = extras(before_pg, rb) if rb else {}, extras(after_pg, ra) if ra else {}
+        eb = extras(before_pg, rb, ra is None) if rb else {}
+        ea = extras(after_pg, ra, rb is None) if ra else {}
         if rb is None:
             change = "created"
             fields = [FieldChange(field=f, after=g(ra)) for f, g in getters if g(ra) not in (None, "")]
-            fields += [FieldChange(field=f, after=v) for f, v in ea.items()]
+            fields += [FieldChange(field=f, after=v) for f, (_, v) in ea.items()]
         elif ra is None:
             change = "deleted"
             fields = [FieldChange(field=f, before=g(rb)) for f, g in getters if g(rb) not in (None, "")]
-            fields += [FieldChange(field=f, before=v) for f, v in eb.items()]
+            fields += [FieldChange(field=f, before=v) for f, (_, v) in eb.items()]
         else:
             fields = [FieldChange(field=f, before=g(rb), after=g(ra)) for f, g in getters if g(rb) != g(ra)]
-            fields += [FieldChange(field=f, before=eb.get(f), after=ea.get(f)) for f in [*eb, *(k for k in ea if k not in eb)]
-                       if eb.get(f) != ea.get(f)]
+            fields += [FieldChange(field=f, before=eb.get(f, (0, None))[1], after=ea.get(f, (0, None))[1])
+                       for f in [*eb, *(k for k in ea if k not in eb)] if eb.get(f) != ea.get(f)]
             if not fields:
                 continue
             change = "updated"
         if kind == "connection":
             changed_connections.add(row.iri)  # type: ignore[union-attr]
         locked = set(rb.locked) if rb else set()  # type: ignore[union-attr]
-        # extra facts are locked as "type" (classes) and "properties"
-        named = {f.field: ("type" if f.field == "types" else "properties" if f.field in {*eb, *ea} else f.field)
-                 for f in fields}
+        named = {f.field: ({**eb, **ea}[f.field][0] if f.field in {**eb, **ea} else f.field) for f in fields}
         out.append(EntityChange(
             entity_id=eid, entity_kind=kind, label=row.label, change=change,  # type: ignore[arg-type,union-attr]
             fields=fields, in_selection=(not selected) or eid in selected or _part_of_selection(row, selected),

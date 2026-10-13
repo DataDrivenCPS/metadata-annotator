@@ -235,13 +235,13 @@ def test_any_row_can_be_locked_and_unlocked(zones):
     rev, _ = p.edit(p.head(), ops({"op": "set_lock", "id": zone.id, "locked": True},
                                   {"op": "set_lock", "id": rid, "locked": True}))
     v = p.view(rev.id)
-    assert by_label(v.entities, "Zone A").locked == ["label", "properties", "type"] and v.rows()[rid].locked == ["relationship"]
+    assert by_label(v.entities, "Zone A").locked == ["label", "type"] and v.rows()[rid].locked == ["relationship"]
     rev, _ = p.edit(rev.id, ops({"op": "set_lock", "id": zone.id, "locked": False, "fields": ["type"]},
                                 {"op": "set_lock", "id": rid, "locked": False}))
     v = p.view(rev.id)
-    assert by_label(v.entities, "Zone A").locked == ["label", "properties"] and v.rows()[rid].locked == []
+    assert by_label(v.entities, "Zone A").locked == ["label"] and v.rows()[rid].locked == []
     with pytest.raises(OperationError):
         p.edit(rev.id, ops({"op": "set_lock", "id": zone.id, "locked": True, "fields": ["colour"]}))
     # a person's direct edit still locks what it sets
     rev, _ = p.edit(rev.id, ops({"op": "update_entity", "id": zone.id, "label": "Zone B"}))
-    assert by_label(p.view(rev.id).entities, "Zone B").locked == ["label", "properties"]
+    assert by_label(p.view(rev.id).entities, "Zone B").locked == ["label"]

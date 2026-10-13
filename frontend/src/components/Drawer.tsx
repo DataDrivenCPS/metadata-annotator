@@ -200,18 +200,21 @@ function PropertiesPanel({ eid, properties }: { eid: string; properties: EntityP
   const viewing = useStore((s) => s.viewing)
   const edit = useStore((s) => s.edit)
   const [editing, setEditing] = useState<{ iri: string; label: string; value: string; unit: string } | 'pick' | null>(null)
-  const [spec, setSpec] = useState<EntityPropertySpec | null>(null)
+  const [loaded, setLoaded] = useState<{ iri: string; spec: EntityPropertySpec | null } | null>(null)
   const iri = editing && editing !== 'pick' ? editing.iri : null
   useEffect(() => {
     if (!iri) return
     let alive = true
-    api.term(iri, profile).then((t) => alive && setSpec((t as { value_spec?: EntityPropertySpec }).value_spec ?? null))
-      .catch(() => alive && setSpec(null))
-    return () => { alive = false; setSpec(null) }
+    api.term(iri, profile)
+      .then((t) => alive && setLoaded({ iri, spec: (t as { value_spec?: EntityPropertySpec }).value_spec ?? null }))
+      .catch(() => alive && setLoaded({ iri, spec: null }))
+    return () => { alive = false }
   }, [iri, profile])
+  const ready = loaded !== null && loaded.iri === iri  // save waits for the property's value shape (its units)
+  const spec = ready ? loaded.spec : null
   if (!brick) return null
   const save = () => {
-    if (!editing || editing === 'pick' || editing.value.trim() === '') return
+    if (!editing || editing === 'pick' || !ready || !editing.iri || editing.value.trim() === '') return
     const unit = editing.unit || (spec?.unit_terms.length === 1 ? spec.unit_terms[0].iri : '')
     void edit([{ op: 'set_property', id: eid, property: editing.iri, value: editing.value.trim(), ...(unit ? { unit } : {}) }])
     setEditing(null)
@@ -221,11 +224,11 @@ function PropertiesPanel({ eid, properties }: { eid: string; properties: EntityP
     {properties.length ? <ul className="relations">
       {properties.map((p) => <li key={p.property.iri ?? p.property.label}>
         <span className="rel-name">{p.property.label}</span> {p.value}{(p.unit_symbol || p.unit?.label) ? ` ${p.unit_symbol || p.unit?.label}` : ''}
-        {!viewing && <>
+        {!viewing && p.property.iri && <>
           <button className="link" title="Change this value"
             onClick={() => setEditing({ iri: p.property.iri ?? '', label: p.property.label, value: p.value ?? '', unit: p.unit?.iri ?? '' })}>edit</button>
           <button className="link" title="Remove this property"
-            onClick={() => void edit([{ op: 'remove_property', id: eid, property: p.property.iri }])}>×</button>
+            onClick={() => void edit([{ op: 'remove_property', id: eid, property: p.property.iri ?? '' }])}>×</button>
         </>}
       </li>)}
     </ul> : <p className="muted">No static properties.</p>}
@@ -247,7 +250,7 @@ function PropertiesPanel({ eid, properties }: { eid: string; properties: EntityP
             {spec.unit_terms.length > 1 && <option value="" disabled>unit…</option>}
             {spec.unit_terms.map((u) => <option key={u.iri} value={u.iri}>{u.symbol || u.label}</option>)}
           </select>}
-          <button className="link" onClick={save}>save</button>
+          <button className="link" disabled={!ready} onClick={save}>save</button>
           <button className="link" onClick={() => setEditing(null)}>cancel</button>
         </div>)}
   </>

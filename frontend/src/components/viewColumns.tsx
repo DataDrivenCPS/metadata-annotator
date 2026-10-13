@@ -35,7 +35,7 @@ const cellText = (items: ViewCellItem[] | undefined) => (items ?? []).map((i) =>
 export function columnsFor(view: ViewData, prefix: string, byId: Map<string, ViewRow>) {
   return view.columns.map((c): Column<RowLike> => ({
     key: `${prefix}${c.key}`, header: c.label,
-    field: c.editor === 'none' ? undefined : `${prefix}${c.key}`,
+    field: c.editor === 'none' ? undefined : `${prefix}${c.key}`, lockField: c.lock,
     value: (r) => cellText(byId.get(r.id)?.cells[c.key]),
   }))
 }

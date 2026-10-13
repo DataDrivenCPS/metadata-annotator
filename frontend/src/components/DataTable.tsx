@@ -79,7 +79,8 @@ export function DataTable<R extends { id: string; locked: string[] }>(p: Props<R
                   {p.columns.map((c) => {
                     const isEditing = editing?.id === row.id && editing.key === c.key
                     const fieldSel = sel && c.field && selection.field_ids.includes(c.field)
-                    const locked = c.field && row.locked.includes(c.field)
+                    const lockField = c.lockField ?? c.field
+                    const locked = lockField && row.locked.includes(lockField)
                     return (
                       <td key={c.key}
                         className={`${fieldSel ? 'field-selected' : ''} ${c.field ? 'editable' : ''}`}

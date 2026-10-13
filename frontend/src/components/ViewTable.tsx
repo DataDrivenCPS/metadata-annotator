@@ -16,7 +16,7 @@ export function ViewTable({ vid }: { vid: string }) {
     return m
   }, [model])
   if (!data) return <p className="muted pad">Loading…</p>
-  const rows = data.rows.map((r) => ({ id: r.id, locked: [] as string[] }))
+  const rows = data.rows.map((r) => ({ id: r.id, locked: r.locked ?? [] }))
   return <DataTable rows={rows} columns={columnsFor(data, '', byId)} issueCounts={issueCounts} highlighted={new Set()}
     editor={cellEditor(data, '', byId, edit)}
     empty={`Nothing here yet. Add ${data.label.toLowerCase()} with the assistant, or create one from the Relationships panel of a related object.`} />

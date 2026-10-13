@@ -92,6 +92,7 @@ export interface Column<R> {
   key: string
   header: string
   field?: string // model field this column shows (enables field selection + editing)
+  lockField?: string // the row field whose lock this column shows, when it differs from `field`
   value: (r: R) => string
   width?: number
 }

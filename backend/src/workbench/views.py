@@ -155,6 +155,8 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
         meta: dict[str, Any] = {"key": col.key, "label": col.label, "editor": "none"}
         if col.path in SPECIAL:
             meta["editor"] = col.editor if col.editor in ("label", "type") else "none"
+            if col.path in ("label", "type"):
+                meta["lock"] = col.path  # the row field a person's lock on it covers
         else:
             try:
                 path = paths[col.key] = Path.parse(vocab, col.path)
@@ -186,7 +188,8 @@ def evaluate(pg: ProjectGraph, vocab: Vocabulary, view: ModelView, spec: ViewSpe
                 graph = vocab.graph() if col.source == "vocabulary" else pg.model
                 cells[col.key] = [v for v in _values(graph, vocab, entities, node, paths[col.key], col.source == "model")
                                   if _of_class(pg, vocab, v, col.only)]
-        out_rows.append({"id": r.id, "kind": r.kind, "label": r.label, "iri": r.iri, "cells": cells})  # type: ignore[attr-defined]
+        out_rows.append({"id": r.id, "kind": r.kind, "label": r.label, "iri": r.iri, "cells": cells,
+                         "locked": list(getattr(r, "locked", []))})  # type: ignore[attr-defined]
     return {"id": spec.id, "label": spec.label, "builtin": spec.builtin, "columns": columns, "rows": out_rows}
 
 

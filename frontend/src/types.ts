@@ -232,8 +232,9 @@ export interface ViewCellItem {
 }
 export interface ViewColumn {
   key: string; label: string; editor: 'label' | 'type' | 'relation' | 'none'
+  lock?: string  // the row field a lock covers (label, type)
   relation?: string; inverse?: boolean; relation_label?: string; relation_curie?: string
   candidates?: ViewCellItem[]
 }
-export interface ViewRow { id: string; kind: string; label: string; iri: string; cells: Record<string, ViewCellItem[]> }
+export interface ViewRow { id: string; kind: string; label: string; iri: string; cells: Record<string, ViewCellItem[]>; locked: string[] }
 export interface ViewData { id: string; label: string; builtin: string | null; columns: ViewColumn[]; rows: ViewRow[] }

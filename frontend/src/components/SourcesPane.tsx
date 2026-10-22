@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import { useStore } from '../store'
-import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
+import type { CsvGrid, CsvImportConfig, CsvPreview, DuplicateChoice, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
+
+const fmtSize = (n?: number | null) => n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
+const fmtDate = (iso?: string | null) => iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : ''
+
+interface Conflict { file: File; existing: Source; identical: boolean; resolve: (choice: DuplicateChoice | 'skip') => void }
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
   ['row_points', 'Rows describe points', 'One point per row: a name column plus optional metadata columns.'],
@@ -19,23 +24,57 @@ export function SourcesPane() {
   const [uploading, setUploading] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [choosing, setChoosing] = useState(false)
+  const [conflict, setConflict] = useState<Conflict | null>(null)
+  const [deleting, setDeleting] = useState<Source | null>(null)
   const input = useRef<HTMLInputElement>(null)
 
   const load = useCallback(() => api.sources(projectId).then(setSources), [projectId])
   useEffect(() => { void load() }, [load, sourcesVersion])
+
+  const askDuplicate = (file: File, existing: Source, identical: boolean) =>
+    new Promise<DuplicateChoice | 'skip'>((resolve) => setConflict({ file, existing, identical, resolve }))
+  const answer = (choice: DuplicateChoice | 'skip') => { conflict?.resolve(choice); setConflict(null) }
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return
     setUploading(true)
     try {
       let last: Source | null = null
-      for (const f of Array.from(files)) last = await api.uploadSource(projectId, f)
+      for (const f of Array.from(files)) {
+        try {
+          last = await api.uploadSource(projectId, f)
+        } catch (e) {
+          // Same name as an existing source: nothing was stored, so ask before overwriting anything.
+          if (!(e instanceof ApiError && e.isDuplicate)) throw e
+          const choice = await askDuplicate(f, e.body.existing as Source, e.body.identical === true)
+          if (choice === 'skip') continue
+          last = await api.uploadSource(projectId, f, choice)
+          if (choice === 'replace') notify({ kind: 'success', text: `${last.filename} is now version ${last.version}; the previous file is kept in its history.` })
+        }
+      }
       await load()
       if (last) setActive(last.id)
     } catch (e) {
       notify({ kind: 'error', text: `Upload failed: ${(e as Error).message}` })
     } finally {
       setUploading(false)
+    }
+  }
+
+  const remove = async (source: Source) => {
+    try {
+      await api.deleteSource(projectId, source.id)
+      const { selection, setSelection } = useStore.getState()
+      if (selection.source_regions.some((r) => r.source_id === source.id)) {
+        setSelection({ ...selection, source_regions: selection.source_regions.filter((r) => r.source_id !== source.id) })
+      }
+      setSelected((ids) => ids.filter((id) => id !== source.id))
+      setActive((id) => id === source.id ? null : id)
+      setDeleting(null)
+      await load()
+      notify({ kind: 'success', text: `Deleted ${source.filename}.` })
+    } catch (e) {
+      notify({ kind: 'error', text: `Delete failed: ${(e as Error).message}` })
     }
   }
 
@@ -53,6 +92,19 @@ export function SourcesPane() {
         <input ref={input} type="file" multiple hidden accept=".csv,.tsv,.txt,.md,.json,.yaml,.yml,.log,.docx,.pdf,.png,.jpg,.jpeg,.webp"
           onChange={(e) => { void upload(e.target.files); e.target.value = '' }} />
       </div>
+      {conflict && <DuplicateWarning conflict={conflict} onAnswer={answer} />}
+      {deleting && <div className="build-box source-confirm" role="alertdialog" aria-label={`Delete ${deleting.filename}`}>
+        <strong>Delete “{deleting.filename}”?</strong>
+        <p className="warn-text small">
+          This removes the file{deleting.versions.length ? `, its ${deleting.versions.length} earlier version${deleting.versions.length === 1 ? '' : 's'},` : ''}
+          {' '}and its {deleting.observation_count ?? 0} extracted record{deleting.observation_count === 1 ? '' : 's'}. It can’t be undone.
+          {!!deleting.modeled_count && ` ${deleting.modeled_count} of those records are cited by the model: those entities keep their data but lose this evidence.`}
+        </p>
+        <div className="csv-actions">
+          <button className="danger" onClick={() => void remove(deleting)}>Delete source</button>
+          <button onClick={() => setDeleting(null)}>Cancel</button>
+        </div>
+      </div>}
       {sources.length === 0 ? (
         <div className="drop-hint">
           <p>Add the documents this model is built from: point lists (CSV/TSV), drawings and P&amp;IDs (images, PDF),
@@ -73,11 +125,14 @@ export function SourcesPane() {
                 }} />
               <span className={`src-kind ${s.kind}`}>{s.kind === 'csv' ? 'CSV' : s.kind === 'image' ? 'IMG' : s.kind === 'pdf' ? 'PDF' : 'DOC'}</span>
               <span className="src-name" title={s.filename}>{s.filename}</span>
+              {s.version > 1 && <span className="badge" title={`${s.versions.length} earlier version${s.versions.length === 1 ? '' : 's'} kept`}>v{s.version}</span>}
               <span className="muted">{s.kind === 'csv'
                 ? (s.status === 'configured'
                   ? (s.modeled_count ? `${s.modeled_count}/${s.observation_count} in model` : `${s.observation_count} records`)
                   : 'needs mapping')
                 : s.kind === 'image' ? `${s.width}×${s.height}` : s.kind === 'pdf' ? `${s.page_count} pages` : 'text'}</span>
+              <button className="link src-delete" title={`Delete ${s.filename}`} aria-label={`Delete ${s.filename}`}
+                onClick={(e) => { e.stopPropagation(); setDeleting(s) }}>✕</button>
             </li>
           ))}
         </ul>
@@ -91,13 +146,67 @@ export function SourcesPane() {
         sources={sources.filter((source) => selected.includes(source.id))} onClose={() => setChoosing(false)} />}
       {current && (
         <div className="source-view">
-          {current.kind === 'csv' ? <CsvSource source={current} onConfirmed={load} />
-            : current.kind === 'image' ? <ImageView key={current.id} source={current} />
-            : <DocumentView key={current.id} source={current} />}
+          <VersionHistory source={current} onChanged={load} />
+          {current.kind === 'csv' ? <CsvSource key={`${current.id}:${current.version}`} source={current} onConfirmed={load} />
+            : current.kind === 'image' ? <ImageView key={`${current.id}:${current.version}`} source={current} />
+            : <DocumentView key={`${current.id}:${current.version}`} source={current} />}
         </div>
       )}
     </aside>
   )
+}
+
+function DuplicateWarning({ conflict, onAnswer }: { conflict: Conflict; onAnswer: (c: DuplicateChoice | 'skip') => void }) {
+  const { file, existing, identical } = conflict
+  const next = existing.version + 1
+  return <div className="build-box source-confirm" role="alertdialog" aria-label={`${file.name} already exists`}>
+    <strong>“{existing.filename}” is already a source</strong>
+    <p className="muted small">
+      Current: version {existing.version}, uploaded {fmtDate(existing.updated_at ?? existing.created_at)}, {fmtSize(existing.size)}.
+      New file: {fmtSize(file.size)}.
+    </p>
+    {identical && <p className="warn-text small">The new file has the same contents as the current version.</p>}
+    <p className="warn-text small">
+      Replacing makes the new file version {next}; version {existing.version} stays in the history and can be restored.
+      {existing.status === 'configured' && ' Its column structure will need confirming again.'}
+      {!!existing.modeled_count && ` ${existing.modeled_count} model entities cite its records; they stay linked to this source.`}
+    </p>
+    <div className="csv-actions">
+      <button className={identical ? '' : 'primary'} onClick={() => onAnswer('replace')}>Replace (new version)</button>
+      <button onClick={() => onAnswer('keep_both')}>Keep both</button>
+      <button className={identical ? 'primary' : ''} onClick={() => onAnswer('skip')}>Skip</button>
+    </div>
+  </div>
+}
+
+function VersionHistory({ source, onChanged }: { source: Source; onChanged: () => void }) {
+  const projectId = useStore((s) => s.projectId)!
+  const notify = useStore((s) => s.notify)
+  const [busy, setBusy] = useState(false)
+  if (!source.versions.length) return null
+  const restore = async (version: number) => {
+    setBusy(true)
+    try {
+      const next = await api.restoreSourceVersion(projectId, source.id, version)
+      notify({ kind: 'success', text: `Restored version ${version} of ${next.filename} as version ${next.version}.` })
+      onChanged()
+    } catch (e) {
+      notify({ kind: 'error', text: `Restore failed: ${(e as Error).message}` })
+    } finally { setBusy(false) }
+  }
+  return <details className="version-history">
+    <summary>Version {source.version} · {source.versions.length} earlier version{source.versions.length === 1 ? '' : 's'}</summary>
+    <ul>
+      <li className="current"><strong>v{source.version}</strong> <span className="src-name" title={source.filename}>{source.filename}</span>
+        <span className="muted small">{fmtDate(source.updated_at ?? source.created_at)} · {fmtSize(source.size)} · current</span></li>
+      {[...source.versions].reverse().map((v) => (
+        <li key={v.version}><strong>v{v.version}</strong> <span className="src-name" title={v.filename}>{v.filename}</span>
+          <span className="muted small">{fmtDate(v.uploaded_at)} · {fmtSize(v.size)}</span>
+          <a className="button" href={api.sourceFileUrl(projectId, source.id, v.version)} download>Download</a>
+          <button disabled={busy} onClick={() => void restore(v.version)}>Restore</button></li>
+      ))}
+    </ul>
+  </details>
 }
 
 function SourceSetBuild({ sources, onClose }: { sources: Source[]; onClose: () => void }) {
@@ -506,7 +615,7 @@ function ImageView({ source }: { source: Source }) {
         }}
         onMouseLeave={() => { setDrag(null); setDraft(null) }}>
         <div className="image-canvas" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, width: W, height: H }}>
-          <img src={api.sourceFileUrl(projectId, source.id)} width={W} height={H} draggable={false} alt={source.filename} />
+          <img src={api.sourceFileUrl(projectId, source.id, source.version)} width={W} height={H} draggable={false} alt={source.filename} />
           {[region, draft].map((b, i) => b && (
             <div key={i} className={`region ${i ? 'draft' : ''}`} style={{
               left: Math.min(b[0], b[0] + b[2]), top: Math.min(b[1], b[1] + b[3]),
@@ -583,9 +692,9 @@ function DocumentView({ source }: { source: Source }) {
         <button disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</button>
         <span>Page {page} of {source.page_count}</span>
         <button disabled={page >= (source.page_count ?? 1)} onClick={() => setPage(page + 1)}>Next</button>
-        <a className="button" href={api.sourceFileUrl(projectId, source.id)} target="_blank" rel="noreferrer">Open PDF</a>
+        <a className="button" href={api.sourceFileUrl(projectId, source.id, source.version)} target="_blank" rel="noreferrer">Open PDF</a>
       </div>
-      <div className="document-page"><img src={api.sourcePageUrl(projectId, source.id, page)} alt={`${source.filename}, page ${page}`} /></div>
+      <div className="document-page"><img src={api.sourcePageUrl(projectId, source.id, page, source.version)}alt={`${source.filename}, page ${page}`} /></div>
     </>}
     {error && <p className="error-text">{error}</p>}
     {preview && <details open={source.kind !== 'pdf'}>

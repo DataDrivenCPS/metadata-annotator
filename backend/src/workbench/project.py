@@ -772,6 +772,44 @@ class Project:
         self._put_source(src)
         return src
 
+    def find_source(self, filename: str) -> Source | None:
+        """The existing source an upload with this name would duplicate, if any."""
+        return next((s for s in self.sources() if src_mod.same_name(s.filename, filename)), None)
+
+    def replace_source(self, sid: str, filename: str, data: bytes) -> Source:
+        """Upload a new version of a source; the previous file stays in its version history."""
+        with self.lock:
+            src = src_mod.replace_source(self.root, self.source(sid), filename, data)
+            self._put_source(src)
+        return src
+
+    def restore_source_version(self, sid: str, version: int) -> Source:
+        with self.lock:
+            src = src_mod.restore_version(self.root, self.source(sid), version)
+            self._put_source(src)
+        return src
+
+    def source_version_file(self, sid: str, version: int) -> tuple[Source, Path]:
+        src = self.source(sid)
+        return src, src_mod.version_path(self.root, src, version)
+
+    def delete_source(self, sid: str) -> dict:
+        """Remove a source, its files (all versions) and its records.
+
+        Model entities that cited the records keep their data; the evidence links simply
+        no longer resolve.
+        """
+        with self.lock:
+            src = self.source(sid)
+            linked = self.evidence_map(self.head())
+            modeled = sum(1 for o in self.observations(sid) if o.id in linked)
+            with self.store.tx() as db:
+                db.execute("DELETE FROM observations WHERE source_id=?", (sid,))
+                db.execute("DELETE FROM sources WHERE id=?", (sid,))
+            src_mod.delete_source_files(self.root, sid)
+            self.bus.publish(self.id, {"type": "sources"})
+        return {"deleted": src.id, "filename": src.filename, "modeled_records": modeled}
+
     def _put_source(self, src: Source) -> None:
         self.store.put_body("sources", src.id, src.model_dump(mode="json"), created_at=src.created_at)
         self.bus.publish(self.id, {"type": "sources"})

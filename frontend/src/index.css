@@ -35,6 +35,8 @@ button:hover:not(:disabled), .button:hover { border-color: #b8c0ca; background: 
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); color: white; border-color: var(--accent); }
 button.primary:hover:not(:disabled) { background: #185ac2; }
+button.danger { background: var(--bad); color: white; border-color: var(--bad); }
+button.danger:hover:not(:disabled) { background: #a32020; border-color: #a32020; }
 button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 input, select, textarea { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; background: white; }
@@ -328,6 +330,16 @@ table.changes .after { color: var(--ok); font-weight: 500; }
 .source-list li { display: flex; gap: 8px; align-items: center; padding: 5px 12px; cursor: pointer; font-size: 13px; }
 .source-list li:hover { background: #f7f9fb; }
 .source-list li.active { background: var(--accent-soft); }
+.source-list .src-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-list .src-delete { color: var(--muted); padding: 0 4px; }
+.source-list .src-delete:hover:not(:disabled) { color: var(--bad); text-decoration: none; }
+.source-confirm { margin: 8px 12px; }
+.source-confirm p { margin: 6px 0; }
+.version-history { margin: 8px 12px; font-size: 13px; }
+.version-history summary { cursor: pointer; color: var(--muted); }
+.version-history ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.version-history li { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.version-history li .src-name { flex: 1; min-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-set-actions { display: flex; align-items: center; gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
 .source-set-build { margin: 0 12px 8px; max-height: 55vh; overflow: auto; }
 .source-role { padding: 6px 0; border-bottom: 1px solid var(--border); }

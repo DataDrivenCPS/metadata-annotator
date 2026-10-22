@@ -194,10 +194,15 @@ export interface CsvImportConfig {
   metadata_rows: number[]
   first_data_column: number
 }
+export interface SourceVersion {
+  version: number; filename: string; sha256: string; size: number; uploaded_at: string; replaced_at: string
+}
+export type DuplicateChoice = 'replace' | 'keep_both'
 export interface Source {
   id: string; kind: 'csv' | 'image' | 'pdf' | 'document' | 'rdf'; filename: string; sha256: string; created_at: string
   import_config: CsvImportConfig | null; status: string; width: number | null; height: number | null
   page_count?: number | null
+  version: number; size?: number | null; updated_at?: string | null; versions: SourceVersion[]
   observation_count?: number
   modeled_count?: number
 }

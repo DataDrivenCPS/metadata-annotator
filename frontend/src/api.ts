@@ -1,5 +1,5 @@
 import type {
-  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
+  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, DuplicateChoice, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
 } from './types'
 
 export class ApiError extends Error {
@@ -11,6 +11,7 @@ export class ApiError extends Error {
     this.body = body
   }
   get isStale() { return this.status === 409 && this.body.error === 'stale' }
+  get isDuplicate() { return this.status === 409 && this.body.error === 'duplicate' }
 }
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -94,14 +95,20 @@ export const api = {
   options: (kind: string, quantityKind: string | undefined | null, profile: string) =>
     req<Term[]>('GET', `/api/vocabulary/options/${kind}?profile=${profile}${quantityKind ? `&quantity_kind=${encodeURIComponent(quantityKind)}` : ''}`),
   sources: (pid: string) => req<Source[]>('GET', `${P(pid)}/sources`),
-  uploadSource: (pid: string, file: File) => {
+  // Without `onDuplicate`, a file whose name matches an existing source is refused (ApiError.isDuplicate).
+  uploadSource: (pid: string, file: File, onDuplicate?: DuplicateChoice) => {
     const fd = new FormData()
     fd.append('file', file)
-    return req<Source>('POST', `${P(pid)}/sources`, fd)
+    return req<Source>('POST', `${P(pid)}/sources${onDuplicate ? `?on_duplicate=${onDuplicate}` : ''}`, fd)
   },
+  deleteSource: (pid: string, sid: string) =>
+    req<{ deleted: string; filename: string; modeled_records: number }>('DELETE', `${P(pid)}/sources/${sid}`),
+  restoreSourceVersion: (pid: string, sid: string, version: number) =>
+    req<Source>('POST', `${P(pid)}/sources/${sid}/versions/${version}/restore`),
   documentPreview: (pid: string, sid: string, page = 1) => req<{ text: string; truncated: boolean }>('GET', `${P(pid)}/sources/${sid}/document-preview?page=${page}`),
-  sourcePageUrl: (pid: string, sid: string, page: number) => `${P(pid)}/sources/${sid}/pages/${page}.png`,
-  sourceFileUrl: (pid: string, sid: string) => `${P(pid)}/sources/${sid}/file`,
+  // `version` selects an archived file; it also keeps the browser from showing a replaced file from cache.
+  sourcePageUrl: (pid: string, sid: string, page: number, version?: number) => `${P(pid)}/sources/${sid}/pages/${page}.png${version ? `?v=${version}` : ''}`,
+  sourceFileUrl: (pid: string, sid: string, version?: number) => `${P(pid)}/sources/${sid}/file${version ? `?version=${version}` : ''}`,
   sourceGrid: (pid: string, sid: string) => req<CsvGrid>('GET', `${P(pid)}/sources/${sid}/grid?limit=80`),
   sourcePreview: (pid: string, sid: string, cfg: CsvImportConfig) => req<CsvPreview>('POST', `${P(pid)}/sources/${sid}/preview`, cfg),
   sourceConfirm: (pid: string, sid: string, cfg: CsvImportConfig) =>

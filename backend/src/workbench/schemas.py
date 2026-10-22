@@ -36,6 +36,17 @@ class CsvImportConfig(BaseModel):
     first_data_column: int = 1
 
 
+class SourceVersion(BaseModel):
+    """A superseded upload of a source, kept on disk under ``sources/<id>/versions/v<N>/``."""
+
+    version: int
+    filename: str
+    sha256: str
+    size: int
+    uploaded_at: str
+    replaced_at: str
+
+
 class Source(BaseModel):
     id: str
     kind: Literal["csv", "image", "pdf", "document", "rdf"]
@@ -47,6 +58,10 @@ class Source(BaseModel):
     width: int | None = None
     height: int | None = None
     page_count: int | None = None
+    version: int = 1                      # number of the current file
+    size: int | None = None               # bytes of the current file
+    updated_at: str | None = None         # when the current file was uploaded (None = created_at)
+    versions: list[SourceVersion] = Field(default_factory=list)  # earlier files, oldest first
 
 
 class SourceLocation(BaseModel):

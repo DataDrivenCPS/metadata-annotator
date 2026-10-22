@@ -22,10 +22,11 @@ import hashlib
 import io
 import re
 import secrets
+import shutil
 from pathlib import Path
 from typing import Any
 
-from .schemas import CsvImportConfig, Observation, Source, SourceLocation, now
+from .schemas import CsvImportConfig, Observation, Source, SourceLocation, SourceVersion, now
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
 CSV_TYPES = {".csv", ".tsv"}
@@ -55,15 +56,19 @@ def source_kind(filename: str) -> str:
     raise SourceError(f"Unsupported file type {ext or '(none)'}: upload CSV/TSV, an image, PDF, Word (.docx), or a text document.")
 
 
-def store_source(root: Path, filename: str, data: bytes) -> Source:
+def same_name(a: str, b: str) -> bool:
+    """Whether two uploads count as the same file: the exact stored filename, case-sensitive."""
+    return safe_filename(a) == safe_filename(b)
+
+
+def _inspect(filename: str, data: bytes) -> tuple[str, str, dict[str, Any]]:
+    """Validate an upload; returns (kind, stored filename, kind-specific fields)."""
     if len(data) > MAX_UPLOAD:
         raise SourceError("File is larger than 50 MB.")
     if not data:
         raise SourceError("File is empty.")
     kind = source_kind(filename)
-    sid = f"src-{secrets.token_hex(4)}"
     fname = safe_filename(filename)
-    folder = root / "sources" / sid
     width = height = None
     page_count = None
     if kind == "image":
@@ -82,14 +87,82 @@ def store_source(root: Path, filename: str, data: bytes) -> Source:
         document_text(data, fname)
     else:
         decode_text(data)  # fail early on binary files
+    return kind, fname, {"width": width, "height": height, "page_count": page_count}
+
+
+def store_source(root: Path, filename: str, data: bytes) -> Source:
+    kind, fname, meta = _inspect(filename, data)
+    sid = f"src-{secrets.token_hex(4)}"
+    folder = root / "sources" / sid
     folder.mkdir(parents=True, exist_ok=True)
     (folder / fname).write_bytes(data)
+    stamp = now()
     return Source(id=sid, kind=kind, filename=fname, sha256=hashlib.sha256(data).hexdigest(),  # type: ignore[arg-type]
-                  created_at=now(), width=width, height=height, page_count=page_count)
+                  created_at=stamp, updated_at=stamp, size=len(data), **meta)
 
 
 def source_path(root: Path, src: Source) -> Path:
     return root / "sources" / src.id / src.filename
+
+
+def version_path(root: Path, src: Source, version: int) -> Path:
+    """Path of a file: the current one, or an archived version."""
+    if version == src.version:
+        return source_path(root, src)
+    for v in src.versions:
+        if v.version == version:
+            return root / "sources" / src.id / "versions" / f"v{v.version}" / v.filename
+    raise SourceError(f"{src.filename} has no version {version}.")
+
+
+def _swap_in(root: Path, src: Source, filename: str, data: bytes, meta: dict[str, Any]) -> Source:
+    """Archive the current file and make ``data`` current. The caller holds the project lock."""
+    folder = root / "sources" / src.id
+    incoming = folder / ".incoming"
+    incoming.write_bytes(data)
+    archive = folder / "versions" / f"v{src.version}"
+    archive.mkdir(parents=True, exist_ok=True)
+    current = source_path(root, src)
+    old_size = src.size if src.size is not None else current.stat().st_size
+    current.replace(archive / src.filename)
+    incoming.replace(folder / filename)
+    stamp = now()
+    updated = src.model_copy(update={
+        "filename": filename, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+        "version": src.version + 1, "updated_at": stamp, **meta,
+        # The records and structure belonged to the previous file: ask for confirmation again.
+        "status": "uploaded" if src.status == "configured" else src.status,
+        "versions": [*src.versions, SourceVersion(
+            version=src.version, filename=src.filename, sha256=src.sha256, size=old_size,
+            uploaded_at=src.updated_at or src.created_at, replaced_at=stamp)],
+    })
+    return updated
+
+
+def replace_source(root: Path, src: Source, filename: str, data: bytes) -> Source:
+    """Upload a new version of ``src`` (same id, so evidence links survive)."""
+    _, fname, meta = _inspect(filename, data)
+    return _swap_in(root, src, fname, data, meta)
+
+
+def restore_version(root: Path, src: Source, version: int) -> Source:
+    """Make an earlier version current again; the file being replaced is archived, not lost."""
+    if version == src.version:
+        raise SourceError("That version is already current.")
+    old = next((v for v in src.versions if v.version == version), None)
+    if old is None:
+        raise SourceError(f"{src.filename} has no version {version}.")
+    data = version_path(root, src, version).read_bytes()
+    _, fname, meta = _inspect(old.filename, data)
+    updated = _swap_in(root, src, fname, data, meta)
+    # The restored file leaves the archive, so history only holds files that are not current.
+    # Its number is retired; the restore itself is a new version.
+    shutil.rmtree(root / "sources" / src.id / "versions" / f"v{version}", ignore_errors=True)
+    return updated.model_copy(update={"versions": [v for v in updated.versions if v.version != version]})
+
+
+def delete_source_files(root: Path, sid: str) -> None:
+    shutil.rmtree(root / "sources" / sid, ignore_errors=True)
 
 
 # ------------------------------------------------------------------ CSV grid

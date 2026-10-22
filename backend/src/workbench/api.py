@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -426,14 +427,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, f"No source {sid}") from None
 
     @app.post("/api/projects/{pid}/sources")
-    async def upload_source(pid: str, file: UploadFile = File(...)):
+    async def upload_source(pid: str, file: UploadFile = File(...),
+                            on_duplicate: Literal["ask", "replace", "keep_both"] = "ask"):
+        """A file whose name matches an existing source is never stored silently: the default
+        answers 409 with the existing source so the client can ask. ``replace`` uploads it as a
+        new version of that source (the old file stays in its history); ``keep_both`` adds a
+        separate source."""
         p = project(pid)
         data = await file.read()
+        name = file.filename or "upload"
         try:
-            src = await asyncio.to_thread(p.add_source, file.filename or "upload", data)
+            existing = p.find_source(name) if on_duplicate != "keep_both" else None
+            if existing is None:
+                src = await asyncio.to_thread(p.add_source, name, data)
+            elif on_duplicate == "ask":
+                identical = hashlib.sha256(data).hexdigest() == existing.sha256
+                return JSONResponse(status_code=409, content={
+                    "error": "duplicate", "identical": identical,
+                    "detail": f"A source named {existing.filename} already exists.",
+                    "existing": existing.model_dump(mode="json")})
+            else:
+                src = await asyncio.to_thread(p.replace_source, existing.id, name, data)
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from None
         return src.model_dump(mode="json")
+
+    @app.delete("/api/projects/{pid}/sources/{sid}")
+    def delete_source(pid: str, sid: str):
+        p = project(pid)
+        source_or_404(p, sid)
+        return p.delete_source(sid)
+
+    @app.post("/api/projects/{pid}/sources/{sid}/versions/{version}/restore")
+    def restore_source_version(pid: str, sid: str, version: int):
+        p = project(pid)
+        source_or_404(p, sid)
+        try:
+            return p.restore_source_version(sid, version).model_dump(mode="json")
+        except SourceError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.get("/api/projects/{pid}/sources")
     def list_sources(pid: str):
@@ -451,11 +483,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                               "modeled_count": modeled_by_source.get(s.id, 0)} for s in p.sources()]
 
     @app.get("/api/projects/{pid}/sources/{sid}/file")
-    def source_file(pid: str, sid: str):
+    def source_file(pid: str, sid: str, version: int | None = None):
         p = project(pid)
         src = source_or_404(p, sid)
-        media = IMAGE_TYPES.get(Path(src.filename).suffix.lower(), "application/pdf" if src.kind == "pdf" else "text/csv" if src.kind == "csv" else None)
-        return FileResponse(p.source_file(sid), media_type=media, filename=src.filename,
+        path, filename = p.source_file(sid), src.filename
+        if version is not None and version != src.version:
+            try:
+                _, path = p.source_version_file(sid, version)
+            except SourceError as exc:
+                raise HTTPException(404, str(exc)) from None
+            filename = path.name
+        media = IMAGE_TYPES.get(Path(filename).suffix.lower(), "application/pdf" if src.kind == "pdf" else "text/csv" if src.kind == "csv" else None)
+        return FileResponse(path, media_type=media, filename=filename,
                             content_disposition_type="inline" if src.kind == "pdf" else "attachment")
 
     @app.get("/api/projects/{pid}/sources/{sid}/document-preview")

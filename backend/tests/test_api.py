@@ -92,6 +92,59 @@ def test_source_upload_preview_confirm(client):
     assert bad.status_code == 400
 
 
+def test_duplicate_upload_warns_versions_restore_and_delete(client):
+    pid = client.post("/api/projects", json={"name": "Versions"}).json()["id"]
+    base = f"/api/projects/{pid}/sources"
+
+    def upload(data: bytes, name="points.csv", **params):
+        return client.post(base, params=params, files={"file": (name, data, "text/csv")})
+
+    v1, v2 = b"Name\nA1:Temp\n", b"Name\nA1:Temp\nA2:Temp\n"
+    first = upload(v1).json()
+    assert first["version"] == 1 and first["versions"] == []
+
+    # same name: refused with the existing source, nothing is overwritten
+    r = upload(v2)
+    assert r.status_code == 409 and r.json()["error"] == "duplicate" and not r.json()["identical"]
+    assert r.json()["existing"]["id"] == first["id"]
+    assert upload(v1).json()["identical"] is True
+    assert len(client.get(base).json()) == 1
+    assert client.get(f"{base}/{first['id']}/file").content == v1
+
+    # replace: same id, previous file archived
+    cfg = client.get(f"{base}/{first['id']}/grid").json()["config"]
+    client.post(f"{base}/{first['id']}/confirm", json=cfg)
+    second = upload(v2, on_duplicate="replace").json()
+    assert second["id"] == first["id"] and second["version"] == 2
+    assert [v["version"] for v in second["versions"]] == [1] and second["status"] == "uploaded"
+    assert client.get(f"{base}/{first['id']}/file").content == v2
+    assert client.get(f"{base}/{first['id']}/file", params={"version": 1}).content == v1
+    assert client.get(f"{base}/{first['id']}/file", params={"version": 9}).status_code == 404
+
+    # restore v1: v2 is archived, not lost
+    restored = client.post(f"{base}/{first['id']}/versions/1/restore").json()
+    assert restored["version"] == 3 and [v["version"] for v in restored["versions"]] == [2]
+    assert client.get(f"{base}/{first['id']}/file").content == v1
+    assert client.get(f"{base}/{first['id']}/file", params={"version": 2}).content == v2
+    assert client.post(f"{base}/{first['id']}/versions/3/restore").status_code == 400
+
+    # keep_both adds a separate source
+    both = upload(v2, on_duplicate="keep_both").json()
+    assert both["id"] != first["id"] and len(client.get(base).json()) == 2
+
+    # delete removes the source, its files and its records
+    gone = client.delete(f"{base}/{first['id']}").json()
+    assert gone["deleted"] == first["id"]
+    assert [s["id"] for s in client.get(base).json()] == [both["id"]]
+    assert client.get(f"{base}/{first['id']}/file").status_code == 404
+    assert client.get(f"{base}/{first['id']}/observations").status_code == 404
+    assert client.delete(f"{base}/{first['id']}").status_code == 404
+
+    # names are compared exactly: a different case is a different file
+    upper = upload(v1, name="POINTS.csv")
+    assert upper.status_code == 200 and upper.json()["filename"] == "POINTS.csv"
+
+
 def test_pdf_preview_build_and_review_flow(client, monkeypatch):
     from test_agent import ScriptedLLM
     from test_documents import text_pdf

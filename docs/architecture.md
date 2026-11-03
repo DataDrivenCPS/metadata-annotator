@@ -47,7 +47,7 @@ and connections are written into RDF, and an ordered list of sources:
 
 | Profile | Family | Sources (per the BuildingMOTIF skill) |
 |---|---|---|
-| `watr` | `s223` | `https://open223.info/223p.ttl`, then `https://watermetadata.org/watr-0.2.ttl` |
+| `watr` | `s223` | `https://open223.info/223p.ttl`, then `https://watermetadata.org/watr-0.3.rc1.ttl` |
 | `223p` | `s223` | `https://open223.info/223p.ttl` |
 | `brick` | `brick` | Brick nightly `https://github.com/BrickSchema/Brick/releases/download/nightly/Brick.ttl` (1.5.x, with RealEstateCore); cached once under its URL — delete `cache/*brick*` to refresh |
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
@@ -12,6 +13,7 @@ from typing import Callable
 from .agent.correction import run_correction
 from .agent.multisource import run_source_build, run_with_evidence
 from .agent.guidance import SkillGuidance
+from .choices import chat_choices
 from .config import Settings
 from .events import EventBus
 from .llm import Cancelled, CancelToken, LLMError, make_client
@@ -29,6 +31,7 @@ class ProviderUnavailable(Exception):
 
 MAX_HISTORY_TURNS = 12
 MAX_TURN_CHARS = 2000
+HEALTH_TTL_S = 60.0
 
 
 def run_reply_text(run: AgentRun) -> str:
@@ -38,6 +41,9 @@ def run_reply_text(run: AgentRun) -> str:
     parts = [run.outcome.get("explanation") or ""]
     if questions := run.outcome.get("questions"):
         parts.append("Questions for you:\n" + "\n".join(f"- {q}" for q in questions))
+    for choice in run.outcome.get("choices") or []:  # offered as options; the person may pick one or answer
+        parts.append("Choose one:\n" + "\n".join(
+            [f"- {choice.get('question', '')}", *(f"  • {o.get('label', '')}" for o in choice.get("options", []))]))
     if run.outcome.get("proposal_id"):
         parts.append(f"(Proposed change {run.outcome['proposal_id']}.)")
     return "\n\n".join(p for p in parts if p).strip()
@@ -51,6 +57,40 @@ class RunManager:
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent")
         self.tokens: dict[str, CancelToken] = {}
         self._lock = threading.Lock()
+        self._health: dict[str, tuple[float, dict]] = {}  # provider name -> (checked at, last result)
+
+    # ------------------------------------------------------------- providers
+
+    def provider_health(self, cfg, fresh: bool = False) -> dict:
+        """The endpoint's health; a recent good result is reused so starting a run is not a round trip."""
+        with self._lock:
+            hit = self._health.get(cfg.name)
+        if not fresh and hit and hit[1].get("ok") and time.monotonic() - hit[0] < HEALTH_TTL_S:
+            return hit[1]
+        health = make_client(cfg).health()  # type: ignore[attr-defined]
+        with self._lock:
+            self._health[cfg.name] = (time.monotonic(), health)
+        return health
+
+    def ensure_reachable(self, cfg) -> None:
+        """Fail fast instead of starting a run that cannot reach its model."""
+        if cfg.kind == "openai":
+            health = self.provider_health(cfg)
+            if not health["ok"]:
+                raise ProviderUnavailable(health["detail"])
+
+    def _forget_health(self, provider: str) -> None:
+        with self._lock:
+            self._health.pop(provider, None)
+
+    def supersede(self, project: Project, proposal_id: str | None) -> None:
+        """A new request replaces the proposal the person had open: it is closed, not left pending."""
+        if not proposal_id:
+            return
+        try:
+            project.dismiss_proposal(proposal_id)
+        except KeyError:
+            pass
 
     # --------------------------------------------------------------- storage
 
@@ -141,17 +181,15 @@ class RunManager:
 
     def start_correction(self, project: Project, base: str, selection: SelectionScope,
                          instruction: str, provider: str | None = None,
-                         parent_run_id: str | None = None, inherit_selection: bool = True) -> AgentRun:
+                         parent_run_id: str | None = None, inherit_selection: bool = True,
+                         supersedes_proposal_id: str | None = None) -> AgentRun:
         if base != project.head():
             raise StaleRevision(base, project.head())
         history = self.history(project, parent_run_id)
         if inherit_selection:
             selection = self.continued_selection(project, parent_run_id, selection)
         cfg = self.settings.provider(provider)
-        if cfg.kind == "openai":  # fail fast instead of starting a run that cannot reach its model
-            health = make_client(cfg).health()  # type: ignore[attr-defined]
-            if not health["ok"]:
-                raise ProviderUnavailable(health["detail"])
+        self.ensure_reachable(cfg)
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
             selection=selection, instruction=instruction, parent_run_id=parent_run_id,
@@ -161,6 +199,7 @@ class RunManager:
         token = CancelToken()
         with self._lock:
             self.tokens[run.id] = token
+        self.supersede(project, supersedes_proposal_id)
         self.save(project, run)
         self.pool.submit(self._execute, project, run, token,
                          lambda progress: run_with_evidence(
@@ -176,10 +215,7 @@ class RunManager:
         if base != project.head():
             raise StaleRevision(base, project.head())
         cfg = self.settings.provider(provider)
-        if cfg.kind == "openai":
-            health = make_client(cfg).health()  # type: ignore[attr-defined]
-            if not health["ok"]:
-                raise ProviderUnavailable(health["detail"])
+        self.ensure_reachable(cfg)
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="autofix", input_revision=base,
             instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model,
@@ -196,7 +232,8 @@ class RunManager:
 
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
                     provider: str | None = None, source_pages: dict[str, list[int]] | None = None,
-                    source_roles: dict[str, str] | None = None) -> AgentRun:
+                    source_roles: dict[str, str] | None = None,
+                    supersedes_proposal_id: str | None = None) -> AgentRun:
         """Build from confirmed CSV records or selected image/document evidence."""
         from .agent.build import run_build
 
@@ -230,10 +267,7 @@ class RunManager:
             cfg.supports_images or cfg.kind == "anthropic"
         ):
             raise SourceError("Choose a vision-capable model in the assistant panel to read images.")
-        if cfg.kind == "openai":
-            health = make_client(cfg).health()  # type: ignore[attr-defined]
-            if not health["ok"]:
-                raise ProviderUnavailable(health["detail"])
+        self.ensure_reachable(cfg)
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="build", mode="build", input_revision=base, source_ids=source_ids,
             selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
@@ -241,6 +275,7 @@ class RunManager:
         token = CancelToken()
         with self._lock:
             self.tokens[run.id] = token
+        self.supersede(project, supersedes_proposal_id)
         self.save(project, run)
         if documents:
             self.pool.submit(self._execute, project, run, token,
@@ -274,10 +309,7 @@ class RunManager:
                 "relationship_ids": [i for i in selection.relationship_ids if i in live],
             })
         cfg = self.settings.provider(provider)
-        if cfg.kind == "openai":
-            health = make_client(cfg).health()  # type: ignore[attr-defined]
-            if not health["ok"]:
-                raise ProviderUnavailable(health["detail"])
+        self.ensure_reachable(cfg)
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
             mode="reconsider" if reconsider else "reply",
@@ -321,12 +353,19 @@ class RunManager:
             self.save(project, run)
             outcome = work(progress)
             proposal = getattr(outcome, "proposal", None)
+            offered: list[dict] = []
+            asked: list = []
+            if not proposal and not hasattr(outcome, "autofix") and (choices := getattr(outcome, "choices", None)):
+                # Each option becomes a checked pending proposal the person can pick instead of retyping it.
+                if any(o.get("operations") for c in choices for o in c.get("options", [])):
+                    progress("choices", "Checking the options", {})
+                offered, asked = chat_choices(project, run.input_revision, choices, run.selection or SelectionScope(),
+                                              run.instruction, run.id)
             run.outcome = {
                 "proposal_id": proposal.id if proposal else None,
                 "dismissed_proposal_id": getattr(outcome, "dismissed_proposal_id", None),
-                "questions": readable_questions(getattr(outcome, "questions", [])) + (
-                    readable_questions(getattr(outcome, "choices", []))
-                    if not proposal and not hasattr(outcome, "autofix") else []),
+                "questions": readable_questions(getattr(outcome, "questions", [])) + readable_questions(asked),
+                **({"choices": offered} if offered else {}),
                 "explanation": getattr(outcome, "explanation", ""),
                 "steps": getattr(outcome, "steps", 0),
                 "input_tokens": run.outcome.get("input_tokens", getattr(outcome, "input_tokens", 0)),
@@ -340,6 +379,8 @@ class RunManager:
         except (LLMError, SourceError) as exc:
             run.status = "failed"
             run.error = str(exc)
+            if isinstance(exc, LLMError):
+                self._forget_health(run.provider)  # check the endpoint again before the next run
         except StaleRevision as exc:
             run.status = "failed"
             run.error = f"The model changed while this was running ({exc})."

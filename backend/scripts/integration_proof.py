@@ -25,7 +25,7 @@ from buildingmotif import BuildingMOTIF
 from buildingmotif.dataclasses import Library, Model
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = ["https://open223.info/223p.ttl", "https://watermetadata.org/watr-0.2.ttl"]
+SOURCES = ["https://open223.info/223p.ttl", "https://watermetadata.org/watr-0.3.rc1.ttl"]
 
 S223 = Namespace("http://data.ashrae.org/standard223#")
 QUDT = Namespace("http://qudt.org/schema/qudt/")

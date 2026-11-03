@@ -26,9 +26,15 @@ def autofix(p, steps, issue_ids):
 
 
 def test_issues_group_by_cause(sample_project):
-    groups = group_issues(sample_project.issues(sample_project.head()))
-    # the sample's nine violations have three causes; a group shares severity, shape and path
-    assert sorted(len(g) for g in groups) == [1, 4, 4]
+    from workbench.operations import OperationList
+
+    p = sample_project
+    # two more unpiped tanks share TK-301's cause (no connection point)
+    p.edit(p.head(), OperationList.validate_python([
+        {"op": "create_equipment", "label": f"TK-90{n} Spare Tank", "type": "watr:Tank"} for n in (1, 2)]))
+    groups = group_issues(p.issues(p.head()))
+    # a group shares severity, shape and path: the three tanks, CT-201's unit, the QUDT unit finding
+    assert sorted(len(g) for g in groups) == [1, 1, 3]
     for g in groups:
         shapes = {tuple(sorted(str(d.get("shape")) for d in i.details["findings"])) for i in g}
         assert len(shapes) == 1

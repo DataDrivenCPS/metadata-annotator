@@ -3,6 +3,7 @@
 import shutil
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -184,6 +185,54 @@ def test_answering_questions_continues_the_conversation(client, monkeypatch):
     unknown = client.post(f"/api/projects/{pid}/assist", json={
         "base_revision": head, "instruction": "again", "parent_run_id": "run-missing"})
     assert unknown.status_code == 400
+
+
+def test_chat_choices_become_options_and_a_new_request_closes_the_open_proposal(client, monkeypatch):
+    from test_agent import ScriptedLLM
+
+    pid = client.post("/api/projects", json={"name": "Choices"}).json()["id"]
+    with open(SAMPLES / "model.ttl", "rb") as f:
+        client.post(f"/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")})
+    model = client.get(f"/api/projects/{pid}/model").json()
+    head = model["head"]
+    ct = next(p for p in model["view"]["points"] if p["label"].startswith("CT-201"))
+
+    def op(unit):
+        return [{"op": "update_point", "id": ct["id"], "unit": unit}]
+
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "CT-201's stream decides its unit.", "operations": [], "choices": [
+            {"question": "Which unit does CT-201 report?", "options": [
+                {"label": "uS/cm", "operations": op("unit:MicroS-PER-CentiM")},
+                {"label": "mS/cm", "operations": op("unit:MilliS-PER-CentiM")},
+                {"label": "Not a unit", "operations": op("unit:Nope")}]},
+            {"question": "Is it calibrated?", "options": [{"label": "Yes", "operations": []}, {"label": "No", "operations": []}]},
+        ]},
+        {"action": "propose", "explanation": "Something else.", "operations": [], "questions": ["Anything else?"]},
+    ])
+    llm.health = Mock(return_value={"ok": True})
+    monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    monkeypatch.setattr(client.app.state.runs.pool, "submit", lambda fn, *args: fn(*args))
+
+    first = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ct["id"]]}, "instruction": "Fix the CT-201 unit"}).json()
+    first = client.get(f"/api/projects/{pid}/runs/{first['id']}").json()
+    assert first["status"] == "succeeded", first["error"]
+    [choice] = first["outcome"]["choices"]  # the choice without operations stays a question
+    assert choice["question"] == "Which unit does CT-201 report?"
+    assert [o["label"] for o in choice["options"]] == ["uS/cm", "mS/cm"]  # the unknown unit is dropped
+    assert first["outcome"]["questions"] == ["Is it calibrated?\n• Yes\n• No"]
+    option = client.get(f"/api/projects/{pid}/proposals/{choice['options'][0]['proposal_id']}").json()
+    assert option["status"] == "pending" and option["agent_run_id"] == first["id"]
+    assert option["operations"][0]["unit"].endswith("MicroS-PER-CentiM")
+
+    # Starting a new request closes the proposal the person had open, instead of leaving it pending.
+    second = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "instruction": "Something else", "supersedes_proposal_id": option["id"]})
+    assert second.status_code == 200, second.text
+    assert client.get(f"/api/projects/{pid}/proposals/{option['id']}").json()["status"] == "dismissed"
+    # The second start reused the recent health check instead of probing the endpoint again.
+    assert llm.health.call_count == 1
 
 
 def test_follow_up_without_selection_keeps_the_conversation_selection(client, monkeypatch):

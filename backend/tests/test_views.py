@@ -115,8 +115,8 @@ def test_processes_lists_vocabulary_terms_with_the_equipment_performing_them(sam
     assert len(rows) > 50 and all(r["kind"] == "term" for r in out["rows"])  # every process, used or not
     ro = rows["Reverse Osmosis (RO)"]
     assert [c["label"] for c in ro["cells"]["equipment"]] == ["RO-1 Reverse Osmosis Skid"]
-    assert [c["label"] for c in ro["cells"]["kind"]] == ["Membrane Process"]  # from the vocabulary
-    assert "desalination" in ro["cells"]["about"][0]["label"]
+    assert sorted(c["label"] for c in ro["cells"]["kind"]) == ["Filtration", "Membrane Process"]  # from the vocabulary
+    assert "semi-permeable membrane" in ro["cells"]["about"][0]["label"]
     col = next(c for c in out["columns"] if c["key"] == "equipment")
     assert col["editor"] == "relation" and col["inverse"]
     # assigning equipment to a process is relating it, from the process's row
@@ -135,7 +135,7 @@ def test_media_lists_kinds_of_water_with_what_carries_and_measures_them(sample_p
     out = views.evaluate(p.graph(p.head()), p.vocab, p.view(p.head()), spec)
     rows = {r["label"]: r["cells"] for r in out["rows"]}
     brine = rows["Water-Brine"]
-    assert {c["label"] for c in brine["constituents"]} == {"H2O", "Salt-NaCl"}  # from the vocabulary
+    assert {c["label"] for c in brine["constituents"]} == {"H2O", "Sodium Chloride"}  # from the vocabulary
     assert [c["label"] for c in brine["carried_by"]] == ["L-06"]  # only = s223:Connection: no connection points
     assert "CT-201" in [c["label"] for c in rows["Water-Freshwater"]["measured_by"]]
     col = next(c for c in out["columns"] if c["key"] == "carried_by")

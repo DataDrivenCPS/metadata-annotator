@@ -40,10 +40,53 @@ export function continuation(thread: AgentRun[], proposal: Proposal | null, newR
   const runId = last && !isActive(last) ? last.id : null
   if (proposal?.status === 'pending') return { kind: 'proposal', runId }
   if (!last || !runId) return null
-  if (last.status === 'succeeded' && !last.outcome.proposal_id && last.outcome.questions?.length) {
+  if (last.status === 'succeeded' && !last.outcome.proposal_id && (last.outcome.questions?.length || last.outcome.choices?.length)) {
     return { kind: 'questions', runId }
   }
   return { kind: 'conversation', runId }
+}
+
+/** The option proposals a chat run offered, by choice. */
+export const runOptionIds = (run: AgentRun): string[] =>
+  (run.outcome.choices ?? []).flatMap((c) => c.options.map((o) => o.proposal_id))
+
+/** The thread run that offered or proposed this proposal, if any. */
+export const owningRun = (thread: AgentRun[], proposalId: string): AgentRun | undefined =>
+  thread.find((r) => r.outcome.proposal_id === proposalId || runOptionIds(r).includes(proposalId))
+
+/** The other options of the chat choice this proposal is an option of (closed once one is applied). */
+export function siblingOptions(runs: Record<string, AgentRun>, proposalId: string): string[] {
+  for (const run of Object.values(runs)) {
+    for (const choice of run.outcome.choices ?? []) {
+      const ids = choice.options.map((o) => o.proposal_id)
+      if (ids.includes(proposalId)) return ids.filter((id) => id !== proposalId)
+    }
+  }
+  return []
+}
+
+/**
+ * The proposal to show after loading or reconnecting: the one already open if it is still open,
+ * else the newest open one a message in the conversation proposed. Proposals nothing in the
+ * conversation owns (auto-fix options, ones replaced by a later request) are not brought back.
+ */
+export function restorableProposal(proposals: Proposal[], thread: AgentRun[], cleared: string[],
+                                   currentId: string | null = null): Proposal | null {
+  const proposed = new Set(thread.map((r) => r.outcome.proposal_id).filter(Boolean))
+  const open = proposals.filter((p) => !cleared.includes(p.id) && (p.status === 'pending' || p.status === 'stale'))
+  return open.find((p) => p.id === currentId) ?? open.find((p) => proposed.has(p.id)) ?? null
+}
+
+/** Auto-fix options left unchosen: closed with the report so they do not linger as open proposals. */
+export function unchosenOptions(run: AgentRun | undefined, states: Record<string, ProposalState>): string[] {
+  const out: string[] = []
+  for (const group of autofixReport(run).groups) {
+    for (const choice of group.choices ?? []) {
+      const ids = choice.options.map((o) => o.proposal_id)
+      if (!ids.some((id) => states[id] === 'applied')) out.push(...ids.filter((id) => !states[id] || states[id] === 'pending' || states[id] === 'stale'))
+    }
+  }
+  return out
 }
 
 /** Proposal states for the thread: a proposal revised by a later reply is superseded. */

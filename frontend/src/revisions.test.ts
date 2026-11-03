@@ -125,13 +125,24 @@ describe('request ordering and reconnect recovery', () => {
     const running = { id: 'run', kind: 'autofix', status: 'running', outcome: {} } as AgentRun
     const finished = { ...running, status: 'succeeded', outcome: { autofix: { groups: [], revisions: ['rev-3'] } } } as AgentRun
     const proposal = { id: 'proposal', status: 'pending', base_revision: 'rev-3' } as Proposal
+    const chat = { id: 'chat', kind: 'correction', status: 'succeeded', created_at: '1', outcome: { proposal_id: 'proposal' } } as AgentRun
     useStore.setState({ model: model('rev-1'), runs: { run: running }, activeRunId: 'run', autofix: { runId: 'run' } })
-    vi.mocked(api.runs).mockResolvedValueOnce([finished])
+    vi.mocked(api.runs).mockResolvedValueOnce([finished, chat])
     vi.mocked(api.proposals).mockResolvedValueOnce([proposal])
     await useStore.getState().reconcile()
     expect(useStore.getState().model?.revision.id).toBe('rev-3')
     expect(useStore.getState().runs.run.status).toBe('succeeded')
     expect(useStore.getState().proposal?.id).toBe('proposal')
+  })
+
+  it('does not bring back an open proposal that no message in the conversation owns', async () => {
+    // e.g. an auto-fix option, or a proposal a later request replaced
+    const option = { id: 'option', status: 'pending', base_revision: 'rev-3' } as Proposal
+    useStore.setState({ model: model('rev-1'), runs: {}, proposal: null })
+    vi.mocked(api.runs).mockResolvedValueOnce([])
+    vi.mocked(api.proposals).mockResolvedValueOnce([option])
+    await useStore.getState().reconcile()
+    expect(useStore.getState().proposal).toBeNull()
   })
 
   it('preserves run events received while reconnect reconciliation is pending', async () => {

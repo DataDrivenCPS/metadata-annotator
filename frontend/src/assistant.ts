@@ -222,6 +222,8 @@ const TOOL_STEPS: Record<string, (arg: string) => string> = {
   relations_for: (a) => `Looked up the relations allowed for ${a}`,
   read_evidence: (a) => `Read source evidence ${a}`,
   read_guidance: (a) => `Read the modeling guidance on ${a}`,
+  search_sources: (a) => `Searched the uploaded documents for ${a}`,
+  view_source: (a) => `Looked at ${a}`,
 }
 
 /** A progress event in plain words: tool calls arrive as ``name(arg='value', ...)``. */

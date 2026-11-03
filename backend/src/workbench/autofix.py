@@ -274,6 +274,33 @@ class AutofixOutcome:
                 "revisions": [g["revision"] for g in self.groups if g.get("revision")]}
 
 
+REUSABLE = ("review", "choice")
+
+
+def earlier_result(project: Project, issue_ids: list[str], run_id: str) -> dict[str, Any] | None:
+    """The latest earlier auto-fix answer for exactly these issues, if it is still waiting for the
+    person: its proposals are pending against the current head. Asking again would only spend a
+    model run on the same question."""
+    wanted = set(issue_ids)
+    for body in project.store.list_bodies("agent_runs", order="created_at DESC"):
+        if body.get("kind") != "autofix" or body.get("status") != "succeeded" or body["id"] == run_id:
+            continue
+        for group in (body.get("outcome") or {}).get("autofix", {}).get("groups", []):
+            if set(group.get("issues", [])) != wanted:
+                continue
+            if group.get("status") not in REUSABLE:
+                return None  # the latest answer was not a pending proposal: ask again
+            pending = ([group.get("proposal_id")] if group["status"] == "review"
+                       else [o["proposal_id"] for c in group.get("choices", []) for o in c["options"]])
+            try:
+                if pending and all(project.proposal(pid).status == "pending" for pid in pending if pid):
+                    return {**group, "reused_from": body["id"]}
+            except KeyError:
+                pass
+            return None
+    return None
+
+
 def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue_ids: list[str] | None,
                 run_id: str, progress: Callable[[str, str, dict], None], cancel: CancelToken,
                 agent: AgentConfig | None = None) -> AutofixOutcome:
@@ -299,6 +326,12 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
         tag = f"{n}/{len(groups)}"
         progress("group", f"Group {tag}: {group[0].explanation[:90]}" + (f" (+{len(group) - 1})" if len(group) > 1 else ""),
                  {"group": n, "issues": record["issues"]})
+        if earlier := earlier_result(project, record["issues"], run_id):
+            record.update({k: v for k, v in earlier.items() if k not in ("issues", "explanations")})
+            progress("group_done", f"Group {tag}: {record['status']} (unchanged since an earlier auto-fix; "
+                                   "its proposals are still waiting for review)",
+                     {"group": n, "status": record["status"], "reused_from": earlier["reused_from"]})
+            continue
         rows = project.view(head).rows()
         try:
             out = run_correction(project, llm, guidance, head, selection_for(group, rows), instruction(group, rows),

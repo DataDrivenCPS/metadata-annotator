@@ -279,6 +279,29 @@ def operation_schema(vocab=None, evidence: bool = True) -> dict:
     return {"anyOf": variants}
 
 
+def tool_args_schema(search: bool = False, view: bool = False) -> dict:
+    """One closed shape per tool, each requiring its main argument. A single object with every
+    tool's arguments invited calls that mix them (a term search with an empty query and a page),
+    which waste a step and output tokens."""
+    def shape(required: str, **optional: dict) -> dict:
+        return {"type": "object", "additionalProperties": False, "required": [required],
+                "properties": {required: {"type": "string"}, **optional}}
+    text = {"type": "string"}
+    shapes = [
+        shape("query", kind=text),  # search_terms, find_entities
+        shape("quantity_kind"),  # units_for
+        shape("term"),  # describe_class
+        shape("entity_id"),  # relations_for
+        shape("observation_id"),  # read_evidence, view_source of a passage
+        shape("topic"),  # read_guidance
+    ]
+    if search:
+        shapes.append(shape("query", source=text))
+    if view:
+        shapes.append(shape("source", page={"type": "integer"}, box={"type": "array", "items": {"type": "number"}}))
+    return {"anyOf": shapes}
+
+
 def step_schema(vocab=None, token_updates: bool = True, evidence: bool = True, search: bool = False,
                 view: bool = False) -> dict:
     """The schema of one reply. With ``vocab`` the operations are those of its family;
@@ -291,22 +314,7 @@ def step_schema(vocab=None, token_updates: bool = True, evidence: bool = True, s
             "thought": {"type": "string"},
             "action": {"type": "string", "enum": [*TOOL_ACTIONS, *(["search_sources"] if search else []),
                                                   *(["view_source"] if view else []), "propose"]},
-            "args": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "query": {"type": "string"},
-                    "kind": {"type": "string"},
-                    "term": {"type": "string"},
-                    "quantity_kind": {"type": "string"},
-                    "topic": {"type": "string"},
-                    "observation_id": {"type": "string"},
-                    "entity_id": {"type": "string"},
-                    **({"source": {"type": "string"}} if search or view else {}),
-                    **({"page": {"type": "integer"}, "box": {"type": "array", "items": {"type": "number"}}}
-                       if view else {}),
-                },
-            },
+            "args": tool_args_schema(search, view),
             "explanation": {"type": "string"},
             "operations": {"type": "array", "items": ops},
             "token_updates": {"type": "array", "items": {
@@ -785,6 +793,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     before = project.revision(rid)
     before_issues = project.issues(rid)
     open_issues = {i.id: i for i in before_issues if i.resolution_state == "open"}
+    before_ids = {i.id for i in before_issues}
     prior_dismissals = prior_proposal.issue_dismissals if prior_proposal and not reconsider else []
     if prior_dismissals:
         context += "\n\nThe pending proposal would also dismiss these issues:\n" + "\n".join(
@@ -832,6 +841,17 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         last_call = step >= max_steps - 1
         if last_call and messages[-1]["role"] == "user" and "must now propose" not in messages[-1]["content"]:
             messages[-1]["content"] += "\n\nYou must now answer with action \"propose\"."
+        if not getattr(llm, "prompt_cache", False) and messages[-1]["role"] == "user":
+            # A viewed region has been seen once the model has replied to it; resending it on every
+            # later step would bill its image tokens again. (With prompt caching it is kept: cached
+            # input costs a fraction, and removing it would break the cached prefix.)
+            for index, m in enumerate(messages[:-1]):
+                if m.pop("images", None):
+                    messages[-1]["content"] += ("\n(The image from your earlier view_source is no longer attached;"
+                                                " view it again if you need it.)")
+                    for r in results:
+                        if r["index"] == index:
+                            calls.pop(r["key"], None)  # so viewing it again is allowed
         progress("model", f"Asking {llm.provider} ({llm.model})", {"step": step + 1})
         try:
             res = llm.complete_json(system, messages, schema, images=images or None, cancel=cancel, **llm_options)
@@ -997,6 +1017,12 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         dismissals = [d for d in dismissals if d.id in still_found]
         gate = project.gate(cand) if cand.diff.added or cand.diff.removed else None
         introduced = [v for v in (gate or {}).get("introduced", []) if v not in inherited]
+        if introduced and not any(i.severity == "violation" and i.id not in before_ids for i in cand.issues):
+            # Validation shows no new violation, so neither will the review: asking the model to
+            # defend findings nobody sees costs a full request and, in practice, changes nothing.
+            progress("gate_skipped", f"Soundness gate reports {len(introduced)} violation(s) that validation "
+                                     "does not show; not asking the model about them", {"introduced": introduced})
+            introduced = []
         notes = list(cand.result.notes)
         if (introduced or notes) and not gate_checked and step < max_steps + max_repairs - 1:
             # One chance to respond to the repair engine (as in BuildingMOTIF's gated repair loop)

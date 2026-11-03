@@ -335,3 +335,11 @@ describe('callBreakdown', () => {
     ])
   })
 })
+
+describe('document tool steps', () => {
+  it('names searches and views in plain words', () => {
+    const step = (message: string) => describeStep({ at: '', stage: 'tool', message, data: {} })
+    expect(step("search_sources(query='FIT-101 range')")).toBe('Searched the uploaded documents for “FIT-101 range”')
+    expect(step("view_source(source='OARO.png')")).toBe('Looked at “OARO.png”')
+  })
+})

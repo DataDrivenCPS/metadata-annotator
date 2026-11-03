@@ -239,7 +239,9 @@ When the gate reports introduced violations, the correction agent gets one chanc
 (revise, or re-propose and say why they are expected) before the proposal is saved, as in
 BuildingMOTIF's gated repair loop. Source builds and replies to them are not nudged (new
 equipment starts unconnected), and a reply is only asked about violations its pending
-proposal did not already introduce.
+proposal did not already introduce. Nor is it asked when the candidate's validation shows no
+violation the base revision did not already have: the review would not show the gate's
+findings either, and in practice the model only re-proposed the same change (`gate_skipped`).
 
 A revision's stored summary is recounted on read (`issues.recount`) with the current issue
 grouping, so older revisions, History and proposal "Model checks" agree with the issue list.
@@ -348,7 +350,9 @@ How the assistant uses it (`retrieval/evidence.py`):
   supplied whole; otherwise up to six passages per source are kept, in reading order, within
   a character budget sized to the model's context window. Page selections narrow the search.
   Sources that are not indexed, point lists, image areas the person drew and exact text
-  passages are read as before by `read_source_set` into cited notes.
+  passages are read as before by `read_source_set` into cited notes. An attached image
+  source also goes with the request as an image when the model accepts images (and with
+  every build batch when it is a reference), beside its passages, which carry the citations.
 - **Citations.** Each passage becomes an observation whose id is stable per file version and
   passage, so asking again cites the same id. It has the page, PDF box, image box or text
   offsets, so opening the evidence shows the passage. Operations cite it in `evidence` like
@@ -371,10 +375,11 @@ How the assistant uses it (`retrieval/evidence.py`):
 - **`view_source` tool.** Offered when the model accepts images and the project has a PDF or
   image. It renders the region behind an observation, or a page with an optional box, at up
   to 1,568 pixels with some margin around the box, and attaches the PNG to that tool result.
-  Messages may carry `images` on any user turn for this. Only the latest view keeps its image;
-  earlier ones say they are no longer attached, so one run carries at most one viewed image.
-  Retrieved passages of PDFs and drawings point the model at this tool, since attached
-  drawings now reach it as text passages first.
+  Messages may carry `images` on any user turn for this. Once the model has replied to a
+  view, the image is removed from later requests and the next message says so (viewing it
+  again is allowed). With prompt caching only a newer view replaces it, since cached input
+  is cheap and removing it would break the cached prefix. Retrieved passages of PDFs and
+  drawings point the model at this tool.
 - **Builds.** Indexed reference sources are not read up front. Each input batch, and the
   point-list mapping, retrieves the reference passages relevant to its own content. The
   passages used are kept as the build's source notes.
@@ -392,7 +397,10 @@ Auto-fix works through issues without asking about each one. It is one backgroun
    shape and path — so one decision covers every issue with the same cause (at most 8 per
    group). The RO-train sample's nine violations are three groups.
 2. For each group, on the current head, the correction agent proposes a fix, asked to use only
-   what the model, vocabulary and sources establish and to ask instead of guessing.
+   what the model, vocabulary and sources establish and to ask instead of guessing. If the
+   latest earlier auto-fix answer for exactly the same issues is a proposal or choices that
+   are all still pending against the current head, it is reused (`reused_from`) instead:
+   asking again would spend a model run on the same question.
 3. **Verify** — the checks, not the model's confidence, decide. A fix is obvious when it
    resolves the group's issues; introduces nothing (validation delta and the repair engine's
    gate); changes only the issues' own objects (new objects are fine); deletes nothing;

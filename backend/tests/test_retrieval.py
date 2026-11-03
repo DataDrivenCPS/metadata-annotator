@@ -652,6 +652,16 @@ def test_description_failures_and_limits_leave_the_text_indexed(sample_project, 
 
 class VisionLLM(ScriptedLLM):
     supports_images = True
+    prompt_cache = False
+
+    def __init__(self, steps, prompt_cache=False):
+        super().__init__(steps)
+        self.prompt_cache = prompt_cache
+        self.attached: list[list] = []  # the request-level images of each call
+
+    def complete_json(self, system, messages, schema, **kw):
+        self.attached.append(list(kw.get("images") or []))
+        return super().complete_json(system, messages, schema, **kw)
 
 
 def test_the_assistant_can_look_at_a_region_and_only_the_latest_stays_attached(workspace, indexer):
@@ -676,7 +686,17 @@ def test_the_assistant_can_look_at_a_region_and_only_the_latest_stays_attached(w
     assert len(second[-1]["images"]) == 1 and "drawing.pdf, page 1" in second[-1]["content"]
     assert "earlier view_source is no longer attached" in second[-1]["content"]
     assert "no PDF or image 'nothing.pdf'" in llm.seen[3][-1]["content"] and "images" not in llm.seen[3][-1]
-    assert sum(1 for m in llm.seen[3] if m.get("images")) == 1  # an error does not drop the last view
+    # Once the model has replied to a view, its image is not sent again (no prompt cache to make it cheap)
+    assert sum(1 for m in llm.seen[3] if m.get("images")) == 0
+    assert "earlier view_source is no longer attached" in llm.seen[3][-1]["content"]
+
+    # With prompt caching the latest view stays: cached input is cheap, and removing it would break the prefix.
+    cached = VisionLLM([{"action": "view_source", "args": {"source": "drawing.pdf", "page": 1}},
+                        {"action": "find_entities", "args": {"query": "A1"}},
+                        {"action": "propose", "operations": []}], prompt_cache=True)
+    run_correction(p, cached, guidance(), rev.id, SelectionScope(entity_ids=[equipment.id]), "What is A1?", None,
+                   lambda *_: None, CancelToken())
+    assert sum(1 for m in cached.seen[2] if m.get("images")) == 1
 
     text_only = ScriptedLLM([{"action": "propose", "operations": []}])
     run_correction(p, text_only, guidance(), rev.id, SelectionScope(entity_ids=[equipment.id]), "What is A1?", None,
@@ -716,3 +736,26 @@ def test_real_vision_model_describes_the_sample_drawing():
     png_bytes, _ = region_png(data, "image")
     description, labels, tokens = describer.describe(png_bytes, "diagram.png", "", CancelToken())
     assert "P-101" in description + " ".join(labels) and tokens > 0
+
+
+def test_attached_pictures_go_with_the_request_beside_their_passages(workspace, indexer):
+    indexer.describer = FakeDescriber()
+    p, rev, equipment = with_air_handler(workspace)
+    image = p.add_source("pid.png", png(1105, 482))
+    settled(p, [image.id])
+    selection = SelectionScope(entity_ids=[equipment.id], source_regions=[SourceRegion(source_id=image.id)])
+
+    def answer(messages):
+        assert "ATTACHED IMAGES" in messages[0]["content"] and "image 1 is pid.png" in messages[0]["content"]
+        assert "centrifugal pump" in messages[0]["content"]  # the passages too
+        return {"action": "propose", "operations": []}
+
+    vision = VisionLLM([answer])
+    run_with_evidence(p, vision, guidance(), rev.id, selection, "What does the drawing show?", None,
+                      lambda *_: None, CancelToken(), agent=AgentConfig())
+    assert len(vision.attached[0]) == 1 and Image.open(io.BytesIO(vision.attached[0][0].data)).size == (1105, 482)
+
+    text_only = ScriptedLLM([{"action": "propose", "operations": []}])
+    run_with_evidence(p, text_only, guidance(), rev.id, selection, "What does the drawing show?", None,
+                      lambda *_: None, CancelToken(), agent=AgentConfig())
+    assert "ATTACHED IMAGES" not in text_only.seen[0][0]["content"]

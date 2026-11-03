@@ -793,3 +793,29 @@ def test_structured_question_is_readable_without_publishing(sample_project, guid
     assert outcome.questions == ["Which equipment type?\n• Tank"]
     assert outcome.proposal is None
     assert sample_project.head() == head
+
+
+def test_gate_findings_that_validation_does_not_show_are_not_asked_about(sample_project, guidance, monkeypatch):
+    p = sample_project
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    monkeypatch.setattr(p, "gate", lambda cand: {"sound": False, "progress": True, "fixed": [],
+                                                 "introduced": ["CT-201 · s223:SomeShape"]})
+    llm = ScriptedLLM([{"action": "propose", "explanation": "Permeate conductivity is in uS/cm.",
+                        "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"}]}])
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "fix the CT-201 unit")
+    assert out.steps == 1 and out.proposal is not None
+    assert [stage for stage, _, _ in events if stage in ("gated", "gate_skipped")] == ["gate_skipped"]
+
+
+def test_each_tool_has_its_own_argument_shape():
+    import jsonschema
+    from workbench.agent.correction import step_schema
+    schema = step_schema(search=True, view=True)
+    ok = lambda args: jsonschema.Draft202012Validator(schema).is_valid(  # noqa: E731
+        {"thought": "", "action": "search_terms", "args": args})
+    assert ok({"query": "pump", "kind": "equipment"}) and ok({"source": "OARO.png", "page": 1, "box": [0, 0, 5, 5]})
+    assert ok({"query": "FIT-101", "source": "manual.pdf"}) and ok({"observation_id": "obs-1"})
+    assert not ok({"kind": "medium", "quantity_kind": "", "source": "", "page": 0, "box": []})  # the mix from a real log
+    assert not ok({"kind": "medium"})  # a search needs its query
+    plain = step_schema()
+    assert all("source" not in shape["properties"] for shape in plain["properties"]["args"]["anyOf"])

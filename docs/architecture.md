@@ -379,8 +379,9 @@ How the assistant uses it (`retrieval/evidence.py`):
   point-list mapping, retrieves the reference passages relevant to its own content. The
   passages used are kept as the build's source notes.
 
-Settings: `[retrieval]` in workbench.toml, env overrides
-`WORKBENCH_RETRIEVAL_PARSER` and `WORKBENCH_EMBEDDING` (tests default to `basic` and `none`).
+Settings: `[retrieval]` in workbench.toml, and the env override
+`WORKBENCH_OFFLINE=1`, which indexes with the basic parser, keyword search only and no
+drawing descriptions, so nothing is installed, downloaded or called (tests set it).
 
 ### Auto-fix (`autofix.py`)
 

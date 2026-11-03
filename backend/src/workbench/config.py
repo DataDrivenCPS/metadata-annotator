@@ -232,12 +232,10 @@ def load_settings(path: str | Path | None = None) -> Settings:
     }
     dist = resolve(wb.get("frontend_dist"), BACKEND_DIR.parent / "frontend" / "dist")
     retrieval_table = dict(raw.get("retrieval", {}))
-    if parser := os.environ.get("WORKBENCH_RETRIEVAL_PARSER"):  # e.g. "basic" in tests and CI
-        retrieval_table["parser"] = parser
-    if embedding := os.environ.get("WORKBENCH_EMBEDDING"):  # fastembed, openai or none
-        retrieval_table["embedding"] = {**retrieval_table.get("embedding", {}), "kind": embedding}
-    if describe := os.environ.get("WORKBENCH_DESCRIBE"):  # auto or off ("off" in tests)
-        retrieval_table["describe"] = describe
+    if os.environ.get("WORKBENCH_OFFLINE", "").lower() in ("1", "true", "yes"):
+        # Tests and CI: indexing installs, downloads and calls nothing (embedded text, keyword search).
+        retrieval_table |= {"parser": "basic", "describe": "off",
+                            "embedding": {**retrieval_table.get("embedding", {}), "kind": "none"}}
 
     return Settings(
         data_dir=resolve(os.environ.get("WORKBENCH_DATA_DIR") or wb.get("data_dir"),

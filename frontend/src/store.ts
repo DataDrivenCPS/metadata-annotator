@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
-  autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, proposalStates, threadRuns,
-  type AutofixChoice, type AutofixState, type ProposalState,
+  autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, proposalStates, restorableProposal,
+  siblingOptions, threadRuns, unchosenOptions, type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
@@ -31,6 +31,8 @@ interface State {
   /** Repair-engine detail per issue id, for the revision named (loaded in the background). */
   repairs: { revision: string; byIssue: Record<string, IssueRepair> } | null
   assistantDraft: string
+  /** A message on its way to the server, shown in the thread until its run arrives. */
+  assistantSending: string | null
   assistantIssueContext: { issues: ReviewIssue[]; text: string } | null
   assistantDraftVersion: number
   /** The next message starts a new request instead of continuing the conversation. */
@@ -163,6 +165,7 @@ export const useStore = create<State>((set, get) => ({
   proposalStates: {},
   repairs: null,
   assistantDraft: '',
+  assistantSending: null,
   assistantIssueContext: null,
   assistantDraftVersion: 0,
   assistantNewRequest: false,
@@ -197,7 +200,7 @@ export const useStore = create<State>((set, get) => ({
     const generation = ++projectGeneration
     ++modelGeneration
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
-          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantIssueContext: null, assistantNewRequest: false,
+          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantSending: null, assistantIssueContext: null, assistantNewRequest: false,
           assistantCleared: clearedChat(id),
           autofix: null, viewing: null, views: [], busy: false })
     if (id) {
@@ -222,8 +225,7 @@ export const useStore = create<State>((set, get) => ({
       set({ runs: merged, proposalStates: proposalStates(proposals),
             activeRunId: get().activeRunId ?? thread[thread.length - 1]?.id ?? null,
             autofix: get().autofix ?? (autofixing ? { runId: autofixing.id } : null) })
-      const pending = proposals.find((p) => !cleared.proposals.includes(p.id)
-        && (p.status === 'pending' || p.status === 'stale'))
+      const pending = restorableProposal(proposals, thread, cleared.proposals, get().proposal?.id)
       if (pending) set({ proposal: pending })
     } else {
       localStorage.removeItem('workbench.project')
@@ -270,9 +272,7 @@ export const useStore = create<State>((set, get) => ({
     const cleared = get().assistantCleared
     const thread = threadRuns(merged, cleared.runs)
     const activeRunId = get().activeRunId ?? thread[thread.length - 1]?.id ?? null
-    const current = get().proposal
-    const pending = proposals.filter((p) => !cleared.proposals.includes(p.id) && (p.status === 'pending' || p.status === 'stale'))
-    let proposal = pending.find((p) => p.id === current?.id) ?? pending[0] ?? null
+    let proposal = restorableProposal(proposals, thread, cleared.proposals, get().proposal?.id)
     if (proposal?.status === 'pending' && get().model && proposal.base_revision !== get().model!.head) {
       proposal = { ...proposal, status: 'stale' }
     }
@@ -396,8 +396,14 @@ export const useStore = create<State>((set, get) => ({
   sendMessage: async (text) => {
     const s = get()
     const next = continuation(threadRuns(s.runs, s.assistantCleared.runs), s.proposal, s.assistantNewRequest)
-    if (next?.kind === 'proposal') return get().replyToProposal(text, next.runId ?? undefined)
-    return get().assist(text, next?.runId ?? undefined)
+    const pid = s.projectId
+    set({ assistantSending: text })
+    try {
+      if (next?.kind === 'proposal') return await get().replyToProposal(text, next.runId ?? undefined)
+      return await get().assist(text, next?.runId ?? undefined)
+    } finally {
+      if (get().projectId === pid) set({ assistantSending: null })
+    }
   },
 
   assist: async (instruction, parentRunId) => {
@@ -415,10 +421,13 @@ export const useStore = create<State>((set, get) => ({
     const about = effectiveSelection(next, selection, thread, proposal, picked, assistantNoScope)
     const sent = about.source === 'current' ? about.selection
       : { ...emptySelection(), source_regions: selection.source_regions }
+    // A new request replaces the proposal on screen; the server closes it so it does not come back later.
+    const replaced = proposal && (proposal.status === 'pending' || proposal.status === 'stale') ? proposal.id : undefined
     try {
       const run = await api.assist(projectId, model.head, sent, instruction, provider ?? undefined, parentRunId,
-        !(parent && assistantNoScope))
-      set((s) => ({ runSelectionVersion: { ...s.runSelectionVersion, [run.id]: selectionVersion } }))
+        !(parent && assistantNoScope), replaced)
+      set((s) => ({ runSelectionVersion: { ...s.runSelectionVersion, [run.id]: selectionVersion },
+        ...(replaced ? { proposalStates: { ...s.proposalStates, [replaced]: 'dismissed' as const } } : {}) }))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false
@@ -447,12 +456,14 @@ export const useStore = create<State>((set, get) => ({
 
   startBuild: async (sourceIds, instruction, sourcePages, sourceRoles) => {
     if (readOnly()) return false
-    const { projectId, model, provider } = get()
+    const { projectId, model, provider, proposal } = get()
     if (!projectId || !model) return false
     const project = projectGeneration
     const request = ++assistantGeneration
+    const replaced = proposal && (proposal.status === 'pending' || proposal.status === 'stale') ? proposal.id : undefined
     try {
-      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages, sourceRoles)
+      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages, sourceRoles, replaced)
+      if (replaced) set((s) => ({ proposalStates: { ...s.proposalStates, [replaced]: 'dismissed' as const } }))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false
@@ -480,8 +491,13 @@ export const useStore = create<State>((set, get) => ({
     try {
       const rev = await api.applyProposal(projectId, proposal.id)
       if (project !== projectGeneration || get().projectId !== projectId) return
+      // Applying one option of a choice settles it: the other options are closed.
+      const siblings = siblingOptions(get().runs, proposal.id)
+      await Promise.all(siblings.map((id) => api.dismissProposal(projectId, id).catch(() => {})))
+      if (project !== projectGeneration || get().projectId !== projectId) return
       set({ ...(get().proposal?.id === proposal.id ? { proposal: { ...proposal, status: 'applied' as const, applied_revision: rev.id } } : {}),
-            proposalStates: { ...get().proposalStates, [proposal.id]: 'applied' } })
+            proposalStates: { ...get().proposalStates, [proposal.id]: 'applied',
+                              ...Object.fromEntries(siblings.map((id) => [id, 'dismissed' as const])) } })
       await get().reload()
       if (project !== projectGeneration || get().projectId !== projectId) return
       if (get().proposal?.id === proposal.id) {
@@ -517,7 +533,12 @@ export const useStore = create<State>((set, get) => ({
     const { projectId, proposal } = get()
     if (!projectId || !proposal) return
     const project = projectGeneration
-    await api.dismissProposal(projectId, proposal.id)
+    try {
+      await api.dismissProposal(projectId, proposal.id)
+    } catch (e) {
+      if (project === projectGeneration) get().notify({ kind: 'error', text: `Could not discard: ${errorText(e)}` })
+      return
+    }
     if (project !== projectGeneration || get().projectId !== projectId) return
     set({ ...(get().proposal?.id === proposal.id ? { proposal: null } : {}), proposalStates: { ...get().proposalStates, [proposal.id]: 'dismissed' } })
   },
@@ -565,6 +586,8 @@ export const useStore = create<State>((set, get) => ({
             proposalStates: { ...get().proposalStates, [proposal.id]: proposal.status,
               ...(proposal.parent_proposal_id ? { [proposal.parent_proposal_id]: 'superseded' as const } : {}) },
           })
+        }).catch((e) => {
+          if (project === projectGeneration) get().notify({ kind: 'error', text: `Could not load the proposed change: ${errorText(e)}` })
         })
       }
     }
@@ -598,7 +621,15 @@ export const useStore = create<State>((set, get) => ({
       const cancelled = await api.cancelRun(projectId, run.id)
       if (project !== projectGeneration || get().projectId !== projectId) return
       set({ runs: { ...get().runs, [run.id]: latestStartedRun(cancelled, get().runs) } })
-    } else set({ autofix: null })
+    } else {
+      // Closing the report settles its unanswered choices, so their options do not linger as open proposals.
+      const open = unchosenOptions(run, get().proposalStates).filter((id) => id !== get().proposal?.id)
+      if (projectId && open.length) {
+        void Promise.all(open.map((id) => api.dismissProposal(projectId, id).catch(() => {})))
+        set({ proposalStates: { ...get().proposalStates, ...Object.fromEntries(open.map((id) => [id, 'dismissed' as const])) } })
+      }
+      set({ autofix: null })
+    }
   },
 
   undoAutofix: async () => {
@@ -623,7 +654,13 @@ export const useStore = create<State>((set, get) => ({
     if (!projectId) return
     const project = projectGeneration
     const request = ++assistantGeneration
-    const proposal = await api.proposal(projectId, proposalId)
+    let proposal: Proposal
+    try {
+      proposal = await api.proposal(projectId, proposalId)
+    } catch (e) {
+      if (project === projectGeneration) get().notify({ kind: 'error', text: `Could not open the proposal: ${errorText(e)}` })
+      return
+    }
     if (project !== projectGeneration || request !== assistantGeneration || get().projectId !== projectId) return
     set({ proposal, proposalStates: { ...get().proposalStates, [proposal.id]: proposal.status } })
   },

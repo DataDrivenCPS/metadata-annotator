@@ -53,6 +53,7 @@ class AssistRequest(BaseModel):
     provider: str | None = None
     parent_run_id: str | None = None  # continue this run's conversation, e.g. answer its questions
     inherit_selection: bool = True  # with nothing selected, keep the continued run's scope
+    supersedes_proposal_id: str | None = None  # the open proposal this new request replaces (closed when it starts)
 
 
 class AutofixRequest(BaseModel):
@@ -68,6 +69,7 @@ class BuildRequest(BaseModel):
     provider: str | None = None
     source_pages: dict[str, list[int]] = Field(default_factory=dict)
     source_roles: dict[str, Literal["input", "reference"]] = Field(default_factory=dict)
+    supersedes_proposal_id: str | None = None
 
 
 class ProposalReplyRequest(BaseModel):
@@ -170,10 +172,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/providers/{name}/health")
     def provider_health(name: str):
         try:
-            client = make_client(settings.provider(name))
+            cfg = settings.provider(name)
+            if cfg.kind != "openai":  # only OpenAI-compatible endpoints are probed (and cached) by runs
+                return make_client(cfg).health()  # type: ignore[attr-defined]
         except (KeyError, ValueError) as exc:
             raise HTTPException(404, str(exc)) from None
-        return client.health()  # type: ignore[attr-defined]
+        # A fresh check that also refreshes what starting a run relies on.
+        return runs.provider_health(cfg, fresh=True)
 
     # --------------------------------------------------------- vocabulary
 
@@ -556,7 +561,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p = project(pid)
         try:
             run = runs.start_correction(p, body.base_revision, body.selection, body.instruction, body.provider,
-                                        body.parent_run_id, body.inherit_selection)
+                                        body.parent_run_id, body.inherit_selection, body.supersedes_proposal_id)
         except (KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except ProviderUnavailable as exc:
@@ -582,7 +587,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             source_or_404(p, sid)
         try:
             run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider,
-                                   body.source_pages, body.source_roles)
+                                   body.source_pages, body.source_roles, body.supersedes_proposal_id)
         except (SourceError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except KeyError as exc:

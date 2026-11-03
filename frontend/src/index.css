@@ -493,3 +493,11 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 
 .proposal.collapsed { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; padding: 6px 10px; font-size: 12.5px; }
 .proposal.collapsed button { margin-left: auto; }
+
+/* Pending feedback: a message on its way, a button whose action is running. */
+.msg.user.sending { opacity: .7; }
+.msg.user.sending .msg-author .spinner { margin: 0 4px; }
+button[aria-busy="true"] .spinner { margin-right: 5px; }
+/* Chat choices: each option opens as a proposed change; the open one is marked. */
+.needs-input.choices .autofix-choice + .autofix-choice { margin-top: 6px; }
+.autofix-options button.chosen { border-color: var(--accent); font-weight: 600; }

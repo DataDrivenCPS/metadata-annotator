@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from rdflib import URIRef
 
+from .choices import MAX_OPTIONS, build_option
 from .config import AgentConfig
 from .llm import Cancelled
 from .operations import TERM_FIELDS, OperationError, OperationList
@@ -196,22 +197,11 @@ def _term_choices(proposal: ChangeProposal) -> list[tuple[int, str, str]]:
 # assistant (choices with operations) or, when a fix was held back only for a term nothing
 # grounds, from substituting the other candidate terms of that kind and keeping those that work.
 
-MAX_OPTIONS = 6
-
-
 def _option(project: Project, base: str, issues: list[ReviewIssue], ops: list[dict], label: str,
             selection: SelectionScope, request: str, run_id: str) -> dict | None:
     """A checked option ({label, proposal_id, note?}), or None when it does not work."""
-    try:
-        cand = project.build_candidate(base, OperationList.validate_python(ops), selection)
-    except (OperationError, ValueError):
-        return None
-    if not cand.diff.added and not cand.diff.removed:
-        return None
-    rev = project.revision(base)
-    prop = project.save_proposal(cand, selection, request, label, [], [], run_id, rev.validation,  # type: ignore[arg-type]
-                                 project.issues(base))
-    return _checked(project, prop, issues, label)
+    prop = build_option(project, base, ops, label, selection, request, run_id)
+    return _checked(project, prop, issues, label) if prop is not None else None
 
 
 def _checked(project: Project, prop: ChangeProposal, issues: list[ReviewIssue], label: str) -> dict | None:

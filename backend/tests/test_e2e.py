@@ -232,3 +232,48 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
     page.locator('.model-pane tbody tr', has_text='TK-100').click()
     expect(page.locator('.inspector').get_by_role('link', name='equipment.txt', exact=True)).to_be_visible()
     expect(page.locator('.inspector .evidence-excerpt', has_text='Tank TK-100 stores water.')).to_be_visible()
+
+
+def test_chat_choices_open_for_review_and_settle_when_applied(live, page):
+    from playwright.sync_api import expect
+
+    base, llm = live
+    pid = httpx.post(f"{base}/api/projects", json={"name": "Choices"}, timeout=120).json()["id"]
+    with open(SAMPLES / "model.ttl", "rb") as f:
+        httpx.post(f"{base}/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")},
+                   timeout=120).raise_for_status()
+    model = httpx.get(f"{base}/api/projects/{pid}/model", timeout=120).json()
+    ct = next(p for p in model["view"]["points"] if p["label"].startswith("CT-201"))
+
+    def op(unit):
+        return [{"op": "update_point", "id": ct["id"], "unit": unit}]
+
+    llm.steps = [{"action": "propose", "explanation": "The unit depends on the stream.", "operations": [], "choices": [
+        {"question": "Which unit does CT-201 report?", "options": [
+            {"label": "microsiemens per cm", "operations": op("unit:MicroS-PER-CentiM")},
+            {"label": "millisiemens per cm", "operations": op("unit:MilliS-PER-CentiM")}]}]}]
+
+    page.add_init_script(f"localStorage.setItem('workbench.project', '{pid}')")
+    page.goto(base)
+    composer = page.locator(".composer textarea")
+    composer.fill("Fix the CT-201 unit")
+    composer.press("Enter")
+    choices = page.locator(".needs-input.choices")
+    expect(choices).to_contain_text("Which unit does CT-201 report?", timeout=60000)
+    expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
+
+    # Picking an option opens it as an ordinary proposed change, under the question it answers.
+    choices.get_by_role("button", name=re.compile("microsiemens")).click()
+    card = page.locator(".msg.agent .proposal")
+    expect(card).to_contain_text("CT-201")
+    expect(choices.locator("button.chosen")).to_contain_text("microsiemens")
+    card.get_by_role("button", name="Apply change", exact=True).click()
+    expect(page.locator(".toast")).to_contain_text("Applied", timeout=60000)
+    expect(choices).to_contain_text("✓ microsiemens per cm")
+    statuses = [p["status"] for p in httpx.get(f"{base}/api/projects/{pid}/proposals", timeout=120).json()]
+    assert sorted(statuses) == ["applied", "dismissed"]  # the other option was closed
+
+    # A reload brings back neither option as an open card; the message still shows the answer.
+    page.reload()
+    expect(page.locator(".needs-input.choices")).to_contain_text("✓ microsiemens per cm")
+    expect(page.locator(".proposal-actions button.primary")).to_have_count(0)

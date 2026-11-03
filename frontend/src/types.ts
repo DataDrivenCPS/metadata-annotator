@@ -147,6 +147,8 @@ export interface AgentRun {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   progress: ProgressEvent[]
   outcome: { proposal_id?: string | null; dismissed_proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number
+    /** The assistant's alternatives; each option is a pending proposal to review (backend choices.py). */
+    choices?: import('./assistant').AutofixChoice[]
     autofix?: { groups: import('./assistant').AutofixGroup[]; revisions: string[] } }
   error: string | null; created_at: string; finished_at: string | null
 }

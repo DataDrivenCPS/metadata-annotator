@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
-  proposalStates,
+  owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
   startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
@@ -277,5 +277,44 @@ describe('what a reply is about', () => {
     const open = run('open', '2026-01-01T10:00:00Z', { selection: emptySelection(), outcome: { questions: ['?'] } })
     expect(effectiveSelection(continuation([open], null, false), about('eq-rtu4'), [open], null, left).selection.entity_ids)
       .toEqual([])
+  })
+})
+
+describe('chat choices and proposal ownership', () => {
+  const choice = { question: 'Which unit?', options: [{ label: 'uS/cm', proposal_id: 'p1' }, { label: 'mS/cm', proposal_id: 'p2' }] }
+  const asked = run('asked', '2', { outcome: { choices: [choice] } })
+
+  it('a reply to offered choices answers them', () => {
+    expect(continuation([asked], null, false)).toEqual({ kind: 'questions', runId: 'asked' })
+  })
+
+  it('applying one option closes the others in its choice', () => {
+    expect(siblingOptions({ asked }, 'p1')).toEqual(['p2'])
+    expect(siblingOptions({ asked }, 'elsewhere')).toEqual([])
+  })
+
+  it('a run owns what it proposed and the options it offered', () => {
+    const proposed = run('proposed', '1', { outcome: { proposal_id: 'p0' } })
+    expect(owningRun([proposed, asked], 'p2')?.id).toBe('asked')
+    expect(owningRun([proposed, asked], 'p0')?.id).toBe('proposed')
+    expect(owningRun([proposed, asked], 'stray')).toBeUndefined()
+  })
+
+  it('restores the open proposal, else the newest one the conversation proposed', () => {
+    const p = (id: string, status: Proposal['status'] = 'pending') => ({ id, status }) as Proposal
+    const thread = [run('a', '1', { outcome: { proposal_id: 'mine' } })]
+    expect(restorableProposal([p('stray'), p('mine')], thread, [])?.id).toBe('mine')
+    expect(restorableProposal([p('stray'), p('mine')], thread, [], 'stray')?.id).toBe('stray')
+    expect(restorableProposal([p('stray'), p('mine')], thread, ['mine'])).toBeNull()
+    expect(restorableProposal([p('mine', 'dismissed')], thread, [])).toBeNull()
+  })
+
+  it('closing an auto-fix report closes only choices nobody answered', () => {
+    const af = run('af', '1', { kind: 'autofix', outcome: { autofix: { revisions: [], groups: [
+      { issues: [], explanations: [], status: 'choice', choices: [choice] },
+      { issues: [], explanations: [], status: 'choice', choices: [{ question: 'Q', options: [
+        { label: 'a', proposal_id: 'q1' }, { label: 'b', proposal_id: 'q2' }] }] },
+    ] } } })
+    expect(unchosenOptions(af, { q1: 'applied', q2: 'dismissed' })).toEqual(['p1', 'p2'])
   })
 })

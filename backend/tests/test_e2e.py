@@ -106,17 +106,17 @@ def test_assistant_and_review_flow(live, page):
         httpx.post(f"{base}/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")},
                    timeout=120).raise_for_status()
 
-    question = "Is the medium change across RO-1 expected?"
+    question = "Is TK-301 meant to be unpiped for now?"
 
-    def dismiss_ro1(messages):
-        issue_id = re.search(r"\[(val-[0-9a-f]+)\][^\n]*RO-1", messages[0]["content"]).group(1)
-        return {"action": "propose", "explanation": "RO-1's medium finding is expected, so it can be dismissed.",
-                "operations": [], "dismiss_issues": [{"id": issue_id, "reason": "RO changes the medium by design."}]}
+    def dismiss_tk301(messages):
+        issue_id = re.search(r"\[(val-[0-9a-f]+)\][^\n]*TK-301", messages[0]["content"]).group(1)
+        return {"action": "propose", "explanation": "TK-301's missing port is expected, so it can be dismissed.",
+                "operations": [], "dismiss_issues": [{"id": issue_id, "reason": "The concentrate tank is piped later."}]}
 
     llm.steps = [
-        {"action": "propose", "explanation": "RO-1 has medium findings from the validator.", "operations": [],
+        {"action": "propose", "explanation": "TK-301 has no connection point.", "operations": [],
          "questions": [question]},
-        dismiss_ro1,
+        dismiss_tk301,
     ]
 
     page.add_init_script(f"localStorage.setItem('workbench.project', '{pid}')")
@@ -126,38 +126,38 @@ def test_assistant_and_review_flow(live, page):
     # Issues tab: the repair engine's summary under the validator message; clicking an issue
     # inspects its object without leaving the list
     health.click()
-    tank = page.locator(".issue", has_text="TK-101")
+    tank = page.locator(".issue", has_text="TK-301")
     expect(tank.locator(".repair-line")).to_contain_text("have 0, need 1")
     tank.locator(".issue-message").click()
-    expect(page.locator(".inspector h4")).to_contain_text("TK-101")
+    expect(page.locator(".inspector h4")).to_contain_text("TK-301")
     expect(page.locator("nav.tabs button.active", has_text="Issues")).to_have_count(1)
 
     # Inspector, and the RDF on its own tab
     page.locator("nav.tabs button", has_text="Equipment").first.click()
-    page.locator("table.data td", has_text="RO-1").first.click()
-    expect(page.locator(".inspector h4")).to_contain_text("RO-1")
+    page.locator("table.data td", has_text="TK-301").first.click()
+    expect(page.locator(".inspector h4")).to_contain_text("TK-301")
     expect(page.locator("pre.turtle")).to_have_count(0)
     page.locator(".drawer nav button", has_text="RDF").click()
-    expect(page.locator("pre.turtle")).to_contain_text("RO-1")
+    expect(page.locator("pre.turtle")).to_contain_text("TK-301")
 
     # Ask about the selected equipment: the reply asks a question
     composer = page.locator(".composer textarea")
-    composer.fill("Is the RO-1 issue real?")
+    composer.fill("Is the TK-301 issue real?")
     composer.press("Enter")
-    expect(page.locator(".msg.user").last).to_contain_text("Is the RO-1 issue real?")
+    expect(page.locator(".msg.user").last).to_contain_text("Is the TK-301 issue real?")
     expect(page.locator(".needs-input")).to_contain_text(question)
     expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
 
-    # The answer stays about what the question was about (RO-1), though RO-1 is still selected from
-    # before the request; it carries the conversation
+    # The answer stays about what the question was about (TK-301), though TK-301 is still selected
+    # from before the request; it carries the conversation
     expect(page.locator(".composer-selection")).to_contain_text("About (from the conversation)")
-    expect(page.locator(".composer-selection .chip")).to_contain_text("RO-1")
+    expect(page.locator(".composer-selection .chip")).to_contain_text("TK-301")
     page.locator(".needs-input button", has_text="Answer below").click()
-    page.keyboard.type("Yes, that is expected for reverse osmosis.")
+    page.keyboard.type("Yes, it is piped later.")
     page.keyboard.press("Enter")
     card = page.locator(".proposal")
     card.get_by_text("Dismisses 1 issue", exact=True).click()
-    expect(card.locator(".proposal-fixes")).to_contain_text("RO changes the medium by design.")
+    expect(card.locator(".proposal-fixes")).to_contain_text("The concentrate tank is piped later.")
     expect(card.locator(".proposal-fixes")).to_contain_text("No new issues.")
     rdf = card.locator("details", has=page.locator("summary", has_text="Show RDF"))
     expect(rdf).not_to_have_attribute("open", "")

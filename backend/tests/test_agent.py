@@ -340,18 +340,18 @@ def test_refresh_run_persists_no_change_outcome(sample_project, guidance, monkey
         manager.pool.shutdown()
 
 
-def _ro1_issue(p):
-    return next(i for i in p.issues(p.head()) if i.explanation.startswith("RO-1") and i.resolution_state == "open")
+def _tk301_issue(p):
+    return next(i for i in p.issues(p.head()) if i.explanation.startswith("TK-301") and i.resolution_state == "open")
 
 
 def test_dismissal_only_proposal_applies_without_a_revision(sample_project, guidance):
     p = sample_project
-    issue = _ro1_issue(p)
+    issue = _tk301_issue(p)
     llm = ScriptedLLM([
         {"action": "propose", "explanation": "Wrong id first.", "operations": [],
          "dismiss_issues": [{"id": "val-nope", "reason": "expected"}]},
-        {"action": "propose", "explanation": "RO-1 is connected; the finding is expected.", "operations": [],
-         "dismiss_issues": [{"id": issue.id, "reason": "RO splits brackish feed into permeate and brine."}]},
+        {"action": "propose", "explanation": "TK-301 is not piped yet; the finding is expected.", "operations": [],
+         "dismiss_issues": [{"id": issue.id, "reason": "The concentrate tank is installed later."}]},
     ])
     out, events = run(p, llm, guidance, SelectionScope(entity_ids=issue.affected_ids), "is this issue real?")
     assert f"[{issue.id}]" in llm.seen[0][0]["content"]
@@ -365,10 +365,10 @@ def test_dismissal_only_proposal_applies_without_a_revision(sample_project, guid
 
 def test_reply_can_withdraw_a_dismissal(sample_project, guidance):
     p = sample_project
-    issue = _ro1_issue(p)
+    issue = _tk301_issue(p)
     first = ScriptedLLM([{"action": "propose", "explanation": "Dismiss it.", "operations": [],
                           "dismiss_issues": [{"id": issue.id, "reason": "expected"}]}])
-    prior, _ = run(p, first, guidance, SelectionScope(), "dismiss the RO-1 issue")
+    prior, _ = run(p, first, guidance, SelectionScope(), "dismiss the TK-301 issue")
     second = ScriptedLLM([{"action": "propose", "explanation": "Keeping it open.", "operations": [],
                            "withdraw_dismissals": [issue.id]}])
     out = run_correction(p, second, guidance, p.head(), prior.proposal.selection, "actually keep it", None,

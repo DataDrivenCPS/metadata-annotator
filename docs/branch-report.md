@@ -84,7 +84,7 @@ review/apply boundary; and the operations the UI needs are a small, closed set.
    `brick/Brick.ttl`, 223P from `https://open223.info/223p.ttl`, WaTr after 223P (the skill says
    to load 223P first; loaded alone, WaTr's import of 223P cannot be resolved online).
    The skill's WaTr URL `https://watermetadata.org/water.ttl` returns 404; the current release
-   is `https://watermetadata.org/watr-0.2.ttl`. **Skill fix needed.**
+   is `https://watermetadata.org/watr-0.3.rc1.ttl` (`watr-0.2.ttl` also returns 404 now). **Skill fix needed.**
 10. **OntoEnv catalog/store mismatch (for ontoenv / BuildingMOTIF).** With a persistent
     `ontology_cache_path` but a fresh `graph_store_path`, a reopened environment reports its
     ontologies as present and does not re-fetch them, yet serves them as empty graphs. A WaTr

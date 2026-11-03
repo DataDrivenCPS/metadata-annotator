@@ -27,7 +27,8 @@ def test_import_projects_sample(sample_project):
     # sensors are not equipment rows
     assert not any("sensor" in e.label.lower() for e in view.equipment)
     issues = sample_project.issues(sample_project.head())
-    assert any("TK-301" in i.explanation and "InletConnectionPoint" in i.explanation for i in issues)
+    # the misrouted concentrate line leaves TK-301 without any connection point
+    assert any("TK-301" in i.explanation and "hasConnectionPoint" in i.explanation for i in issues)
 
 
 def test_edit_then_undo_restores_graph_exactly(sample_project):
@@ -234,22 +235,23 @@ def test_issue_text_is_the_validator_message(sample_project):
         assert all(w in issue.explanation for w in words), (issue.explanation, message)
 
 
-def _ro1(p, rid=None):
-    return [i for i in p.issues(rid or p.head()) if i.explanation.startswith("RO-1")]
+def _tk301(p, rid=None):
+    """TK-301's missing connection point: the sample's issue a person could reasonably dismiss."""
+    return [i for i in p.issues(rid or p.head()) if i.explanation.startswith("TK-301")]
 
 
 def test_dismissal_survives_rename_and_reports_who(sample_project):
     p = sample_project
-    issue = _ro1(p)[0]
+    issue = _tk301(p)[0]
     p.set_issue_state(issue.id, "dismissed")
-    ro = by_label(p.view(p.head()).equipment, "RO-1")
-    p.edit(p.head(), ops({"op": "update_equipment", "id": ro.id, "label": "RO-1 Train A"}))
-    after = {i.id: i for i in _ro1(p)}
+    tank = by_label(p.view(p.head()).equipment, "TK-301")
+    p.edit(p.head(), ops({"op": "update_equipment", "id": tank.id, "label": "TK-301 Brine Tank"}))
+    after = {i.id: i for i in _tk301(p)}
     assert after[issue.id].resolution_state == "dismissed"
     assert after[issue.id].dismissal["dismissed_by"] == "person"
-    assert "RO-1 Train A" in after[issue.id].explanation
+    assert "TK-301 Brine Tank" in after[issue.id].explanation
     p.set_issue_state(issue.id, "open")
-    assert {i.id: i for i in _ro1(p)}[issue.id].resolution_state == "open"
+    assert {i.id: i for i in _tk301(p)}[issue.id].resolution_state == "open"
 
 
 def test_dismissal_with_a_change_follows_undo_and_redo(sample_project):
@@ -257,7 +259,7 @@ def test_dismissal_with_a_change_follows_undo_and_redo(sample_project):
 
     p = sample_project
     base = p.head()
-    issue = _ro1(p)[0]
+    issue = _tk301(p)[0]
     ct = by_label(p.view(base).points, "CT-201")
     cand = p.build_candidate(base, ops({"op": "update_point", "id": ct.id, "label": "CT-201 permeate"}))
     prop = p.save_proposal(cand, SelectionScope(), "rename and dismiss", "", [], [], None,
@@ -278,7 +280,7 @@ def test_legacy_dismissals_move_to_current_ids(sample_project, workspace):
 
     p = sample_project
     head = p.head()
-    target = _ro1(p)[0]
+    target = _tk301(p)[0]
     with p.store.tx() as db:
         stored = json.loads(db.execute("SELECT issues FROM revisions WHERE id=?", (head,)).fetchone()["issues"])
         legacy = next(i for i in stored if i["id"] == target.id)
@@ -294,12 +296,13 @@ def test_repairs_come_from_the_repair_engine(sample_project):
     p = sample_project
     issues = {i.explanation.split(" (")[0]: i for i in p.issues(p.head())}
     repairs = p.repairs(p.head())
-    tank = repairs[issues["TK-101 Raw Water Tank"].id]
+    tank = repairs[issues["TK-301 Concentrate Tank"].id]
     assert not tank["blocked"] and tank["summary"] == ["s223:hasConnectionPoint: have 0, need 1"]
-    assert "add TK-101 Raw Water Tank s223:hasConnectionPoint" in tank["repair"]
-    assert "s223:InletConnectionPoint" in tank["repair"]
-    ro1 = repairs[next(i.id for i in p.issues(p.head()) if i.explanation.startswith("RO-1"))]
-    assert ro1["blocked"] and ro1["shape"] == "s223:Filter"
+    assert "add TK-301 Concentrate Tank s223:hasConnectionPoint" in tank["repair"]
+    assert "s223:ConnectionPoint" in tank["repair"]
+    # a SPARQL constraint has no algebraic witness, so its repair is reported as blocked
+    unit = repairs[next(i.id for i in p.issues(p.head()) if i.explanation.startswith("CT-201"))]
+    assert unit["blocked"] and unit["opaque"] and unit["shape"] == "s223:QuantifiableProperty"
     assert p.repairs(p.head()) is repairs  # computed once per revision
 
 
@@ -310,10 +313,12 @@ def test_revision_counts_match_the_issue_list_for_old_groupings(sample_project):
     head = p.head()
     with p.store.tx() as db:
         stored = json.loads(db.execute("SELECT issues FROM revisions WHERE id=?", (head,)).fetchone()["issues"])
-        ro1 = [i for i in stored if i["explanation"].startswith("RO-1")]
-        # the old grouping merged RO-1's findings into one issue and stored that count
-        merged = {**ro1[0], "id": "val-oldgroup", "details": {"findings": [d for i in ro1 for d in i["details"]["findings"]]}}
-        legacy = [i for i in stored if i not in ro1] + [merged]
+        grouped = [i for i in stored if i["explanation"].startswith(("TK-301", "CT-201"))]
+        assert len(grouped) == 2
+        # an older grouping merged several findings into one issue and stored that count
+        merged = {**grouped[0], "id": "val-oldgroup",
+                  "details": {"findings": [d for i in grouped for d in i["details"]["findings"]]}}
+        legacy = [i for i in stored if i not in grouped] + [merged]
         db.execute("UPDATE revisions SET issues=?, validation=json_set(validation, '$.violations', ?) WHERE id=?",
                    (json.dumps(legacy), len(legacy), head))
     shown = [i for i in p.issues(head) if i.origin == "validation" and i.severity == "violation"]

@@ -24,6 +24,35 @@ max_steps = 8
 # Extra replies for repairs/validation feedback; hard cap is max_steps + max_repairs.
 max_repairs = 2
 
+[retrieval]
+# Uploaded PDFs, images and documents are indexed in the background for search.
+# parser = "docling" (default): layout, tables, OCR of scans and drawings. The workbench installs
+#   docling-serve into <data_dir>/retrieval on first use (about 2 GB plus ~500 MB of models,
+#   CPU-only unless a GPU is present) and runs it on demand. "basic": embedded text only.
+# parser = "docling"
+# docling_url = "http://127.0.0.1:5001"    # use an existing docling-serve instead
+# docling_api_key_env = "DOCLING_API_KEY"  # its DOCLING_SERVE_API_KEY, if it has one
+# docling_idle_minutes = 10                # stop the managed parser when idle (frees ~2 GB RAM)
+# Drawings and scans (images, PDF pages with little text or with a drawing) get one written
+# description from a vision model when indexed, so search can find what they show. "auto" uses
+# describe_provider (default: [llm] default) when it accepts images (supports_images = true);
+# each described page is one image request, made once per file version.
+# describe = "auto"                        # or "off"
+# describe_provider = "openrouter"         # e.g. a cheaper vision model than the chat default
+# describe_max_pages = 30                  # per file
+# describe_min_text = 200                  # a PDF page with less embedded text is treated as a scan
+#
+# [retrieval.embedding]
+# kind = "fastembed"                  # in-process CPU model (default; ~70 MB download)
+# model = "BAAI/bge-small-en-v1.5"
+# Or any OpenAI-compatible /embeddings endpoint, e.g. a second llama-server:
+#   llama-server -m embeddinggemma-300m.gguf --embeddings --port 8082
+# kind = "openai"
+# base_url = "http://127.0.0.1:8082/v1"
+# model = "embeddinggemma"
+# api_key_env = "EMBEDDING_API_KEY"
+# kind = "none"                       # keyword search only
+
 # Select a provider by table name: local, anthropic, openai, or openrouter.
 # WORKBENCH_PROVIDER overrides this default; the UI also offers a per-request choice.
 # Export keys in the environment that starts the backend (examples below). Only

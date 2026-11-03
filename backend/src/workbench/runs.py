@@ -49,6 +49,26 @@ def run_reply_text(run: AgentRun) -> str:
     return "\n\n".join(p for p in parts if p).strip()
 
 
+def attachment_note(project: Project, run: AgentRun) -> str:
+    """What the person attached to a message, so later turns know it was read then (not now)."""
+    names = []
+    for region in (run.selection.source_regions if run.selection else []):
+        try:
+            source = project.source(region.source_id)
+        except KeyError:
+            continue
+        pages = region.pages
+        if pages and source.kind == "pdf" and len(pages) < (source.page_count or 0):
+            span = f"page {pages[0]}" if len(pages) == 1 else f"pages {min(pages)}–{max(pages)}" if (
+                max(pages) - min(pages) + 1 == len(pages)) else f"{len(pages)} pages"
+            names.append(f"{source.filename}, {span}")
+        else:
+            names.append(source.filename)
+    if not names or run.mode == "build":
+        return ""
+    return f"\n(Attached to this message and read then: {'; '.join(dict.fromkeys(names))}.)"
+
+
 class RunManager:
     def __init__(self, settings: Settings, guidance: SkillGuidance, bus: EventBus):
         self.settings = settings
@@ -149,7 +169,8 @@ class RunManager:
         parent = self.get(project, parent_run_id)
         if parent.status in ("queued", "running"):
             raise ValueError(f"run {parent_run_id} has not finished")
-        turns = [*parent.conversation, {"role": "user", "text": parent.instruction},
+        note = attachment_note(project, parent)
+        turns = [*parent.conversation, {"role": "user", "text": parent.instruction[:MAX_TURN_CHARS - len(note)] + note},
                  {"role": "assistant", "text": run_reply_text(parent)}]
         return [{"role": t["role"], "text": t["text"][:MAX_TURN_CHARS]} for t in turns if t["text"]][-MAX_HISTORY_TURNS:]
 
@@ -164,7 +185,8 @@ class RunManager:
         return inherited.model_copy(update={
             "entity_ids": [i for i in inherited.entity_ids if i in live],
             "relationship_ids": [i for i in inherited.relationship_ids if i in live],
-            "source_regions": selection.source_regions or inherited.source_regions,
+            # Attached sources belong to the message they came with; a follow-up reads only its own.
+            "source_regions": selection.source_regions,
         })
 
     def recover(self, project: Project) -> None:

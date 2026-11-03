@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from .build import BuildOutcome, run_build
 from .correction import run_correction
+from .. import retrieval
 from ..documents import source_batches, source_context
 from ..llm import LLMError, context_window, reply_tokens
+from ..retrieval.evidence import Retrieved, retrieve, served_by_index
 from ..schemas import SelectionScope
 
 NOTES_SCHEMA = {
@@ -77,25 +79,72 @@ def read_source_set(project, llm, regions, instruction, progress, cancel):
     return notes, list(evidence.values()), questions, usage
 
 
+def retrieval_budget(llm) -> int:
+    """Characters of retrieved passages one request may carry (about a quarter of the window)."""
+    return max(3000, min(12000, context_window(llm) * 3 // 4))
+
+
+def retrieved_for(project, llm, regions, query, progress, budget=None) -> Retrieved:
+    """Passages of the indexed regions for ``query``; the rest come back in ``unindexed``."""
+    if not regions:
+        return Retrieved()
+    indexer = retrieval.active(project)
+    found = retrieve(project, regions, query, indexer.embedder if indexer else None,
+                     budget_chars=budget or retrieval_budget(llm), view=bool(getattr(llm, "supports_images", False)))
+    if found.passages:
+        progress("sources", f"Retrieved {found.passages} passage{'s' if found.passages != 1 else ''} "
+                            "from the indexed sources", {"passages": found.passages})
+    return found
+
+
+def request_query(project, rid, selection, instruction, prior_proposal=None) -> str:
+    """What to retrieve for: the request, the names of what it is about, the proposal it revises."""
+    rows = project.view(rid).rows() if selection.entity_ids or selection.relationship_ids else {}
+    labels = [rows[i].label for i in [*selection.entity_ids, *selection.relationship_ids] if i in rows][:20]
+    parts = [instruction, " ".join(labels)]
+    if prior_proposal is not None:
+        parts.append(prior_proposal.instruction or "")
+    return "\n".join(p for p in parts if p)
+
+
 def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, progress, cancel, agent):
     csv_ids = [r.source_id for r in regions if r.role == 'input' and project.source(r.source_id).kind == 'csv']
-    documents = [r for r in regions if project.source(r.source_id).kind != 'csv' or r.role == 'reference']
+    # Indexed references are retrieved per input batch instead of being read in full.
+    states = retrieval.statuses(project)
+    indexed_refs = [r for r in regions if r.role == 'reference' and served_by_index(project, r, states)]
+    documents = [r for r in regions if (project.source(r.source_id).kind != 'csv' or r.role == 'reference')
+                 and r not in indexed_refs]
     input_docs = [r for r in documents if r.role == 'input' and project.source(r.source_id).kind != 'csv']
     batches = source_batches(project, input_docs, max_pages=4 if llm.supports_images else 8,
                              max_text=max(2000, min(12000, context_window(llm))))
     # A small document-only build can use the original content directly. Cross-source
     # interpretation and later batches need a shared set of cited facts first.
-    if csv_ids or any(r.role == 'reference' for r in regions) or len(batches) > 1:
+    if csv_ids or any(r.role == 'reference' for r in documents) or len(batches) > 1:
         notes, evidence, questions, outcome = read_source_set(project, llm, documents, instruction, progress, cancel)
     else:
         notes, evidence, questions, outcome = '', [], [], BuildOutcome()
+    passages: dict[str, str] = {}  # retrieved reference passages, kept as the build's source notes
+
+    def references_for(query: str) -> Retrieved:
+        found = retrieved_for(project, llm, indexed_refs, query, progress, budget=retrieval_budget(llm) // 2)
+        for ref, block in zip(found.evidence, found.blocks):
+            passages.setdefault(ref.ref, block)
+        evidence.extend(ref for ref in found.evidence if ref not in evidence)
+        return found
+
+    def build_notes() -> str:
+        retrieved_notes = "\n\n".join(passages.values())[:retrieval_budget(llm)]
+        return "\n\n".join(n for n in (notes, retrieved_notes and "Reference passages:\n" + retrieved_notes) if n)
     selection = SelectionScope(source_regions=regions)
     source_info = [{"id": r.source_id, "filename": project.source(r.source_id).filename,
                     "role": r.role, "pages": r.pages} for r in regions]
     draft = None
     if csv_ids:
+        names = [o.content.get("name", "") for sid in csv_ids for o in project.observations(sid)[:100]]
+        refs = references_for(instruction + "\n" + " ".join(names)) if indexed_refs else Retrieved()
         built = run_build(project, llm, guidance, rid, csv_ids, instruction, run_id, progress, cancel,
-                          evidence_context=notes, persist=False, source_evidence=evidence)
+                          evidence_context="\n\n".join(t for t in (notes, refs.text) if t), persist=False,
+                          source_evidence=evidence)
         draft = built.proposal
         outcome.steps += built.steps
         outcome.input_tokens += built.input_tokens
@@ -103,11 +152,15 @@ def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, 
         questions.extend(built.questions)
         draft.selection = selection
         draft.evidence.extend(evidence)
-        draft.build_summary.update(source_notes=notes, sources=source_info)
+        draft.build_summary.update(source_notes=build_notes(), sources=source_info)
 
     for index, batch in enumerate(batches, 1):
         progress("sources", f"Building from source batch {index}/{len(batches)}", {"batch": index})
         text, images, batch_evidence = source_context(project, batch, llm, cancel)
+        refs = references_for(instruction + "\n" + text[:2000]) if indexed_refs else Retrieved()
+        if refs.text:
+            text += "\n\n" + refs.text
+            batch_evidence = [*batch_evidence, *refs.evidence]
         result = run_correction(
             project, llm, guidance, rid, SelectionScope(source_regions=batch),
             "Build from the input sources in this batch. Reconcile identifiers with the pending draft and "
@@ -123,7 +176,7 @@ def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, 
             draft = result.proposal
             draft.selection = selection
             draft.build_summary = draft.build_summary or {}
-            draft.build_summary.update(source_notes=notes, sources=source_info)
+            draft.build_summary.update(source_notes=build_notes(), sources=source_info)
 
     # A reference-only set cannot start a build (validated by RunManager).
     cancel.check()
@@ -152,12 +205,19 @@ def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, 
 
 def run_with_evidence(project, llm, guidance, rid, selection, instruction, run_id, progress, cancel,
                       *, agent, prior_proposal=None, **kwargs):
-    """Attach chosen sources to a correction, batching large source sets first."""
-    notes, evidence, questions, usage = read_source_set(
-        project, llm, selection.source_regions, instruction, progress, cancel)
+    """Attach chosen sources to a correction: indexed sources supply the passages relevant to the
+    request; any others are read in bounded batches into cited notes first."""
+    found = retrieved_for(project, llm, selection.source_regions,
+                          request_query(project, rid, selection, instruction, prior_proposal), progress)
+    if found.unindexed:
+        notes, evidence, questions, usage = read_source_set(project, llm, found.unindexed, instruction, progress, cancel)
+    else:
+        notes, evidence, questions, usage = "", [], [], BuildOutcome()
+    context = "\n\n".join(t for t in (found.text, notes) if t)
+    evidence = [*found.evidence, *evidence]
     result = run_correction(project, llm, guidance, rid, selection, instruction, run_id, progress, cancel,
                             agent=agent, prior_proposal=prior_proposal,
-                            document_context=(notes, [], evidence), **kwargs)
+                            document_context=(context, [], evidence), **kwargs)
     result.steps += usage.steps
     result.input_tokens += usage.input_tokens
     result.output_tokens += usage.output_tokens
@@ -167,8 +227,8 @@ def run_with_evidence(project, llm, guidance, rid, selection, instruction, run_i
         if prior_proposal:
             regions = {r.source_id: r for r in [*prior_proposal.selection.source_regions, *selection.source_regions]}
             result.proposal.selection.source_regions = list(regions.values())
-        if notes and result.proposal.build_summary is not None:
+        if context and result.proposal.build_summary is not None:
             previous = result.proposal.build_summary.get('source_notes', '')
-            result.proposal.build_summary['source_notes'] = previous + '\n' + notes
+            result.proposal.build_summary['source_notes'] = previous + '\n' + context
         project._put_proposal(result.proposal)
     return result

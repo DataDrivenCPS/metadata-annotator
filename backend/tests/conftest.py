@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,11 @@ from workbench.project import Workspace
 from workbench.vocabulary import Vocabulary, VocabularyRegistry
 
 SAMPLES = Path(__file__).resolve().parents[2] / "samples" / "ro-train"
+# Uploads are indexed in the background: keep tests offline (no Docling install, no model download).
+# The retrieval tests marked `retrieval` opt into the real parser and embedding model.
+os.environ.setdefault("WORKBENCH_RETRIEVAL_PARSER", "basic")
+os.environ.setdefault("WORKBENCH_EMBEDDING", "none")
+os.environ.setdefault("WORKBENCH_DESCRIBE", "off")  # no vision-model calls while indexing
 logging.getLogger("rdflib.term").setLevel(logging.ERROR)
 
 

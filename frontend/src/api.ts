@@ -1,6 +1,7 @@
 import type {
   AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
 } from './types'
+import type { SourceIndex } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -107,6 +108,7 @@ export const api = {
   sourceConfirm: (pid: string, sid: string, cfg: CsvImportConfig) =>
     req<{ observations: number; superseded: number }>('POST', `${P(pid)}/sources/${sid}/confirm`, cfg),
   observations: (pid: string, sid: string) => req<Observation[]>('GET', `${P(pid)}/sources/${sid}/observations?limit=5000`),
+  reindexSource: (pid: string, sid: string) => req<SourceIndex>('POST', `${P(pid)}/sources/${sid}/reindex`),
   exportUrl: (pid: string, revision: string, kind: 'ttl' | 'csv') =>
     `${P(pid)}/${kind === 'ttl' ? 'export.ttl' : 'export-points.csv'}?revision=${revision}`,
   eventsUrl: (pid: string) => `${P(pid)}/events`,

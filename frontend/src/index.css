@@ -338,6 +338,11 @@ table.changes .after { color: var(--ok); font-weight: 500; }
 .src-kind.csv { background: #e6f4ea; color: var(--ok); }
 .src-kind.image { background: #f3e8ff; color: #6f42c1; }
 .src-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Retrieval index status of a document in the source list */
+.src-index { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.src-index.indexing, .src-index.queued { font-style: italic; }
+.src-index.failed, .src-index.warned { color: var(--warn); }
+.src-index .link { margin-left: 4px; font-size: 11px; }
 .source-view { flex: 1 1 auto !important; min-height: 0; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; }
 .source-view > * { flex: 1 1 auto; }
 .small { font-size: 12px; }

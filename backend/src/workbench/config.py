@@ -97,6 +97,66 @@ class AgentConfig:
 
 
 @dataclass
+class EmbeddingConfig:
+    """How source passages become vectors. ``fastembed`` runs a small ONNX model on the CPU in this
+    process (downloaded once into the data directory); ``openai`` calls any OpenAI-compatible
+    ``/embeddings`` endpoint, e.g. llama-server started with ``--embeddings``; ``none`` keeps
+    keyword search only."""
+
+    kind: Literal["fastembed", "openai", "none"] = "fastembed"
+    model: str = "BAAI/bge-small-en-v1.5"
+    base_url: str | None = None
+    api_key_env: str | None = None
+    batch_size: int = 32
+    timeout_s: float = 120.0
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("fastembed", "openai", "none"):
+            raise ValueError("retrieval.embedding.kind must be fastembed, openai or none")
+        if self.kind == "openai" and not self.base_url:
+            raise ValueError("retrieval.embedding.base_url is required for kind = \"openai\"")
+
+    @property
+    def api_key(self) -> str | None:
+        return os.environ.get(self.api_key_env) if self.api_key_env else None
+
+
+@dataclass
+class RetrievalConfig:
+    """Uploaded documents are parsed into passages and indexed when they are uploaded.
+
+    ``parser = "docling"`` uses Docling (layout, tables, OCR for scans and drawings) through a
+    docling-serve process the workbench installs into the data directory on first use and runs
+    on demand, or the one at ``docling_url``. ``basic`` reads only embedded text (no OCR, no
+    images). When Docling cannot be installed or started, text documents fall back to basic."""
+
+    enabled: bool = True
+    parser: Literal["docling", "basic"] = "docling"
+    docling_url: str | None = None
+    docling_api_key_env: str | None = None
+    docling_version: str = "1.38.2"
+    docling_idle_minutes: float = 10.0
+    # Pages sent to the parser per request: progress is reported, and kept, page batch by page batch.
+    pages_per_batch: int = 10
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    # Drawings and scans (images, PDF pages with little text or with a drawing) get one written
+    # description from a vision model when indexed, so search finds what they show. "auto": when
+    # the describing provider accepts images. The provider defaults to [llm] default.
+    describe: Literal["auto", "off"] = "auto"
+    describe_provider: str | None = None
+    describe_max_pages: int = 30  # per source: bounds the one-time cost of a large drawing set
+    describe_min_text: int = 200  # a PDF page with less embedded text than this counts as a scan
+
+    def __post_init__(self) -> None:
+        if isinstance(self.embedding, dict):
+            self.embedding = EmbeddingConfig(**self.embedding)
+        if self.parser not in ("docling", "basic"):
+            raise ValueError("retrieval.parser must be docling or basic")
+        if self.pages_per_batch < 1:
+            raise ValueError("retrieval.pages_per_batch must be at least 1")
+
+
+@dataclass
 class Settings:
     data_dir: Path
     profiles: dict[str, ProfileConfig]
@@ -113,6 +173,7 @@ class Settings:
     # [virtual.<id>] tables: extra or overriding virtual relations (see relations.py)
     virtual: dict[str, dict] = field(default_factory=dict)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
 
     @property
     def cache_dir(self) -> Path:
@@ -170,6 +231,13 @@ def load_settings(path: str | Path | None = None) -> Settings:
         name: ProviderConfig(name=name, **table) for name, table in provider_tables.items()
     }
     dist = resolve(wb.get("frontend_dist"), BACKEND_DIR.parent / "frontend" / "dist")
+    retrieval_table = dict(raw.get("retrieval", {}))
+    if parser := os.environ.get("WORKBENCH_RETRIEVAL_PARSER"):  # e.g. "basic" in tests and CI
+        retrieval_table["parser"] = parser
+    if embedding := os.environ.get("WORKBENCH_EMBEDDING"):  # fastembed, openai or none
+        retrieval_table["embedding"] = {**retrieval_table.get("embedding", {}), "kind": embedding}
+    if describe := os.environ.get("WORKBENCH_DESCRIBE"):  # auto or off ("off" in tests)
+        retrieval_table["describe"] = describe
 
     return Settings(
         data_dir=resolve(os.environ.get("WORKBENCH_DATA_DIR") or wb.get("data_dir"),
@@ -186,4 +254,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         views={k: dict(v) for k, v in raw.get("views", {}).items()},
         virtual={k: dict(v) for k, v in raw.get("virtual", {}).items()},
         agent=AgentConfig(**raw.get("agent", {})),
+        retrieval=RetrievalConfig(**retrieval_table),
     )

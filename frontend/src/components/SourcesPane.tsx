@@ -3,6 +3,7 @@ import { api } from '../api'
 import { useStore } from '../store'
 import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
+import { SourceIndexStatus } from './SourceIndexStatus'
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
   ['row_points', 'Rows describe points', 'One point per row: a name column plus optional metadata columns.'],
@@ -73,6 +74,7 @@ export function SourcesPane() {
                 }} />
               <span className={`src-kind ${s.kind}`}>{s.kind === 'csv' ? 'CSV' : s.kind === 'image' ? 'IMG' : s.kind === 'pdf' ? 'PDF' : 'DOC'}</span>
               <span className="src-name" title={s.filename}>{s.filename}</span>
+              <SourceIndexStatus source={s} />
               <span className="muted">{s.kind === 'csv'
                 ? (s.status === 'configured'
                   ? (s.modeled_count ? `${s.modeled_count}/${s.observation_count} in model` : `${s.observation_count} records`)

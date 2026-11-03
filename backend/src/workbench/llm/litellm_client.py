@@ -64,9 +64,10 @@ class LiteLLMClient:
             nonlocal limit
             if isinstance(exc, TruncatedOutput):
                 # Reported input usage is preferable to estimates, especially for images.
+                attached = len(images or []) + sum(len(m.get("images") or []) for m in retry_messages)
                 prompt = exc.input_tokens or (
-                    (len(system) + len(json.dumps(retry_messages)) + len(json.dumps(schema))) // 3
-                    + 1500 * len(images or []))
+                    (len(system) + sum(len(str(m.get("content", ""))) for m in retry_messages)
+                     + len(json.dumps(schema))) // 3 + 1500 * attached)
                 # Leave room for the corrective message and estimation error. Do not grow
                 # past the deployment window, or a native model's known output limit.
                 ceiling = limit * 2
@@ -81,18 +82,19 @@ class LiteLLMClient:
                                                            on_progress, limit), on_retry=on_retry)
 
     def _params(self, system, messages, schema, images, max_tokens):
-        if images and not self.supports_images:
+        if (images or any(m.get("images") for m in messages)) and not self.supports_images:
             raise LLMError(f"the configured model ({self.provider}) does not accept images")
         msgs = [{"role": "system", "content": system}]
-        attach_images = bool(images)
+        pending = list(images or [])  # ``images`` attach to the first user turn
         for m in messages:
-            if m["role"] == "user" and attach_images:
+            attached = [*pending, *(m.get("images") or [])] if m["role"] == "user" else []
+            if attached:
                 content = [{"type": "image_url", "image_url": {
                     "url": f"data:{img.media_type};base64,{base64.b64encode(img.data).decode()}"}}
-                    for img in images]
+                    for img in attached]
                 content.append({"type": "text", "text": m["content"]})
                 msgs.append({"role": "user", "content": content})
-                attach_images = False
+                pending = []
             else:
                 msgs.append({"role": m["role"], "content": m["content"]})
         params = {

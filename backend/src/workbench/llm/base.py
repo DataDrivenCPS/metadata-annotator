@@ -84,7 +84,8 @@ class LLMClient(Protocol):
     ) -> LLMResult:
         """Return a JSON object conforming to ``schema``.
 
-        ``messages`` are plain ``{"role": "user"|"assistant", "content": str}`` turns;
+        ``messages`` are plain ``{"role": "user"|"assistant", "content": str}`` turns; a user
+        turn may also carry ``"images": [ImageInput]`` (a viewed region, for example).
         ``images`` attach to the first user turn.
         """
         ...

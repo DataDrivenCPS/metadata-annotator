@@ -202,6 +202,18 @@ export interface Source {
   page_count?: number | null
   observation_count?: number
   modeled_count?: number
+  /** Passages indexed for retrieval (PDFs, images, documents); null until first indexed. */
+  index?: SourceIndex | null
+}
+export interface SourceIndex {
+  status: 'queued' | 'indexing' | 'ready' | 'failed' | 'unsupported'
+  sha256: string; message?: string; error?: string; warning?: string
+  parser?: 'docling' | 'basic' | 'describe' | 'none'; embedding?: string | null
+  chunks?: number; pages_done?: number; pages_total?: number | null; updated_at?: string
+  /** Drawing pages found, described by a vision model, and the tokens that took. */
+  drawings?: number; described?: number; description_model?: string; description_tokens?: number
+  /** Why drawings were not described (no vision model), when there were some. */
+  note?: string | null
 }
 export interface CsvGrid {
   rows: string[][]; total_rows: number; columns: number; delimiter: string

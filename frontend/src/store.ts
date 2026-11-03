@@ -134,9 +134,23 @@ function latestStartedRun(run: AgentRun, runs: Record<string, AgentRun>) {
 }
 
 /** The event stream can advance a run before its HTTP start response arrives. */
+/**
+ * Attached evidence belongs to the message it was sent with: once a message starts a run, the
+ * sources it carried leave the composer, so the next message does not read them again unless the
+ * person attaches them again. Not a selection change (it must not count as picking something).
+ */
+function detachSentEvidence(run: AgentRun) {
+  if (run.kind !== 'correction') return
+  const sent = new Set((run.selection?.source_regions ?? []).map((r) => r.source_id))
+  const { selection } = useStore.getState()
+  if (!sent.size || !selection.source_regions.some((r) => sent.has(r.source_id))) return
+  useStore.setState({ selection: { ...selection, source_regions: selection.source_regions.filter((r) => !sent.has(r.source_id)) } })
+}
+
 function acceptStartedRun(run: AgentRun, pid: string, project: number, request: number, clearProposal = false) {
   const state = useStore.getState()
   if (project !== projectGeneration || state.projectId !== pid) return false
+  detachSentEvidence(run)
   const latest = latestStartedRun(run, state.runs)
   if (request !== assistantGeneration) {
     useStore.setState({ runs: { ...state.runs, [run.id]: latest } })
@@ -566,7 +580,7 @@ export const useStore = create<State>((set, get) => ({
     if (ev.type === 'revision' || ev.type === 'issues') {
       if (!s.model || ev.head !== s.model.head || ev.type === 'issues') void s.reload()
       if (ev.type === 'revision') set({ sourcesVersion: get().sourcesVersion + 1 })  // record status follows the model
-    } else if (ev.type === 'sources') {
+    } else if (ev.type === 'sources' || ev.type === 'source_index') {
       set({ sourcesVersion: s.sourcesVersion + 1 })
     } else if (ev.type === 'run' && ev.run) {
       const run = ev.run

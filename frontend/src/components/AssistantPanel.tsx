@@ -5,6 +5,7 @@ import { autofixCandidates, autofixProgress, autofixReport, continuation, descri
   type AutofixStatus, type ProposalState } from '../assistant'
 import { summarize } from '../selection'
 import { useStore } from '../store'
+import { attachmentSummary } from '../documents'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
 
 const FIELD_LABELS: Record<string, string> = {
@@ -176,7 +177,8 @@ function Composer() {
         </> : <span className="muted">{summary}</span>}
       </div>
       {selection.source_regions.length > 0 && <div className="composer-selection">
-        <span className="muted">Evidence attached: {selection.source_regions.length} source{selection.source_regions.length === 1 ? '' : 's'}</span>
+        <span className="muted" title="Sent with this message only; attach again to use them in a later message">
+          Attached to this message: {attachmentSummary(selection.source_regions)}</span>
         <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>clear evidence</button>
       </div>}
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>

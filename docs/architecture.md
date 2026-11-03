@@ -297,6 +297,91 @@ are supplied according to the model's image support; source regions and page ref
 retained as evidence. Source build proposals require review before applying and preserve
 existing human locks without marking extracted values as human-confirmed.
 
+Sources attached to an assistant message belong to that message: the composer drops them once
+the message starts a run, and a follow-up does not inherit them (`RunManager.continued_selection`).
+The conversation history records what was attached to each earlier message and that it was
+read then, so a later turn knows the evidence existed without paying to read it again.
+
+### Source index (`retrieval/`)
+
+Uploaded PDFs, images and text documents are indexed in the background so later work can
+retrieve passages instead of reading whole documents. CSV/TSV point lists are not indexed:
+their records are already structured observations.
+
+- **Parsing.** `parser = "docling"` (default) uses Docling through a local docling-serve
+  (`retrieval/docling.py`). The workbench installs it with uv into
+  `workbench-data/retrieval/docling-serve/v<version>/` on first use (about 2 GB, CPU PyTorch
+  unless a GPU is present; Intel Macs are unsupported) and starts it on demand on 127.0.0.1 with a
+  random API key. Its models (about 500 MB) download on first start into the same directory. It
+  stops after `docling_idle_minutes`, and a restarted workbench reuses a running one recorded in
+  `server.json`. `docling_url` points at an existing docling-serve instead. PDFs go to the parser
+  `pages_per_batch` pages at a time, so progress and passages accumulate per batch.
+- **Passages** (`retrieval/chunking.py`). Prose is packed into passages of about 1,200
+  characters under its section headings, never across pages. Tables become rows keyed by their
+  column headers. Text inside drawings, which Docling's own chunker drops, is grouped into
+  labels by proximity ("FEED PUMP P-101"), each with its box. Locations are top-left boxes in
+  PDF points or image pixels. Text documents other than .docx, and PDFs when Docling is
+  unavailable, are split at paragraphs with `text_range` offsets into the document or page
+  text, the offsets source regions already use. Images cannot be indexed without Docling.
+- **Embeddings** (`retrieval/embed.py`). `fastembed` (default) runs
+  `BAAI/bge-small-en-v1.5` on the CPU in-process; `openai` uses any OpenAI-compatible
+  `/embeddings` endpoint such as llama-server `--embeddings`; `none` keeps keyword search only.
+  Vectors are stored per model id, so changing the model re-embeds without re-parsing. If
+  embedding fails, the source is still indexed for keywords and says so.
+- **Search** (`retrieval.search`). FTS5 BM25 over passage text and headings (each query term
+  is a phrase, so tags such as `RO-1_FIT_101` match as a unit) fused with cosine similarity by
+  reciprocal rank, optionally scoped to sources. Vectors are scanned with numpy from a
+  per-project cache. That is exact search and fast enough for tens of thousands of passages.
+- **Keeping it current** (`Indexer`). The indexer listens on the event bus. Any `sources`
+  event re-checks that project: new sources and sources whose file hash changed are
+  (re)indexed, sources that no longer exist lose their passages, and a cancelled or replaced
+  job stops between batches. Opening a project resumes work interrupted by a restart. Status
+  per source (`queued`, `indexing`, `ready`, `failed`, `unsupported`, with progress) is in
+  `source_index` and published as `source_index` events. `GET …/sources` includes it, and
+  `POST …/sources/{id}/reindex` and `GET …/sources/search` act on it.
+
+How the assistant uses it (`retrieval/evidence.py`):
+
+- **Attached sources.** When a source attached to a request is indexed at its current version,
+  the request retrieves its passages instead of reading the whole file. The query is the
+  request plus the labels of the selected entities. A source of at most 4,000 characters is
+  supplied whole; otherwise up to six passages per source are kept, in reading order, within
+  a character budget sized to the model's context window. Page selections narrow the search.
+  Sources that are not indexed, point lists, image areas the person drew and exact text
+  passages are read as before by `read_source_set` into cited notes.
+- **Citations.** Each passage becomes an observation whose id is stable per file version and
+  passage, so asking again cites the same id. It has the page, PDF box, image box or text
+  offsets, so opening the evidence shows the passage. Operations cite it in `evidence` like
+  any other source evidence.
+- **`search_sources` tool.** Offered only when some project document is indexed. It returns
+  up to five passages, across all documents or one named file, each with an observation id.
+  Passages the model found this way become citable for the rest of the run, and the cited
+  ones join the proposal's evidence. Ids the model never saw are refused.
+- **Drawings** (`retrieval/describe.py`). OCR finds a drawing's labels but not what they
+  mean together. When a source is indexed, each image and each PDF page that is a scan (less
+  than `describe_min_text` characters of embedded text) or holds a drawing (Docling found
+  labels in a figure) gets one description from a vision model, through `complete_json` like
+  every other call, so a llama.cpp vision model or a paid provider both work. It is indexed as
+  a passage of kind `description` whose heading says it is generated, and its observation is
+  marked `generated`. At most `describe_max_pages` pages per file are described. The first
+  failed call stops descriptions for that file with a warning, and the text stays indexed.
+  The source status shows how many pages were described and the tokens spent, or why none
+  were, for example that the provider does not accept images. Without Docling an image is
+  indexed from its description alone.
+- **`view_source` tool.** Offered when the model accepts images and the project has a PDF or
+  image. It renders the region behind an observation, or a page with an optional box, at up
+  to 1,568 pixels with some margin around the box, and attaches the PNG to that tool result.
+  Messages may carry `images` on any user turn for this. Only the latest view keeps its image;
+  earlier ones say they are no longer attached, so one run carries at most one viewed image.
+  Retrieved passages of PDFs and drawings point the model at this tool, since attached
+  drawings now reach it as text passages first.
+- **Builds.** Indexed reference sources are not read up front. Each input batch, and the
+  point-list mapping, retrieves the reference passages relevant to its own content. The
+  passages used are kept as the build's source notes.
+
+Settings: `[retrieval]` in workbench.toml, env overrides
+`WORKBENCH_RETRIEVAL_PARSER` and `WORKBENCH_EMBEDDING` (tests default to `basic` and `none`).
+
 ### Auto-fix (`autofix.py`)
 
 Auto-fix works through issues without asking about each one. It is one background run
@@ -448,9 +533,14 @@ workbench-data/
   cache/                         per-profile closure/catalog/meta caches; shared OntoEnv store
   projects/<project-id>/
     project.sqlite               meta, revisions, proposals, corrections, sources, observations,
-                                 issues, issue_dismissals, agent_runs, layout
+                                 issues, issue_dismissals, agent_runs, layout; source_index,
+                                 source_chunks (+ FTS5), chunk_vectors
     revisions/rev-N.trig
     sources/<source-id>/…
+  retrieval/
+    docling-serve/v<version>/    docling-serve's own environment (installed on first use)
+    docling-serve/models/        Docling's models; server.json, server.log, install.log
+    fastembed/                   the embedding model
 ```
 
 ## Cross-platform notes
@@ -458,4 +548,6 @@ workbench-data/
 Pure Python + wheels for all native dependencies on Windows x64, macOS arm64 and Linux x64
 (`pyshifty` has no macOS x86_64 wheel: Intel Macs need a Rust toolchain to build it). Paths
 use `pathlib`; no fork/signals/Unix sockets; SQLite connections are per-transaction; snapshot
-writes use `Path.replace`. The inference server is always a separate process reached over HTTP.
+writes use `Path.replace`. The inference server is always a separate process reached over HTTP,
+and so is the document parser (docling-serve, started with `subprocess` and stopped with
+`terminate`).

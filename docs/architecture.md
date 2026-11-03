@@ -435,7 +435,24 @@ it resets the visible conversation without deleting server records or token usag
 `RunManager.tracked_client` publishes provider-reported usage after each call and includes
 failed attempts and malformed-output retries. Concurrent calls update totals under a lock;
 final outcomes do not count those calls a second time. The header combines persisted usage
-with current run updates. Missing provider usage cannot be inferred.
+with current run updates.
+
+Each call is also kept on the run's outcome (`calls`, up to 200): the progress step it was
+made in, its input and output tokens, input read from the provider's prompt cache
+(`cached_tokens`, a part of the input), and whether it failed. The run's token line shows the
+list on hover. When an endpoint reports no usage, the call is estimated from the request size
+(about three characters per token, 1,500 per image), counted, and marked `estimated`. A call
+cancelled mid-reply has no reported usage; its estimated input is noted on the call
+(`unreported_input_tokens`) but not counted. Drawing descriptions made while indexing are
+added to the usage endpoint as `index:<source id>` entries.
+
+Prompt caching: providers that cache only marked prompts get `cache_control` on the system
+prompt and on the latest message of each request. That covers Claude, natively, through
+LiteLLM or on OpenRouter, and Gemini on OpenRouter; `prompt_cache` on a provider overrides
+it. Each step of a run then reads the previous step's prefix from the cache. OpenAI and
+llama.cpp reuse repeated prefixes without markers. Messages are append-only for this
+reason: when a newer `view_source` image replaces an older one, the note goes in the new
+result rather than into the earlier message.
 
 ## Model providers (`llm/`)
 

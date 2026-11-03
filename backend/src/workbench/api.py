@@ -631,7 +631,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/projects/{pid}/usage")
     def token_usage(pid: str):
-        return runs.usage(project(pid))
+        p = project(pid)
+        usage = runs.usage(p)
+        for sid, state in retrieval.statuses(p).items():  # drawing descriptions, made while indexing
+            if state.get("description_tokens"):
+                usage[f"index:{sid}"] = {"input_tokens": state.get("description_input_tokens", 0),
+                                         "output_tokens": state.get("description_output_tokens", 0)}
+        return usage
 
     @app.get("/api/projects/{pid}/runs/{run_id}")
     def get_run(pid: str, run_id: str):

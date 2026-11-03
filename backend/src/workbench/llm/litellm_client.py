@@ -23,12 +23,29 @@ log = logging.getLogger(__name__)
 RUNAWAY_BLANK = 500
 
 
+def wants_cache_markers(cfg: ProviderConfig) -> bool:
+    """Providers that only cache prompts marked with ``cache_control``."""
+    model = cfg.model.lower()
+    if cfg.kind == "anthropic":
+        return True
+    if cfg.kind == "litellm":
+        return "claude" in model
+    return "openrouter.ai" in (cfg.base_url or "") and model.startswith(("anthropic/", "google/gemini"))
+
+
+def estimate_tokens(system: str, messages: list[dict], images: list | None = None) -> int:
+    """Input tokens of a request, for when the endpoint does not say (about 3 characters each)."""
+    attached = len(images or []) + sum(len(m.get("images") or []) for m in messages)
+    return (len(system) + sum(len(str(m.get("content", ""))) for m in messages)) // 3 + 1500 * attached
+
+
 class LiteLLMClient:
     def __init__(self, cfg: ProviderConfig):
         self.cfg = cfg
         self.provider = cfg.name
         self.model = cfg.model
         self.supports_images = cfg.supports_images or cfg.kind == "anthropic"
+        self.prompt_cache = cfg.prompt_cache if cfg.prompt_cache is not None else wants_cache_markers(cfg)
         if cfg.kind == "openai" and not cfg.base_url:
             raise ValueError(f"provider {cfg.name!r} needs base_url")
         self.endpoint = EndpointInfo(cfg)
@@ -64,10 +81,8 @@ class LiteLLMClient:
             nonlocal limit
             if isinstance(exc, TruncatedOutput):
                 # Reported input usage is preferable to estimates, especially for images.
-                attached = len(images or []) + sum(len(m.get("images") or []) for m in retry_messages)
-                prompt = exc.input_tokens or (
-                    (len(system) + sum(len(str(m.get("content", ""))) for m in retry_messages)
-                     + len(json.dumps(schema))) // 3 + 1500 * attached)
+                prompt = exc.input_tokens or (estimate_tokens(system, retry_messages, images)
+                                              + len(json.dumps(schema)) // 3)
                 # Leave room for the corrective message and estimation error. Do not grow
                 # past the deployment window, or a native model's known output limit.
                 ceiling = limit * 2
@@ -84,7 +99,9 @@ class LiteLLMClient:
     def _params(self, system, messages, schema, images, max_tokens):
         if (images or any(m.get("images") for m in messages)) and not self.supports_images:
             raise LLMError(f"the configured model ({self.provider}) does not accept images")
-        msgs = [{"role": "system", "content": system}]
+        cache = getattr(self, "prompt_cache", False)
+        marker = {"cache_control": {"type": "ephemeral"}}
+        msgs: list[dict] = [{"role": "system", "content": [{"type": "text", "text": system, **marker}] if cache else system}]
         pending = list(images or [])  # ``images`` attach to the first user turn
         for m in messages:
             attached = [*pending, *(m.get("images") or [])] if m["role"] == "user" else []
@@ -97,6 +114,13 @@ class LiteLLMClient:
                 pending = []
             else:
                 msgs.append({"role": m["role"], "content": m["content"]})
+        if cache:
+            # Cache everything up to the latest message: the next step reads it back at a fraction
+            # of the price, then caches its own additions. (Two of the four breakpoints allowed.)
+            last = msgs[-1]
+            parts: list[dict] = ([{"type": "text", "text": last["content"]}] if isinstance(last["content"], str)
+                                 else list(last["content"]))
+            last["content"] = [*parts[:-1], {**parts[-1], **marker}]
         params = {
             "model": self.model, "messages": msgs, "max_tokens": max_tokens,
             "stream": True, "stream_options": {"include_usage": True},
@@ -138,7 +162,8 @@ class LiteLLMClient:
         params = self._params(system, messages, schema, images, max_tokens)
         parts = []
         tool_parts = {}
-        tokens_in = tokens_out = generated = blank = 0
+        tokens_in = tokens_out = cached = generated = blank = 0
+        reported = False
         finish = generation_id = upstream = None
         stream = None
         try:
@@ -150,8 +175,11 @@ class LiteLLMClient:
                 upstream = getattr(chunk, "provider", None) or upstream
                 usage = getattr(chunk, "usage", None)
                 if usage:
+                    reported = True
                     tokens_in = int(usage.prompt_tokens or 0)
                     tokens_out = int(usage.completion_tokens or 0)
+                    details = getattr(usage, "prompt_tokens_details", None)
+                    cached = int(getattr(usage, "cache_read_input_tokens", 0) or getattr(details, "cached_tokens", 0) or 0)
                 for choice in chunk.choices or []:
                     if choice.index != 0:
                         continue  # alternatives are separate answers, never concatenate them
@@ -215,5 +243,7 @@ class LiteLLMClient:
             log.warning("%s (%s): invalid JSON; generation=%s upstream=%s finish=%s chars=%d tokens=%d",
                         self.provider, self.model, generation_id, upstream, finish, generated, tokens_out)
             raise
+        if not reported:  # some OpenAI-compatible servers omit usage; count something rather than nothing
+            tokens_in, tokens_out = estimate_tokens(system, messages, images), max(1, generated // 4)
         return LLMResult(data=data, raw_text=text, input_tokens=tokens_in, output_tokens=tokens_out,
-                         extra={"request_id": generation_id})
+                         extra={"request_id": generation_id}, cached_tokens=cached, estimated=not reported)

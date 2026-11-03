@@ -17,6 +17,7 @@ from .choices import chat_choices
 from .config import Settings
 from .events import EventBus
 from .llm import Cancelled, CancelToken, LLMError, make_client
+from .llm.litellm_client import estimate_tokens
 from .project import Project, StaleRevision
 from .questions import readable_questions
 from .schemas import AgentRun, ChangeProposal, ProgressEvent, SelectionScope, SourceRegion, now
@@ -32,6 +33,7 @@ class ProviderUnavailable(Exception):
 MAX_HISTORY_TURNS = 12
 MAX_TURN_CHARS = 2000
 HEALTH_TTL_S = 60.0
+MAX_RECORDED_CALLS = 200  # per-call usage kept on a run's outcome
 
 
 def run_reply_text(run: AgentRun) -> str:
@@ -146,18 +148,44 @@ class RunManager:
                 return getattr(client, name)
 
             def complete_json(self, *args, **kwargs):
+                at = run.progress[-1].message[:120] if run.progress else ""  # what the call was for
                 try:
                     result = client.complete_json(*args, **kwargs)
                 except LLMError as exc:
-                    record(exc)
+                    record(exc, at, error=str(exc)[:120])
                     raise
-                record(result)
+                except Cancelled:
+                    # Usage arrives at the end of a reply, so a cancelled call reports none; the
+                    # provider still bills the prompt. Its estimate is noted, not counted.
+                    system = args[0] if args else kwargs.get("system", "")
+                    messages = args[1] if len(args) > 1 else kwargs.get("messages", [])
+                    record(None, at, cancelled=estimate_tokens(system, messages, kwargs.get("images")))
+                    raise
+                record(result, at)
                 return result
 
-        def record(result):
+        def record(result, at: str, *, error: str | None = None, cancelled: int | None = None):
+            call: dict = {"at": at, "input_tokens": getattr(result, "input_tokens", 0),
+                          "output_tokens": getattr(result, "output_tokens", 0)}
+            if getattr(result, "cached_tokens", 0):
+                call["cached_tokens"] = result.cached_tokens
+            if getattr(result, "estimated", False):
+                call["estimated"] = True
+            if error:
+                call["error"] = error
+            if cancelled is not None:
+                call["cancelled"] = True
+                call["unreported_input_tokens"] = cancelled
             with usage_lock:
                 for key in ("input_tokens", "output_tokens"):
-                    run.outcome[key] = run.outcome.get(key, 0) + getattr(result, key, 0)
+                    run.outcome[key] = run.outcome.get(key, 0) + call[key]
+                if call.get("cached_tokens"):
+                    run.outcome["cached_tokens"] = run.outcome.get("cached_tokens", 0) + call["cached_tokens"]
+                if call.get("estimated"):
+                    run.outcome["estimated"] = True
+                calls = run.outcome.setdefault("calls", [])
+                if len(calls) < MAX_RECORDED_CALLS:
+                    calls.append(call)
                 manager.save(project, run)
 
         return TrackedClient()
@@ -392,6 +420,7 @@ class RunManager:
                 "steps": getattr(outcome, "steps", 0),
                 "input_tokens": run.outcome.get("input_tokens", getattr(outcome, "input_tokens", 0)),
                 "output_tokens": run.outcome.get("output_tokens", getattr(outcome, "output_tokens", 0)),
+                **{key: run.outcome[key] for key in ("cached_tokens", "estimated", "calls") if key in run.outcome},
                 **({"autofix": outcome.autofix} if hasattr(outcome, "autofix") else {}),
             }
             run.status = "succeeded"

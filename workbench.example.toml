@@ -76,6 +76,10 @@ default = "local"
 #   (clear). The application still validates returned operations.
 # - request_options forwards provider-specific fields; use only options supported
 #   by your model. Native kind = "litellm" uses SDK options instead.
+# - prompt_cache marks the system prompt and latest message for prompt caching, so each
+#   agent step reads the previous one's prefix at a fraction of the price. Unset: on for
+#   Claude (any kind, including OpenRouter) and Gemini on OpenRouter, which need markers.
+#   OpenAI and llama.cpp cache repeated prefixes on their own.
 
 # LOCAL LLAMA.CPP — no key needed for an unauthenticated localhost server.
 # Download an instruction-tuned GGUF (Llama, Qwen, etc.), then start separately:

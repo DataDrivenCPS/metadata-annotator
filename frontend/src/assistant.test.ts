@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
+  autofixCandidates, autofixProgress, autofixReport, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
   owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
   startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
@@ -316,5 +316,22 @@ describe('chat choices and proposal ownership', () => {
         { label: 'a', proposal_id: 'q1' }, { label: 'b', proposal_id: 'q2' }] }] },
     ] } } })
     expect(unchosenOptions(af, { q1: 'applied', q2: 'dismissed' })).toEqual(['p1', 'p2'])
+  })
+})
+
+describe('callBreakdown', () => {
+  it('lists each model call with its step, cache reads, estimates, failures and cancellations', () => {
+    expect(callBreakdown(undefined)).toBeUndefined()
+    expect(callBreakdown([
+      { at: 'Asking anthropic (claude)', input_tokens: 5200, output_tokens: 310, cached_tokens: 4800 },
+      { at: '', input_tokens: 900, output_tokens: 40, estimated: true },
+      { at: 'Asking local', input_tokens: 0, output_tokens: 0, error: 'timed out' },
+      { at: 'Asking local', input_tokens: 0, output_tokens: 0, cancelled: true, unreported_input_tokens: 3000 },
+    ])!.split('\n')).toEqual([
+      '1. Asking anthropic (claude): 5,200 in (4,800 cached) + 310 out',
+      '2. model call: ~900 in + 40 out',
+      '3. Asking local: 0 in + 0 out (failed: timed out)',
+      '4. Asking local: cancelled, about 3,000 input tokens not reported',
+    ])
   })
 })

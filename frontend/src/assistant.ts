@@ -1,4 +1,4 @@
-import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection, type TokenUsage } from './types'
+import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection, type TokenUsage, type ModelCall } from './types'
 
 export type ProposalState = Proposal['status'] | 'superseded'
 
@@ -6,6 +6,19 @@ export type ProposalState = Proposal['status'] | 'superseded'
 export type Continuation = { kind: 'proposal' | 'questions' | 'conversation'; runId: string | null }
 
 export const isActive = (run: AgentRun) => run.status === 'queued' || run.status === 'running'
+
+/** One line per model call: what it was for and the tokens it used (shown on hover). */
+export function callBreakdown(calls: ModelCall[] | undefined): string | undefined {
+  if (!calls?.length) return undefined
+  return calls.map((call, i) => {
+    const tokens = call.cancelled
+      ? `cancelled, about ${(call.unreported_input_tokens ?? 0).toLocaleString()} input tokens not reported`
+      : `${call.estimated ? '~' : ''}${call.input_tokens.toLocaleString()} in`
+        + (call.cached_tokens ? ` (${call.cached_tokens.toLocaleString()} cached)` : '')
+        + ` + ${call.output_tokens.toLocaleString()} out`
+    return `${i + 1}. ${call.at || 'model call'}: ${tokens}${call.error ? ` (failed: ${call.error})` : ''}`
+  }).join('\n')
+}
 
 /** Merge persisted history with live run updates without counting a run twice. */
 export function tokenTotals(recorded: Record<string, TokenUsage>, runs: Record<string, AgentRun>): TokenUsage {

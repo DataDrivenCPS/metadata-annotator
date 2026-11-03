@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
-import { autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, isActive,
+import { autofixCandidates, autofixProgress, autofixReport, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
   issuesOnSelection, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type AutofixChoice, type AutofixGroup,
   type AutofixStatus, type ProposalState } from '../assistant'
 import { summarize } from '../selection'
@@ -465,7 +465,9 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
       {live && !steps.length && <li className="current"><span className="step-mark"><span className="spinner small" /></span>
         <span className="step-text">{run.status === 'queued' ? 'Waiting to start…' : 'Starting…'}</span></li>}
       {!live && <li className="run-meta muted">{run.provider} · {run.model} · skill {run.skill_version}
-        {run.outcome.input_tokens ? ` · ${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens` : ''}</li>}
+        {run.outcome.input_tokens ? <span title={callBreakdown(run.outcome.calls)}>
+          {` · ${run.outcome.estimated ? '~' : ''}${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens`}
+          {run.outcome.cached_tokens ? ` (${run.outcome.cached_tokens} cached)` : ''}</span> : ''}</li>}
     </ol>
     {slowModel && <div className="muted small step-note">The model is still working. Self-hosted models can take a
       minute or more per step; you can keep browsing while you wait.</div>}

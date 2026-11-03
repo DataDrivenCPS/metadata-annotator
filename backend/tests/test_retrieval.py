@@ -603,7 +603,7 @@ class FakeDescriber:
         self.calls.append((where, Image.open(io.BytesIO(png)).size, ocr_text))
         if self.fail:
             raise LLMError(self.fail)
-        return f"Process diagram: centrifugal pump P-101 discharges to skid RO-1 ({where}).", ["P-101", "RO-1"], 900
+        return f"Process diagram: centrifugal pump P-101 discharges to skid RO-1 ({where}).", ["P-101", "RO-1"], (600, 300)
 
 
 def test_scanned_and_drawing_pages_are_described_once(sample_project, indexer):
@@ -672,8 +672,9 @@ def test_the_assistant_can_look_at_a_region_and_only_the_latest_stays_attached(w
     assert "region [" in first["content"] and len(first["images"]) == 1
     assert Image.open(io.BytesIO(first["images"][0].data)).size[0] > 120  # zoomed in, not page-sized
     second = llm.seen[2]
-    assert "images" not in second[-3] and "no longer attached" in second[-3]["content"]
+    assert "images" not in second[-3] and "no longer attached" not in second[-3]["content"]
     assert len(second[-1]["images"]) == 1 and "drawing.pdf, page 1" in second[-1]["content"]
+    assert "earlier view_source is no longer attached" in second[-1]["content"]
     assert "no PDF or image 'nothing.pdf'" in llm.seen[3][-1]["content"] and "images" not in llm.seen[3][-1]
     assert sum(1 for m in llm.seen[3] if m.get("images")) == 1  # an error does not drop the last view
 

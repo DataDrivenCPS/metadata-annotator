@@ -265,6 +265,7 @@ def _term_alternatives(project: Project, proposal: ChangeProposal, issues: list[
 class AutofixOutcome:
     groups: list[dict[str, Any]] = field(default_factory=list)
     explanation: str = ""
+    steps: int = 0  # model replies across all groups
 
     @property
     def autofix(self) -> dict[str, Any]:
@@ -308,6 +309,7 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
             record.update(status="failed", reasons=[str(exc)])
             progress("group_done", f"Group {tag}: failed ({exc})", {"group": n, "status": "failed"})
             continue
+        outcome.steps += out.steps
         record.update(explanation=out.explanation, questions=out.questions)
         selection, request = selection_for(group, rows), instruction(group, rows)
         reasons = verify(project, out.proposal, group) if out.proposal else []

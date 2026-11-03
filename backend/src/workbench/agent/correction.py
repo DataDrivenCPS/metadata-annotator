@@ -861,13 +861,12 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 continue
             calls[key] = step + 1
             result = _call_tool(tools, action, args)
-            viewed = None
+            viewed, replaced = None, False
             if action == "view_source" and isinstance(result, tuple):
                 result, viewed = result
                 if viewed is not None:
                     for m in messages:  # only the latest view keeps its image: bounded image tokens
-                        if m.pop("images", None):
-                            m["content"] += "\n(That image is no longer attached; view it again if needed.)"
+                        replaced = bool(m.pop("images", None)) or replaced
             if action == "search_sources" and isinstance(result, list):
                 for item in result:
                     if isinstance(item, dict) and item.get("observation_id"):
@@ -884,6 +883,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 text = (f"No terms match {args.get('query')!r}" + (f" of kind {args['kind']}" if args.get("kind") else "")
                         + ". Try the words the term would be named by (spell out abbreviations), a broader"
                           " word, or no kind.")
+            if replaced:  # said here, not by rewriting the earlier message: its cached prefix stays valid
+                text += "\n(The image from your earlier view_source is no longer attached.)"
             messages.append({"role": "user", "content": f"Result of {action}:\n{text}{remaining}",
                              **({"images": [ImageInput(data=viewed)]} if viewed else {})})
             results.append({"index": len(messages) - 1, "key": key, "action": action, "args": args, "text": text})

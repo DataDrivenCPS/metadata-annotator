@@ -136,6 +136,10 @@ export interface BuildSummary {
 }
 export interface ProgressEvent { at: string; stage: string; message: string; data: Record<string, unknown> }
 export interface TokenUsage { input_tokens: number; output_tokens: number }
+export interface ModelCall {
+  at: string; input_tokens: number; output_tokens: number; cached_tokens?: number
+  estimated?: boolean; error?: string; cancelled?: boolean; unreported_input_tokens?: number
+}
 
 export interface AgentRun {
   id: string; kind: string; input_revision: string; selection: Selection | null
@@ -147,6 +151,10 @@ export interface AgentRun {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   progress: ProgressEvent[]
   outcome: { proposal_id?: string | null; dismissed_proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number
+    /** Input tokens read from the provider's prompt cache; whether any call's usage was estimated. */
+    cached_tokens?: number; estimated?: boolean
+    /** Usage of each model call, with the progress step it was made in. */
+    calls?: ModelCall[]
     /** The assistant's alternatives; each option is a pending proposal to review (backend choices.py). */
     choices?: import('./assistant').AutofixChoice[]
     autofix?: { groups: import('./assistant').AutofixGroup[]; revisions: string[] } }

@@ -545,7 +545,9 @@ class Indexer:
                 break
             out.append(description_chunk(description, labels, self.describer.model_id, page))
             state["described"] = state.get("described", 0) + 1
-            state["description_tokens"] = state.get("description_tokens", 0) + tokens
+            state["description_tokens"] = state.get("description_tokens", 0) + sum(tokens)
+            state["description_input_tokens"] = state.get("description_input_tokens", 0) + tokens[0]
+            state["description_output_tokens"] = state.get("description_output_tokens", 0) + tokens[1]
             state["description_model"] = self.describer.model_id
         return out
 

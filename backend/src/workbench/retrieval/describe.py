@@ -86,8 +86,8 @@ class Describer:
                 self._client = make_client(self.provider)
             return self._client
 
-    def describe(self, png: bytes, where: str, ocr_text: str, cancel: CancelToken) -> tuple[str, list[str], int]:
-        """(description, labels, tokens used) for one page image. Raises ``LLMError``."""
+    def describe(self, png: bytes, where: str, ocr_text: str, cancel: CancelToken) -> tuple[str, list[str], tuple[int, int]]:
+        """(description, labels, (input, output) tokens) for one page image. Raises ``LLMError``."""
         prompt = f"Describe {where}."
         if ocr_text.strip():
             prompt += ("\nText found on it by OCR (may be incomplete or misread; trust the image):\n"
@@ -99,7 +99,7 @@ class Describer:
         if not description:
             raise LLMError("the model returned an empty description")
         labels = [str(label).strip() for label in data.get("labels") or [] if str(label).strip()]
-        return description, list(dict.fromkeys(labels)), result.input_tokens + result.output_tokens
+        return description, list(dict.fromkeys(labels)), (result.input_tokens, result.output_tokens)
 
 
 def description_chunk(description: str, labels: list[str], model: str, page: int | None) -> Chunk:

@@ -60,6 +60,8 @@ class LLMResult:
     input_tokens: int = 0
     output_tokens: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
+    cached_tokens: int = 0  # of input_tokens, read from the provider's prompt cache
+    estimated: bool = False  # the endpoint reported no usage; the counts are estimates
 
 
 # (characters generated so far) -> None; used for progress display

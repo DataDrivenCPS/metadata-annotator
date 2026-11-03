@@ -37,6 +37,10 @@ class ProviderConfig:
     # False permits optional keys with providers that enforce OpenAI's strict schema subset.
     # Keep omission distinct from explicit null (graph updates use null to clear a field).
     strict_schema: bool = True
+    # Mark the system prompt and latest message for prompt caching (cached input is billed at a
+    # fraction). Unset: on for Claude (native, LiteLLM or OpenRouter) and Gemini on OpenRouter,
+    # which need explicit markers; OpenAI and llama.cpp cache repeated prefixes on their own.
+    prompt_cache: bool | None = None
 
     @property
     def api_key(self) -> str | None:

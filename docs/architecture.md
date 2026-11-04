@@ -323,7 +323,9 @@ Each run offers only the operations its task could use (`operation_scope`): smal
 optional fields with invented values, and the reply grammar cannot produce what is not
 offered. Spaces (`create/update/delete_space`, `location`, `part_of`) are offered when the model
 has spaces, or the request, conversation, open issues, source text or pending proposal mention
-or use them (`SPACE_WORDS`); builds from sources leave out the generic operations
+or use them (`Vocabulary.mentions_location`: general words for where things are, or the whole
+name of one of the vocabulary's space classes, such as Brick's "mezzanine level"; a one-word
+name other terms use too, like rec:Level, does not count); builds from sources leave out the generic operations
 (`create_entity`, `add_type`, `set_property`, `relate`…) unless the pending proposal uses them.
 The system prompt says what is missing and why.
 

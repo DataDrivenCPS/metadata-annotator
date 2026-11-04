@@ -130,6 +130,7 @@ class Vocabulary:
         self._by_local: dict[str, list[str]] = {}  # local name as written
         self._by_name: dict[str, list[str]] = {}  # local name or label, ignoring case
         self._by_symbol: dict[str, list[str]] = {}  # unit symbol as written
+        self._location_mention: re.Pattern | None = None  # see mentions_location()
         self.root_ontology: str = ""
         self.missing_imports: list[str] = []
         self._validator = None
@@ -508,6 +509,24 @@ class Vocabulary:
                 self._by_name[name].append(iri)
             if t.symbol:
                 self._by_symbol[t.symbol].append(iri)
+        # Whole names of space classes ("server room", "mezzanine level"), not their single words,
+        # so a label word such as "water" or "electricity" does not count as talk of spaces. A
+        # one-word name that other terms use too ("Level", as in "Level sensor") does not either.
+        other_words = {w for iri, t in self.terms.items() if t.kind != "location" for w in _tokens(t.label)}
+        names = set(LOCATION_WORDS)
+        for iri in self.by_kind.get("location", ()):
+            t = self.terms[iri]
+            if not t.deprecated:
+                for name in {" ".join(_tokens(t.label)), " ".join(_tokens(_term_name(iri)))} - {""}:
+                    if " " in name or name not in other_words:
+                        names.add(name)
+        self._location_mention = re.compile(
+            " (?:" + "|".join(map(re.escape, sorted(names, key=len, reverse=True))) + ")(?:e?s)? ")
+
+    def mentions_location(self, text: str) -> bool:
+        """Whether ``text`` speaks of where things are: a general word for it, or the name of one
+        of this vocabulary's space classes (singular or plural, any case or spelling of words)."""
+        return bool(self._location_mention and self._location_mention.search(f" {' '.join(_tokens(text))} "))
 
     # ------------------------------------------------------------------ lookups
 
@@ -841,6 +860,11 @@ _EXTRA_NAMESPACES = {"s223": str(S223), "qudt": str(QUDT),
                      "qk": "http://qudt.org/vocab/quantitykind/",
                      "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
                      "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
+
+
+# Words for where things are, whatever the vocabulary has classes for (223P has few).
+LOCATION_WORDS = ("room", "floor", "building", "space", "zone", "location", "located", "site", "basement",
+                  "storey", "story", "stories", "hall", "wing", "premises", "campus")
 
 
 def _term_name(iri: str) -> str:

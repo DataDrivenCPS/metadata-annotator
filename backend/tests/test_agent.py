@@ -857,13 +857,13 @@ def test_a_model_with_spaces_keeps_them_and_builds_leave_out_the_generic_operati
     from workbench.operations import OperationList
 
     p = sample_project
-    assert operation_scope(p.view(p.head()), ["Add a filter"], build_from_sources=True) == \
+    assert operation_scope(p.view(p.head()), p.vocab, ["Add a filter"], build_from_sources=True) == \
         OperationScope(spaces=False, generic=False)
     p.edit(p.head(), OperationList.validate_python([
         {"op": "create_space", "label": "Pump room", "type": "s223:PhysicalSpace"}]))
-    assert operation_scope(p.view(p.head()), ["Add a filter"], build_from_sources=True).spaces
+    assert operation_scope(p.view(p.head()), p.vocab, ["Add a filter"], build_from_sources=True).spaces
     relate = OperationList.validate_python([{"op": "relate", "subject": "a", "relation": "b", "object": "c"}])
-    assert operation_scope(p.view(p.head()), [], build_from_sources=True, prior=relate).generic  # a pending proposal uses them
+    assert operation_scope(p.view(p.head()), p.vocab, [], build_from_sources=True, prior=relate).generic  # a pending proposal uses them
 
 
 def _three_operations(p):

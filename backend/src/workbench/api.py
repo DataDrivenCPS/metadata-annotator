@@ -375,15 +375,13 @@ def create_app(settings: Settings | None = None, registry: VocabularyRegistry | 
             if prefix in ("watr", "s223", "brick", "qudt", "unit", "quantitykind", ""):
                 sub.bind(prefix, ns, override=True)
         sub.bind("rdfs", RDFS)
-        evidence = [p.store.get_body("observations", o) for o in pg.evidence(node)]
-        evidence = [e | {'content': {'filename': p.source(e['source_id']).filename, **e['content']}}
-                    for e in evidence if e]
+        evidence = p.cited_observations(pg.evidence(node))
         return {"id": eid, "iri": str(node), "revision": rid, "row": asdict(row) if row else None,
                 "types": [{"iri": str(t), "label": vocab.label(str(t))} for t in pg.model.objects(node, RDF.type)],
                 "properties": entity_properties(pg, vocab, node),
                 "turtle": sub.serialize(format="turtle"),
                 "locked": sorted(pg.locked_fields(node)),
-                "evidence": [e for e in evidence if e],
+                "evidence": evidence,
                 "issues": [i.model_dump() for i in p.issues(rid) if eid in i.affected_ids],
                 "history": p.corrections(eid)[:50]}
 
@@ -517,18 +515,20 @@ def create_app(settings: Settings | None = None, registry: VocabularyRegistry | 
 
     @app.get("/api/projects/{pid}/sources/{sid}/document-preview")
     def document_preview(pid: str, sid: str, page: int = 1):
-        from .documents import document_text, pdf_page
+        from .documents import document_text, pdf_page, pdf_page_size
         p = project(pid)
         src = source_or_404(p, sid)
         try:
             data = p.source_file(sid).read_bytes()
+            size = None
             if src.kind == "pdf":
                 text, _ = pdf_page(data, page, render=False)
+                size = pdf_page_size(data, page)
             elif src.kind == "document":
                 text = document_text(data, src.filename)
             else:
                 raise SourceError("This source is not a PDF or text document.")
-            return {"text": text[:50000], "truncated": len(text) > 50000}
+            return {"text": text[:50000], "truncated": len(text) > 50000, "page_size": size}
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from None
 
@@ -694,6 +694,14 @@ def create_app(settings: Settings | None = None, registry: VocabularyRegistry | 
     @app.get("/api/projects/{pid}/proposals")
     def list_proposals(pid: str, status: str | None = None):
         return [pr.model_dump(mode="json") for pr in project(pid).proposals(status)]
+
+    @app.get("/api/projects/{pid}/proposals/{prop_id}/citations")
+    def proposal_citations(pid: str, prop_id: str):
+        """What a proposal cites, so a person can check its sources before applying it."""
+        try:
+            return project(pid).proposal_citations(prop_id)
+        except KeyError:
+            raise HTTPException(404, f"No proposal {prop_id}") from None
 
     @app.get("/api/projects/{pid}/proposals/{prop_id}")
     def get_proposal(pid: str, prop_id: str):

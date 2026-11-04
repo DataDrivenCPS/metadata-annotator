@@ -357,6 +357,19 @@ are supplied according to the model's image support; source regions and page ref
 retained as evidence. Source build proposals require review before applying and preserve
 existing human locks without marking extracted values as human-confirmed.
 
+**Checking citations.** A person can check a change's sources before applying it:
+`GET /proposals/{id}/citations` lists the observations linked per changed entity, those linked by
+operations that name no one entity (relations), and those the assistant read without linking.
+The proposal summarises this from its own operations and fetches the rest when opened. There and
+in the inspector, `Citation.tsx` opens a citation through the store's `citation`, which the
+sources tray follows to the cited place: a PDF page (with `box_pt` drawn over it, placed using the
+page's size from `document-preview`), an image region, a CSV record, or a text passage.
+`citations.locatePassage` highlights text only where it finds the passage itself, so a highlight
+never lands on words the citation did not quote. A vision model's description of a page
+(`generated`) is labelled as such and never highlighted as if it were source text. A link is not
+always the model's own choice: a `create_*` operation that cites nothing is given all the sources
+it was shown (`agent/correction.py`), which is why the interface says "link", not "cite".
+
 Sources attached to an assistant message belong to that message: the composer drops them once
 the message starts a run, and a follow-up does not inherit them (`RunManager.continued_selection`).
 The conversation history records what was attached to each earlier message and that it was

@@ -1,7 +1,7 @@
 import type {
   AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage, RunChanges,
 } from './types'
-import type { SourceIndex } from './types'
+import type { ProposalCitations, SourceIndex } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -101,13 +101,14 @@ export const api = {
     fd.append('file', file)
     return req<Source>('POST', `${P(pid)}/sources`, fd)
   },
-  documentPreview: (pid: string, sid: string, page = 1) => req<{ text: string; truncated: boolean }>('GET', `${P(pid)}/sources/${sid}/document-preview?page=${page}`),
+  documentPreview: (pid: string, sid: string, page = 1) => req<{ text: string; truncated: boolean; page_size: number[] | null }>('GET', `${P(pid)}/sources/${sid}/document-preview?page=${page}`),
   sourcePageUrl: (pid: string, sid: string, page: number) => `${P(pid)}/sources/${sid}/pages/${page}.png`,
   sourceFileUrl: (pid: string, sid: string) => `${P(pid)}/sources/${sid}/file`,
   sourceGrid: (pid: string, sid: string) => req<CsvGrid>('GET', `${P(pid)}/sources/${sid}/grid?limit=80`),
   sourcePreview: (pid: string, sid: string, cfg: CsvImportConfig) => req<CsvPreview>('POST', `${P(pid)}/sources/${sid}/preview`, cfg),
   sourceConfirm: (pid: string, sid: string, cfg: CsvImportConfig) =>
     req<{ observations: number; superseded: number }>('POST', `${P(pid)}/sources/${sid}/confirm`, cfg),
+  proposalCitations: (pid: string, id: string) => req<ProposalCitations>('GET', `${P(pid)}/proposals/${id}/citations`),
   observations: (pid: string, sid: string) => req<Observation[]>('GET', `${P(pid)}/sources/${sid}/observations?limit=5000`),
   reindexSource: (pid: string, sid: string) => req<SourceIndex>('POST', `${P(pid)}/sources/${sid}/reindex`),
   exportUrl: (pid: string, revision: string, kind: 'ttl' | 'csv') =>

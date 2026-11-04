@@ -80,6 +80,8 @@ def indexer(workspace, tmp_path):
                                                              pages_per_batch=2))
     ix = idx.Indexer(settings, workspace)
     ix.embedder = HashEmbedder()
+    # Never the configured provider: a live local vision server would be sent the test drawings.
+    ix.describer = FakeDescriber(reason="Tests describe drawings only with a fake model.")
     workspace.bus.listen(ix.on_event)
     yield ix
     ix.shutdown()

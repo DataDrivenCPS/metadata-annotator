@@ -319,7 +319,8 @@ pre.code { background: var(--subtle); border: 1px solid var(--border); border-ra
 .proposal-conversation { margin: 8px 0; display: grid; gap: 6px; }
 .proposal-conversation p { margin: 0; padding: 6px 8px; border-radius: var(--radius); background: var(--proposed); font-size: var(--fs-sm); }
 .proposal-conversation p.user { background: var(--accent-soft); }
-.proposal-head { display: flex; justify-content: space-between; align-items: baseline; }
+.proposal-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-bottom: 4px; }
+.proposal-head .muted, .proposal-head .warn-text { font-size: var(--fs-md); }
 .explanation { margin: 8px 0; }
 table.changes { width: 100%; border-collapse: collapse; font-size: var(--fs-md); margin: 6px 0; }
 table.changes th { text-align: left; color: var(--muted); font-weight: 600; font-size: var(--fs-xs); border-bottom: 1px solid var(--border); padding: 4px 4px; }
@@ -443,7 +444,6 @@ table.raw-grid td.excluded { color: var(--faint); text-decoration: line-through;
 .fixes-head.introduced { color: var(--warn); margin-top: 4px; }
 .proposal-fixes ul.introduced li { color: var(--warn); }
 .proposal-changes { margin: 6px 0; font-size: var(--fs-md); }
-.changes-head { font-weight: 600; margin-bottom: 2px; }
 .proposal-changes ul { list-style: none; margin: 0; padding: 0; }
 .change-line { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 4px 8px; align-items: baseline; padding: 8px 4px; border-radius: var(--radius-sm); cursor: pointer; min-width: 0; }
 .change-line:hover { background: var(--accent-soft); }

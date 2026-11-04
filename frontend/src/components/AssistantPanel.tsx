@@ -469,6 +469,8 @@ function proposalStateText(state: ProposalState | undefined) {
   }
 }
 
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
 function fmt(v: unknown) {
   if (v === null || v === undefined || v === '') return <span className="muted">—</span>
   return String(v)
@@ -517,28 +519,30 @@ function ProposalPreview({ proposal, running: runningProp }: {
       <span className="ok-text">✓ {proposal.operations.length ? `Applied as ${proposal.applied_revision}` : `Dismissed ${dismissals.length} issue(s)`}</span>
       {headline && <span className="muted"> · {headline}</span>}
       {fixes.length > 0 && <span className="muted"> · fixes {fixes.length} issue{fixes.length === 1 ? '' : 's'}</span>}
-      <button className="link small" onClick={() => setExpanded(true)}>show</button>
+      <button className="link small" onClick={() => setExpanded(true)}>Show</button>
     </div>
   )
+
+  // Issues in one line: what it fixes or dismisses, and whether it adds any. Bad news stays open.
+  const checked = !!(v || proposal.gate)
+  const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? '' : 's'}`
+  const issueLine = [fixes.length > 0 && `fixes ${plural(fixes.length, 'issue')}`,
+    dismissals.length > 0 && `dismisses ${plural(dismissals.length, 'issue')}`,
+    checked && !introduced.length && 'no new issues'].filter(Boolean).join(' · ')
+  const sources = proposal.build_summary?.sources ?? []
+  const fieldChanges = proposal.changes.some((c) => c.fields.length > 2)
 
   return (
     <div className={`proposal status-${proposal.status}`}>
       <div className="proposal-head">
         <h3>Proposed change</h3>
-        {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>collapse</button>}
+        {headline && <span className="muted">{headline}</span>}
+        {outside > 0 && <span className="warn-text">{outside} outside your selection</span>}
+        <span className="spacer" />
+        {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>Collapse</button>}
       </div>
-      {!!proposal.build_summary?.sources?.length && <details className="proposal-details">
-        <summary>Sources ({proposal.build_summary.sources.length})</summary>
-        <ul>{proposal.build_summary.sources.map((source) => <li key={source.id}>
-          <a href={`${api.sourceFileUrl(projectId!, source.id)}${source.pages?.length ? `#page=${source.pages[0]}` : ''}`}
-            target="_blank" rel="noreferrer">{source.filename}</a>
-          <span className="muted"> · {source.role === 'reference' ? 'Supporting evidence' : 'Build input'}
-            {source.pages?.length ? ` · pages ${source.pages.join(', ')}` : ''}</span>
-        </li>)}</ul>
-      </details>}
+
       {lines.length > 0 && <div className="proposal-changes">
-        {(lines.length > 1 || outside > 0) && <div className="changes-head">{lines.length > 1 && headline}
-          {outside > 0 && <span className="warn-text">{lines.length > 1 ? ' · ' : ''}{outside} outside your selection</span>}</div>}
         <ul>{(allLines ? lines : lines.slice(0, FACE_LINES)).map((l) => (
           <li key={l.id} className={`change-line ${l.change}`} title="Select and inspect"
             onClick={(e) => show(l.id, l.change === 'deleted', e.ctrlKey || e.metaKey)}>
@@ -549,23 +553,24 @@ function ProposalPreview({ proposal, running: runningProp }: {
             {l.overridesEdit && <span className="badge warn" title="A person set one of these values earlier">overrides edit</span>}
           </li>))}</ul>
         {lines.length > FACE_LINES && <button className="link small" onClick={() => setAllLines(!allLines)}>
-          {allLines ? 'show fewer' : `+${lines.length - FACE_LINES} more`}</button>}
+          {allLines ? 'Show fewer' : `Show ${lines.length - FACE_LINES} more`}</button>}
       </div>}
+      {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
 
       <div className="proposal-fixes">
-        {fixes.length > 0 ? <details>
-          <summary className="resolved">Addresses {fixes.length} issue{fixes.length === 1 ? '' : 's'}</summary>
-          <ul>{fixes.map((f, i) => <li key={i}>{f}</li>)}</ul>
-        </details> : (v || proposal.gate) && <div className="muted">No existing issues resolved.</div>}
-        {dismissals.length > 0 && <details>
-          <summary>Dismisses {dismissals.length} issue{dismissals.length === 1 ? '' : 's'}</summary>
-          <ul>{dismissals.map((d) => <li key={d.id}>{d.explanation}<div className="muted">{d.reason}</div></li>)}</ul>
-        </details>}
-        {introduced.length > 0 ? <>
-          <div className="fixes-head introduced">Introduces {introduced.length} new issue{introduced.length === 1 ? '' : 's'}</div>
+        {fixes.length > 0 || dismissals.length > 0
+          ? <details>
+            <summary className={introduced.length ? undefined : 'resolved'}>{capitalize(issueLine)}</summary>
+            {fixes.length > 0 && <ul>{fixes.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+            {dismissals.length > 0 && <ul>{dismissals.map((d) => <li key={d.id}>{d.explanation}
+              <div className="muted">Dismissed: {d.reason}</div></li>)}</ul>}
+          </details>
+          : issueLine ? <div className="ok-text">{capitalize(issueLine)}</div>
+          : !checked && <div className="muted">Issue checks unavailable</div>}
+        {introduced.length > 0 && <>
+          <div className="fixes-head introduced">Adds {plural(introduced.length, 'new issue')}</div>
           <ul className="introduced">{introduced.map((f, i) => <li key={i}>{f}</li>)}</ul>
-        </> : (v || proposal.gate) ? <div className="ok-text">No new issues.</div>
-          : <div className="muted">Issue checks unavailable.</div>}
+        </>}
       </div>
 
       {proposal.questions.length > 0 && <div className="proposal-notes">
@@ -581,39 +586,50 @@ function ProposalPreview({ proposal, running: runningProp }: {
           Try {one ? 'it' : 'these'} again</button>}
       </div>}
 
-      {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
-
-      {proposal.changes.some((c) => c.fields.length > 2) && <LazyDetails className="proposal-details" summary="All field changes">
-        {() => proposal.changes.length > 0 && <section>
-          <h4>Field changes</h4>
-          {proposal.changes.map((change) => {
-            const fields = change.fields.length ? change.fields : [{ field: change.change, before: null, after: null }]
-            return <table key={change.entity_id} className="changes">
-              <thead><tr><th colSpan={3}><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</th></tr></thead>
-              <tbody>{fields.map((field, index) => (
-                <tr key={`${field.field}-${index}`} onClick={(e) => show(change.entity_id, change.change === 'deleted', e.ctrlKey || e.metaKey)}>
-                  <td>{fieldLabel(field.field)}
-                    {change.overrides_locked.includes(field.field) && <span className="badge warn" title="A person set this value earlier">overrides earlier edit</span>}
-                  </td>
-                  <td className="before">{fmt(field.before)}</td>
-                  <td className="after">{fmt(field.after)}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          })}
-        </section>}
-      </LazyDetails>}
-
-      <LazyDetails className="proposal-details" summary={`Show RDF · +${proposal.diff.added.length} / −${proposal.diff.removed.length} triples`}>
-        {() => <pre className="code diff">{[
-          ...proposal.diff.removed.map((t) => `- ${t}`),
-          ...proposal.diff.added.map((t) => `+ ${t}`),
-        ].join('\n') || 'No RDF changes.'}</pre>}
+      {/* Everything for a closer look, in one place: sources, notes, field changes, RDF. */}
+      <LazyDetails className="proposal-details" summary={['Details', proposal.notes.length > 0 && plural(proposal.notes.length, 'note'),
+        `+${proposal.diff.added.length} / −${proposal.diff.removed.length} triples`].filter(Boolean).join(' · ')}>
+        {() => <>
+          {sources.length > 0 && <section>
+            <h4>Sources</h4>
+            <ul>{sources.map((source) => <li key={source.id}>
+              <a href={`${api.sourceFileUrl(projectId!, source.id)}${source.pages?.length ? `#page=${source.pages[0]}` : ''}`}
+                target="_blank" rel="noreferrer">{source.filename}</a>
+              <span className="muted"> · {source.role === 'reference' ? 'Supporting evidence' : 'Build input'}
+                {source.pages?.length ? ` · pages ${source.pages.join(', ')}` : ''}</span>
+            </li>)}</ul>
+          </section>}
+          {proposal.notes.length > 0 && <section className="proposal-notes">
+            <h4>Notes</h4>
+            {proposal.notes.map((n, i) => <p key={i} className="warn-text">{n}</p>)}
+          </section>}
+          {fieldChanges && <section>
+            <h4>Field changes</h4>
+            {proposal.changes.map((change) => {
+              const fields = change.fields.length ? change.fields : [{ field: change.change, before: null, after: null }]
+              return <table key={change.entity_id} className="changes">
+                <thead><tr><th colSpan={3}><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</th></tr></thead>
+                <tbody>{fields.map((field, index) => (
+                  <tr key={`${field.field}-${index}`} onClick={(e) => show(change.entity_id, change.change === 'deleted', e.ctrlKey || e.metaKey)}>
+                    <td>{fieldLabel(field.field)}
+                      {change.overrides_locked.includes(field.field) && <span className="badge warn" title="A person set this value earlier">overrides earlier edit</span>}
+                    </td>
+                    <td className="before">{fmt(field.before)}</td>
+                    <td className="after">{fmt(field.after)}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            })}
+          </section>}
+          <section>
+            <h4>RDF</h4>
+            <pre className="code diff">{[
+              ...proposal.diff.removed.map((t) => `- ${t}`),
+              ...proposal.diff.added.map((t) => `+ ${t}`),
+            ].join('\n') || 'No RDF changes.'}</pre>
+          </section>
+        </>}
       </LazyDetails>
-
-      {proposal.notes.length > 0 && <LazyDetails className="proposal-notes" summary={`Notes (${proposal.notes.length})`}>
-        {() => proposal.notes.map((n, i) => <p key={i} className="warn-text">{n}</p>)}
-      </LazyDetails>}
 
       <div className="proposal-actions">
         {(proposal.status === 'pending' || proposal.status === 'stale') && <>

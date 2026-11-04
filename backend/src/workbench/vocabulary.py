@@ -806,8 +806,25 @@ def _severity(s: str) -> str:
     return {"violation": "Violation", "warning": "Warning", "info": "Info"}.get(s.lower(), s)
 
 
+_TERM_WITH_LABEL = (re.compile(r"^(\S+)\s+\([^()]*\)$"),      # s223:Fluid-Water (Water)
+                    re.compile(r"^[^\[\]]*\[(\S+)\]$"))        # Water [s223:Fluid-Water]
+
+
 def expand_term(vocab: Vocabulary, value: str) -> str:
-    """Accept full IRIs, <IRIs>, and known prefixed names (s223:Pipe, watr:Tank, unit:PSI)."""
+    """Accept full IRIs, <IRIs>, and known prefixed names (s223:Pipe, watr:Tank, unit:PSI).
+
+    Models often copy a term together with the label the lookup tools print beside it
+    (``s223:Fluid-Water (Water)``, ``Water [s223:Fluid-Water]``). IRIs cannot contain spaces, so
+    when stripping that label leaves a real term, that term is meant."""
+    for pattern in _TERM_WITH_LABEL:
+        if (m := pattern.match(value.strip())):
+            bare = _expand_bare(vocab, m.group(1))
+            if vocab.term(bare) is not None:
+                return bare
+    return _expand_bare(vocab, value)
+
+
+def _expand_bare(vocab: Vocabulary, value: str) -> str:
     v = value.strip().strip("<>")
     if "://" in v or v.startswith("urn:"):
         return v

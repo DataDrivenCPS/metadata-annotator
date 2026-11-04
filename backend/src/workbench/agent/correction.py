@@ -1065,7 +1065,8 @@ def suggest_terms(project: Project, unknown: list[tuple[str, str, str | None]]) 
             hits = [t for w in words for t in project.vocab.search(w, [kind], 2)][:5]
         if hits:
             opts = ", ".join(f"{curie(project.vocab, t.iri)} ({t.label}{' ' + t.symbol if t.symbol else ''})" for t in hits)
-            out.append(f"for {fname} {value!r}, valid terms include: {opts}")
+            out.append(f"for {fname} {value!r}, valid terms include: {opts}"
+                       " (write only the prefixed name, e.g. the part before the parenthesis, not the label)")
     return out
 
 

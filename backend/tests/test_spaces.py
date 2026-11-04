@@ -95,3 +95,41 @@ def test_located_brick_equipment_adds_no_violations(workspace):
     ))
     after = {i.explanation for i in p.issues(rev.id) if i.severity == "violation"}
     assert after <= before, after - before
+
+
+def test_rejections_name_new_entities_as_written_and_say_when_one_is_the_wrong_kind(workspace):
+    """A build failed three times on 'contained_in refers to unknown equipment sp-…': the id was
+    minted for the model's own placeholder (new on every attempt) and the entity did exist, as a space."""
+    p = workspace.create("Sections", "watr")
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(p.head(), ops(
+            {"op": "create_space", "id": "new:pretreatment", "label": "Pretreatment", "type": "s223:PhysicalSpace"},
+            {"op": "create_equipment", "label": "Pump", "type": "s223:Pump", "contained_in": "new:pretreatment"},
+            {"op": "update_equipment", "id": "new:pretreatment", "label": "Pretreatment area"},
+            {"op": "create_equipment", "label": "Filter", "type": "s223:Pump", "contained_in": "new:missing"},
+        ))
+    assert caught.value.problems == [
+        "operation 2 (create_equipment): contained_in refers to equipment, but 'new:pretreatment' "
+        "(created by operation 1) is a space, not an equipment; to refer to a space, use location",
+        "operation 3 (update_equipment): 'new:pretreatment' (created by operation 1) is a space, "
+        "not an equipment; use update_space",
+        "operation 4 (create_equipment): contained_in refers to unknown equipment 'new:missing'",
+    ]
+    assert caught.value.unknown_entities == [("new:missing", "equipment")]
+
+
+def test_checks_after_applying_also_name_new_entities_as_written(workspace, monkeypatch):
+    from workbench import operations
+
+    p = workspace.create("Loop", "watr")
+    real = operations.containment_cycles
+    monkeypatch.setattr(operations, "containment_cycles",  # report ids, as other post-apply checks do
+                        lambda pg, vocab, ids: [f"{i} would end up inside itself" for i in ids] if real(pg, vocab, ids) else [])
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(p.head(), ops(
+            {"op": "create_equipment", "id": "new:a", "label": "A", "type": "s223:Pump"},
+            {"op": "create_equipment", "id": "new:b", "label": "B", "type": "s223:Pump", "contained_in": "new:a"},
+            {"op": "update_equipment", "id": "new:a", "contained_in": "new:b"},
+        ))
+    assert sorted(caught.value.problems) == ["'new:a' (created by operation 1) would end up inside itself",
+                                             "'new:b' (created by operation 2) would end up inside itself"]

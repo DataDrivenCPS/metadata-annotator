@@ -445,7 +445,10 @@ class Project:
         before = self.graph(base)
         resolved = ops_mod.resolve(before, self.vocab, operations)
         after = before.copy()
-        result = ops_mod.apply(after, self.vocab, resolved, lock=lock)
+        try:
+            result = ops_mod.apply(after, self.vocab, resolved, lock=lock)
+        except ops_mod.OperationError as exc:  # checks made after applying name minted ids too
+            raise exc.written_as(resolved.minted) from exc
         run, issues, summary = self.validate_graph(after)
         selected = set(selection.entity_ids + selection.relationship_ids) if selection else set()
         changes = compute_changes(self.view(base), project(after, self.vocab), selected, before, after, self.vocab)

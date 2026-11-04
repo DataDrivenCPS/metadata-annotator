@@ -89,7 +89,11 @@ drops the old port only if it was minted for that connection and never became a 
 point of its own (id, pairing, mapsTo). Update operations carry only the fields that change
 (explicit `null` clears). `resolve()` checks every id and
 every vocabulary term (kind, abstract, existence) and mints ids for `new:*` placeholders,
-reporting all problems at once. 223P's connection-point rules (pairing, mapsTo, one
+reporting all problems at once. Problems name entities created in the same list as they were
+written (`'new:x' (created by operation 1)`), never by the minted id, which is new on every
+attempt; this holds for the checks made after applying too. A reference to an entity of the
+wrong kind says what it is and which field or operation takes that kind (e.g. a space given
+as `contained_in` points to `location`), instead of calling it unknown. 223P's connection-point rules (pairing, mapsTo, one
 connection per port) are checked on the result after all operations apply, so a proposal can
 create and wire ports in one go. A resolved operation list applies deterministically, so
 `apply_proposal` re-applies the stored operations and **refuses if the resulting triple diff

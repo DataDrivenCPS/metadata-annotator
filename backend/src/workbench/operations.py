@@ -18,6 +18,7 @@ properties are linked with ``s223:actuatedByProperty``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, Union
 
@@ -384,6 +385,34 @@ class OperationError(Exception):
         self.unknown_terms = unknown_terms or []
         self.unknown_entities = unknown_entities or []  # (id as written, expected entity kind)
 
+    def written_as(self, minted: dict[str, tuple[str, int]]) -> OperationError:
+        """The same problems, naming entities created by these operations as they were written.
+
+        Ids minted for ``new:*`` placeholders are new on every attempt and appear nowhere in
+        what the model wrote, so a message naming one cannot be acted on.
+        """
+        if not minted:
+            return self
+        pattern = re.compile(r"'?\b(" + "|".join(map(re.escape, minted)) + r")\b'?")
+
+        def written(m: re.Match) -> str:
+            placeholder, position = minted[m.group(1)]
+            return f"{placeholder!r} (created by operation {position})"
+
+        problems = [pattern.sub(written, problem) for problem in self.problems]
+        unknown = [(minted[eid][0] if eid in minted else eid, kind) for eid, kind in self.unknown_entities]
+        error = OperationError(problems, self.unknown_terms, unknown)
+        error.__cause__ = self.__cause__
+        return error
+
+
+class Resolved(list):
+    """Resolved operations, plus where each minted id came from: ``{id: (placeholder, position)}``."""
+
+    def __init__(self, ops: list, minted: dict[str, tuple[str, int]]):
+        super().__init__(ops)
+        self.minted = minted
+
 
 @dataclass
 class ApplyResult:
@@ -439,7 +468,7 @@ def property_literal(spec: dict, value) -> RDFLiteral:
     return RDFLiteral(str(value))
 
 
-def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
+def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
     """Check structure; mint ids for new entities. Returns new, fully resolved operations.
 
     Virtual relations are expanded first (relations.expand), so the result holds only
@@ -451,6 +480,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
     unknown_terms: list[tuple[str, str, str | None]] = []
     unknown_entities: list[tuple[str, str]] = []
     placeholders: dict[str, str] = {}
+    minted: dict[str, tuple[str, int]] = {}  # minted id -> (placeholder, operation number as written)
     created: dict[str, str] = {}  # id -> kind, for entities created earlier in the list
     created_relationships: set[str] = set()
     deleted: set[str] = set()
@@ -468,6 +498,30 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
         if eid in created:
             return created[eid] == kind
         return entity_kind(pg, vocab, eid) == kind
+
+    def kind_now(eid: str) -> str | None:
+        if eid in deleted:
+            return None
+        return created.get(eid) or entity_kind(pg, vocab, eid)
+
+    def wrong_kind(eid: str, expected: str, op_kind: str, verb: str | None = None) -> str | None:
+        """'X is a space, not equipment; …', with the fields or operation that take a space."""
+        actual = kind_now(eid)
+        if actual is None or actual == "relationship" or actual == expected:
+            return None
+        def name(k: str) -> str:
+            text = k.replace("_", " ")
+            return ("an " if text[0] in "aeiou" else "a ") + text
+        hint = ""
+        if verb:  # update_/delete_ on the wrong kind of row
+            hint = f"; use {verb}_{actual if actual in allowed else 'entity'}"
+        else:
+            fitting = [f for f, k in REF_FIELDS.items() if k == actual and f in allowed.get(op_kind, ())]
+            if fitting:
+                hint = f"; to refer to {name(actual)}, use {' or '.join(fitting)}"
+            elif "relationship" in allowed:
+                hint = "; to link them through another relation, use relate"
+        return f"{eid!r} is {name(actual)}, not {name(expected)}{hint}"
 
     def later_placeholders(i: int) -> set[str]:
         return {o.id for o in ops[i + 1:] if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER)}
@@ -569,6 +623,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                 eid = new_id(kind)
                 if raw:
                     placeholders[raw] = eid
+                    minted[eid] = (raw, origin[i] + 1)
             data["id"] = eid
             # create_entity takes any class; later operations treat the node as what its class makes it
             created[eid] = (ROW_KIND_OF_TERM.get(vocab.kind_of(expand_term(vocab, data.get("type") or "")) or "", "entity")
@@ -577,8 +632,11 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
             eid = placeholders.get(data["id"], data["id"])
             data["id"] = eid
             if not exists(eid, kind):
-                problems.append(f"{where}: no {kind} with id {eid!r}")
-                unknown_entities.append((eid, kind))
+                if kind != "entity" and (mismatch := wrong_kind(eid, kind, kind, op.op.split("_", 1)[0])):
+                    problems.append(f"{where}: {mismatch}")
+                else:
+                    problems.append(f"{where}: no {kind} with id {eid!r}")
+                    unknown_entities.append((eid, kind))
                 continue
 
         for fname, target_kind in REF_FIELDS.items():
@@ -589,8 +647,11 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
                     problems.append(f"{where}: {fname} refers to {ref!r}, which a later operation creates; "
                                     "create it first, or set this in an update after both exist")
                 elif not exists(ref, target_kind):
-                    problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
-                    unknown_entities.append((ref, target_kind))
+                    if mismatch := wrong_kind(ref, target_kind, kind):
+                        problems.append(f"{where}: {fname} refers to {target_kind.replace('_', ' ')}, but {mismatch}")
+                    else:
+                        problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
+                        unknown_entities.append((ref, target_kind))
                 elif ref == eid:
                     problems.append(f"{where}: {fname} cannot refer to the entity itself")
 
@@ -628,8 +689,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
         out.append(type(op).model_validate(data))
 
     if problems:
-        raise OperationError(problems, unknown_terms, unknown_entities)
-    return out
+        raise OperationError(problems, unknown_terms, unknown_entities).written_as(minted)
+    return Resolved(out, minted)
 
 
 class GenericOps:

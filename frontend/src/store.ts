@@ -207,7 +207,10 @@ export const useStore = create<State>((set, get) => ({
   loadStatus: async () => {
     const status = await api.status()
     const def = status.providers.find((p) => p.default)
-    set({ status, provider: get().provider ?? def?.name ?? null })
+    // The choice made in the dropdown survives reloads while that provider is still configured.
+    const saved = localStorage.getItem('workbench.provider')
+    const remembered = status.providers.some((p) => p.name === saved) ? saved : null
+    set({ status, provider: get().provider ?? remembered ?? def?.name ?? null })
   },
 
   openProject: async (id) => {
@@ -573,7 +576,11 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  setProvider: (provider) => set({ provider }),
+  setProvider: (provider) => {
+    if (provider) localStorage.setItem('workbench.provider', provider)
+    else localStorage.removeItem('workbench.provider')
+    set({ provider })
+  },
 
   handleEvent: (ev) => {
     const s = get()

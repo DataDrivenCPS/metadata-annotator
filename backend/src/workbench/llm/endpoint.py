@@ -115,8 +115,14 @@ class EndpointInfo:
             entries = self.model_entries()
         except ModelListError:
             return None
-        model = resolved_model(self.cfg, [e["id"] for e in entries]).model
-        return self._vision(next((e for e in entries if e["id"] == model), None))
+        return self.images_for(resolved_model(self.cfg, [e["id"] for e in entries]), entries)
+
+    def images_for(self, info: ProviderConfig, entries: list[dict[str, Any]]) -> bool:
+        """Whether ``info``'s model (one of the server's ``entries``) reads images: as set for
+        that model, else as the server says."""
+        if info.supports_images is not None:
+            return info.supports_images
+        return self._vision(next((e for e in entries if e["id"] == info.model), None))
 
     def _vision(self, entry: dict[str, Any] | None) -> bool:
         """llama-server's router and OpenRouter list input modalities per model; a single-model
@@ -153,11 +159,8 @@ class EndpointInfo:
         elif self.cfg.model and len(models) > 1 and self.cfg.model not in models:
             ok, detail = False, f"'{self.cfg.model}' is not offered by {self.base_url}"
         info = resolved_model(self.cfg, models)  # with that model's own settings
-        model = info.model
-        images = info.supports_images
-        if images is None:
-            images = self._vision(next((e for e in entries if e["id"] == model), None)) if ok else False
-        return {"ok": ok, "detail": detail, "model": model, "models": models, "model_count": len(models),
+        images = self.images_for(info, entries) if ok else bool(info.supports_images)
+        return {"ok": ok, "detail": detail, "model": info.model, "models": models, "model_count": len(models),
                 "supports_images": images, "context_tokens": EndpointInfo(info).context_tokens() if ok else None}
 
 

@@ -262,10 +262,11 @@ def install(vocab: Vocabulary, config: dict[str, dict] | None = None) -> None:
 
 # ----------------------------------------------------------------- expansion
 
-def expand(pg: ProjectGraph, vocab: Vocabulary, ops: list[dict]) -> tuple[list[tuple[int, dict]], list[str]]:
+def expand(pg: ProjectGraph, vocab: Vocabulary, ops: list[dict]) -> tuple[list[tuple[int, dict]], list[tuple[int, str]]]:
     """Rewrite relate/unrelate on virtual relations into stored-relation operations.
 
-    Returns (original operation index, operation) pairs and the problems found. Relating two
+    Returns (original operation index, operation) pairs and the problems found, as (original
+    operation index, message) pairs. Relating two
     entities that already share a middle node adds nothing; otherwise a ``via`` entity is
     created and linked. Unrelating removes both links and the middle node when nothing else
     uses it; a middle node that also links other entities is not split.
@@ -276,13 +277,12 @@ def expand(pg: ProjectGraph, vocab: Vocabulary, ops: list[dict]) -> tuple[list[t
     labels = {o["id"]: o.get("label") for o in ops if o["op"].startswith("create_") and o.get("id")}
     done: set[tuple[str, str, str]] = set()
     out: list[tuple[int, dict]] = []
-    problems: list[str] = []
+    problems: list[tuple[int, str]] = []
 
     def name(eid: str, node) -> str:
         return str(labels.get(eid) or (g.value(node, RDFS.label) if node is not None else None) or eid)
 
     for i, op in enumerate(ops):
-        where = f"operation {i + 1} ({op['op']})"
         if op["op"] == "relate":
             v = vocab.virtual.get(expand_term(vocab, op["relation"]))
             if v is None:
@@ -292,12 +292,12 @@ def expand(pg: ProjectGraph, vocab: Vocabulary, ops: list[dict]) -> tuple[list[t
             na, nb = (None if x.startswith(PLACEHOLDER) else entity_iri(pg, x) for x in (a, b))
             missing = [x for x, n in ((a, na), (b, nb)) if n is None and x not in labels]
             if not v.settable:
-                problems.append(f"{where}: virtual:{v.id} is read from the path {v.spec.path} and cannot be set; "
-                                "relate the underlying relations instead")
+                problems.append((i, f"virtual:{v.id} is read from the path {v.spec.path} and cannot be set; "
+                                    "relate the underlying relations instead"))
                 continue
             if missing or a == b:
-                problems.append(f"{where}: virtual:{v.id} links two different entities in the model"
-                                + (f"; not found: {', '.join(missing)}" if missing else ""))
+                problems.append((i, f"virtual:{v.id} links two different entities in the model"
+                                    + (f"; not found: {', '.join(missing)}" if missing else "")))
                 continue
             key = relationship_key(vocab, a, v.iri, b)
             if key in done or (na is not None and nb is not None and v.middles(g, na, nb)):
@@ -320,14 +320,14 @@ def expand(pg: ProjectGraph, vocab: Vocabulary, ops: list[dict]) -> tuple[list[t
             a, p, b = found
             v = vocab.virtual[str(p)]
             if not v.settable:
-                problems.append(f"{where}: virtual:{v.id} is read from the path {v.spec.path}; "
-                                "unrelate the underlying relations instead")
+                problems.append((i, f"virtual:{v.id} is read from the path {v.spec.path}; "
+                                    "unrelate the underlying relations instead"))
                 continue
             for m in v.middles(g, a, b):
                 others = v.others(g, m, a, b)
                 if others:
-                    problems.append(f"{where}: {name('', m)} also links {', '.join(name('', o) for o in others)}; "
-                                    f"edit {name('', m)} itself instead")
+                    problems.append((i, f"{name('', m)} also links {', '.join(name('', o) for o in others)}; "
+                                        f"edit {name('', m)} itself instead"))
                     continue
                 links = v.links(a, m, b)
                 for s, lp, o in links:

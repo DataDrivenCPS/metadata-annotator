@@ -126,7 +126,10 @@ class Vocabulary:
         self.ancestors: dict[str, list[str]] = {}
         self.qk_broader: dict[str, list[str]] = {}
         self._search_index: dict[str, tuple[set[str], str]] = {}  # iri -> (search words, "label name")
-        self._names: list[dict[str, list[str]]] = [{}, {}, {}]  # see named()
+        # Exact names, for reading a term written by name (see ``named``).
+        self._by_local: dict[str, list[str]] = {}  # local name as written
+        self._by_name: dict[str, list[str]] = {}  # local name or label, ignoring case
+        self._by_symbol: dict[str, list[str]] = {}  # unit symbol as written
         self.root_ontology: str = ""
         self.missing_imports: list[str] = []
         self._validator = None
@@ -495,18 +498,16 @@ class Vocabulary:
         for iri, t in sorted(self.terms.items(), key=lambda kv: kv[1].label.lower()):
             self.by_kind[t.kind].append(iri)
         self._search_index = {iri: _search_tokens(iri, t) for iri, t in self.terms.items()}
-        # Exact names, for reading a term written by name (see ``named``): local name as
-        # written; local name or label ignoring case; unit symbol as written.
-        self._names: list[dict[str, list[str]]] = [defaultdict(list), defaultdict(list), defaultdict(list)]
+        self._by_local, self._by_name, self._by_symbol = defaultdict(list), defaultdict(list), defaultdict(list)
         for iri, t in self.terms.items():
             if t.deprecated:
                 continue
-            local = _local_name(iri)
-            self._names[0][local].append(iri)
+            local = _term_name(iri)
+            self._by_local[local].append(iri)
             for name in {local.casefold(), t.label.strip().casefold()} - {""}:
-                self._names[1][name].append(iri)
+                self._by_name[name].append(iri)
             if t.symbol:
-                self._names[2][t.symbol].append(iri)
+                self._by_symbol[t.symbol].append(iri)
 
     # ------------------------------------------------------------------ lookups
 
@@ -540,8 +541,8 @@ class Vocabulary:
         iri = expand_term(self, value)
         spaces = [*self.namespaces.values(), *_EXTRA_NAMESPACES.values()]
         ns = max((n for n in spaces if n and iri.startswith(n) and len(iri) > len(n)), key=len, default="")
-        local = iri[len(ns):] if ns else _local_name(iri)
-        for index, key in zip(self._names, (local, local.casefold(), local)):
+        local = iri[len(ns):] if ns else _term_name(iri)
+        for index, key in ((self._by_local, local), (self._by_name, local.casefold()), (self._by_symbol, local)):
             found = [iri for iri in index.get(key, ()) if self.terms[iri].kind in kinds]
             if found:
                 return sorted(set(found))
@@ -842,7 +843,7 @@ _EXTRA_NAMESPACES = {"s223": str(S223), "qudt": str(QUDT),
                      "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
 
 
-def _local_name(iri: str) -> str:
+def _term_name(iri: str) -> str:
     """After the last # (or /, or the prefix's colon); a bare name such as ``mg/L`` is its own."""
     if "://" in iri or iri.startswith("urn:"):
         return re.sub(r"^.*[#/]", "", iri)

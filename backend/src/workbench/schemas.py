@@ -180,8 +180,11 @@ class ChangeProposal(BaseModel):
     validation: ValidationDelta | None = None
     explanation: str = ""
     notes: list[str] = Field(default_factory=list)
-    # The notes on how it was drafted (also in notes): terms read by name, operations left out.
+    # The notes on how it was drafted (also in notes): terms read by name.
     drafting_notes: list[str] = Field(default_factory=list)
+    # Operations the assistant could not make valid, as written, and why: {"operation", "problems"}.
+    # Not part of the proposal; a reply can ask for them again (retry_left_out).
+    left_out: list[dict[str, Any]] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     status: Literal["pending", "applied", "dismissed", "stale", "failed"] = "pending"
     agent_run_id: str | None = None

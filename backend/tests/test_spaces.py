@@ -157,7 +157,7 @@ def test_what_a_name_names_exactly_is_read_and_the_rest_says_what_to_do(workspac
     assert caught.value.problems == [
         "operation 1 (create_equipment): location refers to 'Mechanical room 101', but nothing has the id or label "
         "'Mechanical room 101'; to add a new space, create it first (create_space with \"id\": \"new:…\") and use "
-        "that id, or refer to one another operation creates by its \"new:…\" id or exact label, or leave location out",
+        "that id, or refer to one another operation creates by the \"new:…\" id it gives it, or leave location out",
         "operation 1 (create_equipment): type 'Pump' is not a term in the loaded vocabulary",  # s223:Pump or watr:Pump
         f"operation 2 (create_point): equipment refers to 'Tank A', but 'Tank A' is the label of 2 equipment "
         f"entities ({tanks[0]!r}, {tanks[1]!r}); use the id of the one you mean",

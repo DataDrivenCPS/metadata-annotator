@@ -27,7 +27,7 @@ from rdflib import Literal as RDFLiteral
 from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
-from .graph import ID_PREFIX, WB, ProjectGraph, new_id
+from .graph import ID_PREFIX, WB, ProjectGraph, id_pattern, new_id
 from .projection import (
     ACTUATABLE_KINDS,
     OBSERVABLE_KINDS,
@@ -378,12 +378,30 @@ class OperationError(Exception):
     """Malformed operations: they cannot be applied at all."""
 
     def __init__(self, problems: list[str], unknown_terms: list[tuple[str, str, str | None]] | None = None,
-                 unknown_entities: list[tuple[str, str]] | None = None):
+                 unknown_entities: list[tuple[str, str]] | None = None,
+                 positions: list[int | None] | None = None, messages: list[str] | None = None):
         super().__init__("; ".join(problems))
         self.problems = problems
         # (field, value as written, expected term kind) for terms not in the vocabulary
         self.unknown_terms = unknown_terms or []
         self.unknown_entities = unknown_entities or []  # (id as written, expected entity kind)
+        # Per problem: the operation it is about (from 0, as numbered in the message; None for the
+        # change as a whole, or a saved operation), and the message without the operation prefix.
+        self.positions: list[int | None] = positions if positions is not None else [None] * len(problems)
+        self.messages: list[str] = messages if messages is not None else list(problems)
+
+    @property
+    def failed(self) -> set[int] | None:
+        """The operations these problems are about; None when one concerns the change as a whole."""
+        if not self.positions or any(p is None for p in self.positions):
+            return None
+        return {p for p in self.positions if p is not None}
+
+    @classmethod
+    def at(cls, found: list[tuple[int, str, str]]) -> OperationError:
+        """Problems with operations: (position from 0, operation name, message) each."""
+        return cls([f"operation {n + 1} ({op}): {msg}" for n, op, msg in found],
+                   positions=[n for n, _, _ in found], messages=[msg for _, _, msg in found])
 
     def written_as(self, minted: dict[str, tuple[str, int]]) -> OperationError:
         """The same problems, naming entities created by these operations as they were written.
@@ -400,8 +418,9 @@ class OperationError(Exception):
             return f"{placeholder!r} (created by operation {position})"
 
         problems = [pattern.sub(written, problem) for problem in self.problems]
+        messages = [pattern.sub(written, message) for message in self.messages]
         unknown = [(minted[eid][0] if eid in minted else eid, kind) for eid, kind in self.unknown_entities]
-        error = OperationError(problems, self.unknown_terms, unknown)
+        error = OperationError(problems, self.unknown_terms, unknown, self.positions, messages)
         error.__cause__ = self.__cause__
         return error
 
@@ -416,21 +435,6 @@ class Resolved(list):
         self.readings = readings or []
 
 
-# How a drafting note about an operation the assistant could not make valid begins.
-LEFT_OUT = "Left out "
-
-FAILED_AT = re.compile(r"^operation (\d+) \(")
-
-
-def failed_operations(problems: list[str]) -> set[int] | None:
-    """Positions (from 0, as written) of the operations these problems are about; None when a
-    problem names no operation (it concerns the change as a whole)."""
-    found = [FAILED_AT.match(problem) for problem in problems]
-    if not found or not all(found):
-        return None
-    return {int(m.group(1)) - 1 for m in found if m}
-
-
 def creation_order(ops: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
     """The same operations, each after the create operations whose ``new:*`` ids or labels it
     refers to; otherwise as written. Writing a reference before the entity's create is an ordering slip, not a different
@@ -441,24 +445,27 @@ def creation_order(ops: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
         found = {str(o["id"])} if str(o.get("id") or "").startswith(PLACEHOLDER) else set()
         return found | ({"label:" + str(o["label"]).strip().casefold()} if o.get("label") else set())
 
-    created = set().union(*(names(o) for _, o in ops)) if ops else set()
+    gives = [names(o) for _, o in ops]
+    created = set().union(*gives) if ops else set()
     fields = {*REF_FIELDS, "subject", "object"}
 
-    def needs(o: dict) -> set[str]:
+    def needs(n: int) -> set[str]:
+        o = ops[n][1]
         refs = {str(v) for k, v in o.items() if isinstance(v, str) and (
             k in fields or (k == "id" and not str(o.get("op", "")).startswith("create_")))}
         return ({r for r in refs if r in created}
-                | {"label:" + r.strip().casefold() for r in refs if "label:" + r.strip().casefold() in created}) - names(o)
+                | {"label:" + r.strip().casefold() for r in refs if "label:" + r.strip().casefold() in created}) - gives[n]
 
+    wants = [needs(n) for n in range(len(ops))]
     done: set[str] = set()
-    pending, out = list(ops), []
+    pending, out = list(range(len(ops))), []
     while pending:
-        ready = next((n for n, (_, o) in enumerate(pending) if needs(o) <= done), None)
+        ready = next((k for k, n in enumerate(pending) if wants[n] <= done), None)
         if ready is None:
-            return out + pending
-        pair = pending.pop(ready)
-        out.append(pair)
-        done |= names(pair[1])
+            return out + [ops[n] for n in pending]
+        n = pending.pop(ready)
+        out.append(ops[n])
+        done |= gives[n]
     return out
 
 
@@ -516,20 +523,37 @@ def property_literal(spec: dict, value) -> RDFLiteral:
     return RDFLiteral(str(value))
 
 
-def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
+def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, first: int = 0) -> Resolved:
     """Check structure; mint ids for new entities. Returns new, fully resolved operations.
 
     Virtual relations are expanded first (relations.expand), so the result holds only
-    operations on stored facts. Raises OperationError listing every problem found.
+    operations on stored facts. Raises OperationError listing every problem found. Operations
+    before ``first`` are saved ones (a pending proposal's): messages number the rest from 1 and
+    call those "saved operation N".
     """
-    expanded, problems = expand(pg, vocab, [o.model_dump() for o in ops])
+    names = [o.op for o in ops]
+    expanded, expand_problems = expand(pg, vocab, [o.model_dump() for o in ops])
     expanded = creation_order(expanded)
     origin = [i for i, _ in expanded]  # positions as written, for messages
     ops = OperationList.validate_python([o for _, o in expanded])
+    problems: list[str] = []
+    positions: list[int | None] = []
+    messages: list[str] = []
+
+    def numbered(pos: int) -> str:
+        return f"operation {pos + 1 - first}" if pos >= first else f"saved operation {pos + 1}"
+
+    def add(pos: int, where: str, message: str) -> None:
+        report(f"{message}")
+        positions.append(pos - first if pos >= first else None)
+        messages.append(message)
+
+    for pos, message in expand_problems:
+        add(pos, f"{numbered(pos)} ({names[pos]})", message)
     unknown_terms: list[tuple[str, str, str | None]] = []
     unknown_entities: list[tuple[str, str]] = []
     placeholders: dict[str, str] = {}
-    minted: dict[str, tuple[str, int]] = {}  # minted id -> (placeholder, operation number as written)
+    minted: dict[str, tuple[str, int]] = {}  # minted id -> (placeholder, operation number in messages)
     readings: list[str] = []  # terms written by name, and what they were read as
     created: dict[str, str] = {}  # id -> kind, for entities created earlier in the list
     created_relationships: set[str] = set()
@@ -555,7 +579,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
         return created.get(eid) or entity_kind(pg, vocab, eid)
 
     def wrong_kind(eid: str, expected: str, op_kind: str, verb: str | None = None) -> str | None:
-        """'X is a space, not equipment; …', with the fields or operation that take a space."""
+        """What ``eid`` is instead: "a space, not an equipment; …", with the fields or operation
+        that take a space; None when it is of the expected kind (or nothing)."""
         actual = kind_now(eid)
         if actual is None or actual == "relationship" or actual == expected:
             return None
@@ -571,19 +596,24 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 hint = f"; to refer to {name(actual)}, use {' or '.join(fitting)}"
             elif "relationship" in allowed:
                 hint = "; to link them through another relation, use relate"
-        return f"{eid!r} is {name(actual)}, not {name(expected)}{hint}"
+        return f"{name(actual)}, not {name(expected)}{hint}"
 
     created_labels: dict[str, list[str]] = {}  # label (ignoring case) -> ids created above with it
-    ids_like = re.compile(r"^(" + "|".join(ID_PREFIX.values()) + r")-[0-9a-z]+$")
+    ids_like = re.compile(f"^{id_pattern(*ID_PREFIX)}$")
+
+    model_labels: dict[str, list[str]] | None = None  # label (ignoring case) -> ids, built on first use
 
     def labelled(text: str) -> list[tuple[str, str | None]]:
         """(id, kind) of entities labelled ``text`` (ignoring case): in the model, or created above."""
+        nonlocal model_labels
+        if model_labels is None:
+            model_labels = {}
+            for node, label in pg.model.subject_objects(RDFS.label):
+                if eid := pg.id_of(node):  # type: ignore[arg-type]
+                    model_labels.setdefault(str(label).strip().casefold(), []).append(eid)
         want = text.strip().casefold()
-        found = {eid: kind_now(eid) for eid in created_labels.get(want, [])}
-        for node, label in pg.model.subject_objects(RDFS.label):
-            if str(label).strip().casefold() == want and (eid := pg.id_of(node)) and eid not in deleted:  # type: ignore[arg-type]
-                found[eid] = kind_now(eid)
-        return list(found.items())
+        ids = [*created_labels.get(want, []), *(e for e in model_labels.get(want, []) if e not in deleted)]
+        return [(eid, kind_now(eid)) for eid in dict.fromkeys(ids)]
 
     def fits(kind: str | None, target: str) -> bool:
         return kind == target or (target == "entity" and kind not in (None, "relationship"))
@@ -612,31 +642,45 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                     "use the id of the one you mean")
         if matches:
             eid, _ = matches[0]
-            mismatch = wrong_kind(eid, target, op_kind) or f"{eid!r}"
-            return f"{ref!r} is the label of " + mismatch.replace(f"{eid!r} is ", f"{eid!r}, which is ", 1)
+            what = wrong_kind(eid, target, op_kind)
+            return f"{ref!r} is the label of {eid!r}" + (f", which is {what}" if what else "")
         return (f"nothing has the id or label {ref!r}; to add a new {name}, create it first ({create} with "
-                f"\"id\": \"new:…\") and use that id, or refer to one another operation creates by its "
-                f"\"new:…\" id or exact label{leave}")
+                f"\"id\": \"new:…\") and use that id, or refer to one another operation creates by the "
+                f"\"new:…\" id it gives it{leave}")
 
-    def read_term(written: str, kinds: set[str], where: str, subject: str | None, fname: str) -> str:
-        """The term ``written`` names: as an IRI or prefixed name, else by its exact name if that
-        names exactly one term of these kinds (``vocab.named``), which is noted for the reviewer."""
+    def named_term(written: str, kinds: set[str]) -> tuple[str, bool]:
+        """(the term ``written`` names, whether it was read by name): as an IRI or prefixed name,
+        else by the exact name of the one term of these kinds it names (``vocab.named``)."""
         iri = expand_term(vocab, written)
         if vocab.term(iri) is not None or not kinds:
-            return iri
+            return iri, False
         named = vocab.named(written, kinds)
-        if len(named) != 1:
-            return iri
-        t = vocab.terms[named[0]]
-        readings.append(f"{subject or where}: {fname} {written!r} was read as {vocab.curie(t.iri)} "
-                        f"({t.label}{', ' + t.symbol if t.symbol else ''})")
-        return t.iri
+        return (named[0], True) if len(named) == 1 else (iri, False)
 
-    def later_placeholders(i: int) -> set[str]:
-        return {o.id for o in ops[i + 1:] if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER)}
+    def read_term(written: str, kinds: set[str], where: str, subject: str | None, fname: str) -> str:
+        """``named_term``, noting a term read by name for the reviewer."""
+        iri, by_name = named_term(written, kinds)
+        if by_name:
+            t = vocab.terms[iri]
+            readings.append(f"{subject or where}: {fname} {written!r} was read as {vocab.curie(t.iri)} "
+                            f"({t.label}{', ' + t.symbol if t.symbol else ''})")
+        return iri
+
+    creator: dict[str, int] = {}  # placeholder -> the (first) operation creating it
+    for n, o in enumerate(ops):
+        if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER):
+            creator.setdefault(o.id, n)  # type: ignore[arg-type]
+
+    def created_later(ref: str, i: int) -> bool:
+        return creator.get(ref, -1) > i
+
+    def report(message: str) -> None:  # a problem with the operation being resolved
+        add(origin[current], where, message)
+
+    current, where = 0, ""
 
     for i, op in enumerate(ops):
-        where = f"operation {origin[i] + 1} ({op.op})"
+        current, where = i, f"{numbered(origin[i])} ({op.op})"
         data = op.model_dump(exclude_unset=True)
         data["op"] = op.op
         kind = entity_kind_of_op(op)
@@ -645,43 +689,43 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
             data["id"] = eid
             row_kind = created.get(eid) or (None if eid in deleted else entity_kind(pg, vocab, eid))
             if row_kind is None:
-                problems.append(f"{where}: no row with id {eid!r}")
+                report(f"no row with id {eid!r}")
                 unknown_entities.append((eid, "entity"))
                 continue
             bad = sorted(set(data.get("fields") or []) - lockable_fields(row_kind))
             if bad:
-                problems.append(f"{where}: {', '.join(bad)} cannot be locked on a {row_kind.replace('_', ' ')} "
+                report(f"{', '.join(bad)} cannot be locked on a {row_kind.replace('_', ' ')} "
                                 f"(lockable: {', '.join(sorted(lockable_fields(row_kind)))})")
                 continue
             out.append(type(op).model_validate(data))
             continue
         if kind not in allowed:
-            problems.append(f"{where}: {kind.replace('_', ' ')}s do not exist in {FAMILY_NAMES[vocab.family]} models")
+            report(f"{kind.replace('_', ' ')}s do not exist in {FAMILY_NAMES[vocab.family]} models")
             continue
         extra = sorted(set(data) - {"op", "id"} - allowed[kind])
         if extra:
-            problems.append(f"{where}: {', '.join(extra)} do(es) not apply to {kind}s in "
+            report(f"{', '.join(extra)} do(es) not apply to {kind}s in "
                             f"{FAMILY_NAMES[vocab.family]} models")
             continue
         if vocab.family == "s223":
             if data.get("point_kind") in ("alarm", "parameter"):
-                problems.append(f"{where}: point_kind {data['point_kind']!r} is only available in Brick models")
+                report(f"point_kind {data['point_kind']!r} is only available in Brick models")
                 continue
             if op.op == "create_connection" and not (data.get("medium") or data.get("from_point")
                                                      or data.get("to_point")):
-                problems.append(f"{where}: medium is required (what the pipe or duct carries)")
+                report("medium is required (what the pipe or duct carries)")
                 continue
         if op.op == "create_connection" and not (data.get("from_equipment") or data.get("from_point")):
-            problems.append(f"{where}: give from_equipment" + (" or from_point" if vocab.family == "s223" else ""))
+            report("give from_equipment" + (" or from_point" if vocab.family == "s223" else ""))
             continue
         if op.op == "create_connection" and not (data.get("to_equipment") or data.get("to_point")):
-            problems.append(f"{where}: give to_equipment" + (" or to_point" if vocab.family == "s223" else ""))
+            report("give to_equipment" + (" or to_point" if vocab.family == "s223" else ""))
             continue
         if kind == "relationship":
             if op.op == "unrelate":
                 if data["id"] in deleted or (data["id"] not in created_relationships
                                              and entity_kind(pg, vocab, data["id"]) != "relationship"):
-                    problems.append(f"{where}: no relationship with id {data['id']!r}")
+                    report(f"no relationship with id {data['id']!r}")
                     continue
                 deleted.add(data["id"])
                 out.append(type(op).model_validate(data))
@@ -692,22 +736,22 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 subj, skind = named, kind_now(named)
             if skind in (None, "relationship"):
                 hint = missing(subj, "entity", None, kind) if skind is None else None
-                problems.append(f"{where}: subject {subj!r} is not an entity in the model" + (f": {hint}" if hint else ""))
+                report(f"subject {subj!r} is not an entity in the model" + (f": {hint}" if hint else ""))
                 continue
             rel = read_term(data["relation"], {"relation"}, where, None, "relation")
             t = vocab.term(rel)
             if t is None or t.kind != "relation":
-                problems.append(f"{where}: {data['relation']!r} is not a relation in the loaded vocabulary")
+                report(f"{data['relation']!r} is not a relation in the loaded vocabulary")
                 unknown_terms.append(("relation", rel, "relation"))
                 continue
             obj = placeholders.get(data["object"], data["object"])
             okind = created.get(obj) or (None if obj in deleted else entity_kind(pg, vocab, obj))
-            if okind is None and (named := by_label(obj, "entity")):
+            if okind is None and vocab.term(expand_term(vocab, obj)) is None and (named := by_label(obj, "entity")):
                 obj, okind = named, kind_now(named)
             if okind is None or okind == "relationship":
                 term = expand_term(vocab, obj)
                 if vocab.term(term) is None:
-                    problems.append(f"{where}: object {obj!r} is neither an entity id nor a vocabulary term")
+                    report(f"object {obj!r} is neither an entity id nor a vocabulary term")
                     continue
                 obj = term
             data.update(subject=subj, relation=rel, object=obj)
@@ -720,32 +764,30 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
             out.append(type(op).model_validate(data))
             continue
         if vocab.family == "s223" and "process" in data and not vocab.namespaces.get("watr"):
-            problems.append(f"{where}: treatment processes are only available in WaTr models")
+            report("treatment processes are only available in WaTr models")
             continue
 
         if op.op.startswith("create_"):
             raw = data.get("id")
             if raw and raw.startswith(PLACEHOLDER) and raw in placeholders:
-                problems.append(f"{where}: placeholder {raw!r} is already defined by an earlier create operation")
+                report(f"placeholder {raw!r} is already defined by an earlier create operation")
                 continue
             if raw and not raw.startswith(PLACEHOLDER):
                 if pg.iri(raw) is not None or raw in created or entity_kind(pg, vocab, raw) is not None:
-                    problems.append(f"{where}: id {raw!r} already exists")
+                    report(f"id {raw!r} already exists")
                     continue
                 eid = raw
             else:
                 eid = new_id(kind)
                 if raw:
                     placeholders[raw] = eid
-                    minted[eid] = (raw, origin[i] + 1)
+                    minted[eid] = (raw, origin[i] + 1 - first)
             data["id"] = eid
             if data.get("label"):
                 created_labels.setdefault(str(data["label"]).strip().casefold(), []).append(eid)
             # create_entity takes any class; later operations treat the node as what its class makes it
             if kind == "entity":
-                type_iri = expand_term(vocab, data.get("type") or "")
-                if vocab.term(type_iri) is None and len(named_types := vocab.named(data.get("type") or "", set(CLASS_KINDS))) == 1:
-                    type_iri = named_types[0]
+                type_iri, _ = named_term(data.get("type") or "", set(CLASS_KINDS))
                 created[eid] = ROW_KIND_OF_TERM.get(vocab.kind_of(type_iri) or "", "entity")
             else:
                 created[eid] = kind
@@ -756,33 +798,33 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
             data["id"] = eid
             if not exists(eid, kind):
                 if kind != "entity" and (mismatch := wrong_kind(eid, kind, kind, op.op.split("_", 1)[0])):
-                    problems.append(f"{where}: {mismatch}")
+                    report(f"{eid!r} is {mismatch}")
                 elif hint := missing(eid, kind, None, kind):
-                    problems.append(f"{where}: id {eid!r} names no {kind.replace('_', ' ')}: {hint}")
+                    report(f"id {eid!r} names no {kind.replace('_', ' ')}: {hint}")
                 else:
-                    problems.append(f"{where}: no {kind} with id {eid!r}")
+                    report(f"no {kind} with id {eid!r}")
                     unknown_entities.append((eid, kind))
                 continue
 
         for fname, target_kind in REF_FIELDS.items():
             if fname in data and data[fname] is not None:
                 ref = placeholders.get(data[fname], data[fname])
-                if not exists(ref, target_kind) and ref not in later_placeholders(i) and (named := by_label(ref, target_kind)):
+                if not exists(ref, target_kind) and not created_later(ref, i) and (named := by_label(ref, target_kind)):
                     ref = named
                 data[fname] = ref
-                if ref in later_placeholders(i):
-                    problems.append(f"{where}: {fname} refers to {ref!r}, which a later operation creates; "
+                if created_later(ref, i):
+                    report(f"{fname} refers to {ref!r}, which a later operation creates; "
                                     "create it first, or set this in an update after both exist")
                 elif not exists(ref, target_kind):
                     if mismatch := wrong_kind(ref, target_kind, kind):
-                        problems.append(f"{where}: {fname} refers to {target_kind.replace('_', ' ')}, but {mismatch}")
+                        report(f"{fname} refers to {target_kind.replace('_', ' ')}, but {ref!r} is {mismatch}")
                     elif hint := missing(ref, target_kind, fname, kind):
-                        problems.append(f"{where}: {fname} refers to {ref!r}, but {hint}")
+                        report(f"{fname} refers to {ref!r}, but {hint}")
                     else:
-                        problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
+                        report(f"{fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
                         unknown_entities.append((ref, target_kind))
                 elif ref == eid:
-                    problems.append(f"{where}: {fname} cannot refer to the entity itself")
+                    report(f"{fname} cannot refer to the entity itself")
 
         for fname, term_kind in TERM_FIELDS.items():
             if fname in data and data[fname] is not None:
@@ -793,14 +835,14 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 data[fname] = iri
                 t = vocab.term(iri)
                 if t is None:
-                    problems.append(f"{where}: {fname} {iri!r} is not a term in the loaded vocabulary")
+                    report(f"{fname} {iri!r} is not a term in the loaded vocabulary")
                     unknown_terms.append((fname, iri, expected))
                 elif expected and t.kind != expected and not (kind == "entity" and t.kind in CLASS_KINDS):
                     generic = t.kind in CLASS_KINDS
-                    problems.append(f"{where}: {fname} {vocab.curie(iri)} is a {t.kind}, expected a {expected}"
+                    report(f"{fname} {vocab.curie(iri)} is a {t.kind}, expected a {expected}"
                                     + (f"; to make a {vocab.curie(iri)}, use create_entity" if generic else ""))
                 elif t.abstract:
-                    problems.append(f"{where}: {fname} {t.label!r} is abstract and cannot be instantiated")
+                    report(f"{fname} {t.label!r} is abstract and cannot be instantiated")
 
         prop_term = vocab.term(data["property"]) if op.op == "set_property" else None
         if prop_term is not None and prop_term.kind == "entity_property":
@@ -808,18 +850,18 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
             try:
                 property_literal(spec, data["value"])
             except ValueError as e:
-                problems.append(f"{where}: {e}")
+                report(f"{e}")
             if not data.get("unit") and spec.get("units") and len(spec["units"]) == 1:
                 data["unit"] = spec["units"][0]
 
         if "label" in data and data["label"] is not None and not str(data["label"]).strip():
-            problems.append(f"{where}: label cannot be empty")
+            report("label cannot be empty")
         if op.op.startswith("delete_"):
             deleted.add(eid)
         out.append(type(op).model_validate(data))
 
     if problems:
-        raise OperationError(problems, unknown_terms, unknown_entities).written_as(minted)
+        raise OperationError(problems, unknown_terms, unknown_entities, positions, messages).written_as(minted)
     return Resolved(out, minted, readings)
 
 

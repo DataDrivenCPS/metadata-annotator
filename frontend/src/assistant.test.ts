@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   autofixCandidates, autofixProgress, autofixReport, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
-  owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
+  leftOutSummary, owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
   startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
@@ -341,5 +341,14 @@ describe('document tool steps', () => {
     const step = (message: string) => describeStep({ at: '', stage: 'tool', message, data: {} })
     expect(step("search_sources(query='FIT-101 range')")).toBe('Searched the uploaded documents for “FIT-101 range”')
     expect(step("view_source(source='OARO.png')")).toBe('Looked at “OARO.png”')
+  })
+})
+
+describe('leftOutSummary', () => {
+  it('names a left-out operation by what it would have made', () => {
+    expect(leftOutSummary({ op: 'create_point', id: 'new:p', label: 'FIT-101' })).toBe("create point 'FIT-101'")
+    expect(leftOutSummary({ op: 'update_equipment', id: 'eq-1a2b3c' })).toBe("update equipment 'eq-1a2b3c'")
+    expect(leftOutSummary({ op: 'relate', subject: 'eq-1', relation: 'x' })).toBe("relate 'eq-1'")
+    expect(leftOutSummary({})).toBe('operation')
   })
 })

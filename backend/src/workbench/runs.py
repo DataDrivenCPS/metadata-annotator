@@ -97,10 +97,6 @@ class RunManager:
             self._health[key] = (time.monotonic(), health)
         return health
 
-    def ensure_reachable(self, cfg) -> None:
-        """Fail fast instead of starting a run that cannot reach its model."""
-        self.choose(cfg)
-
     def choose(self, cfg):
         """``cfg`` with the model that will actually answer, checking the endpoint is reachable.
 
@@ -357,10 +353,14 @@ class RunManager:
     def start_revision(self, project: Project, proposal: ChangeProposal, instruction: str,
                        provider: str | None = None, reconsider: bool = False,
                        parent_run_id: str | None = None,
-                       source_regions: list[SourceRegion] | None = None) -> AgentRun:
-        """Continue a pending proposal or reconsider it against the latest revision."""
+                       source_regions: list[SourceRegion] | None = None,
+                       retry_left_out: bool = False) -> AgentRun:
+        """Continue a pending proposal or reconsider it against the latest revision.
+        ``retry_left_out``: the reply asks for the operations the proposal left out again."""
         if proposal.status != "pending" and not (reconsider and proposal.status == "stale"):
             raise ValueError(f"proposal is {proposal.status}")
+        if retry_left_out and (reconsider or not proposal.left_out):
+            raise ValueError("the proposal left out no operations to try again")
         history = self.history(project, parent_run_id or proposal.agent_run_id) if not reconsider else []
         base = project.head()
         if not reconsider and proposal.base_revision != base:
@@ -391,7 +391,7 @@ class RunManager:
                              project, self.tracked_client(cfg, project, run), self.guidance, base,
                              selection, instruction, run.id, progress, token,
                              prior_proposal=proposal, reconsider=reconsider, history=history,
-                             agent=self.settings.agent))
+                             agent=self.settings.agent, retry_left_out=retry_left_out))
         return run
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:

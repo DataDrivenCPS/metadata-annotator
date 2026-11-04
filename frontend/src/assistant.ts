@@ -333,3 +333,9 @@ export function summarizeChanges(changes: EntityChange[], fieldLabel: (field: st
              outside: !c.in_selection, overridesEdit: c.overrides_locked.length > 0 }
   })
 }
+
+/** "create_point 'FIT-101'": what a left-out operation would have done, by the name it gives. */
+export function leftOutSummary(op: Record<string, unknown>): string {
+  const name = ['label', 'id', 'subject'].map((k) => op[k]).find((v) => typeof v === 'string' && v)
+  return `${String(op.op ?? 'operation').replace(/_/g, ' ')}${name ? ` '${name}'` : ''}`
+}

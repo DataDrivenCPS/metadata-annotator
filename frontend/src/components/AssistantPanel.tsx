@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import { autofixCandidates, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
-  issuesOnSelection, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
+  issuesOnSelection, leftOutSummary, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
 import { AutofixBanner } from './AutofixReport'
 import { ActionButton, ChoiceButtons } from './Choices'
 import { summarize } from '../selection'
@@ -494,6 +494,9 @@ function ProposalPreview({ proposal, running: runningProp }: {
   const lines = useMemo(() => summarizeChanges(proposal.changes, fieldLabel), [proposal])
   const outside = lines.filter((l) => l.outside).length
   const dismissals = proposal.issue_dismissals ?? []
+  const leftOut = proposal.left_out ?? []
+  const one = leftOut.length === 1
+  const replyToProposal = useStore((s) => s.replyToProposal)
   const fixes = [...new Set([...(v?.resolved ?? []), ...(proposal.gate?.fixed ?? [])])]
   const introduced = [...new Set([...(v?.introduced ?? []), ...(proposal.gate?.introduced ?? [])])]
   const show = (id: string, deleted: boolean, ctrl: boolean) => {
@@ -563,6 +566,15 @@ function ProposalPreview({ proposal, running: runningProp }: {
 
       {proposal.questions.length > 0 && <div className="proposal-notes">
         {proposal.questions.map((q, i) => <p key={`q${i}`} className="question">? {q}</p>)}
+      </div>}
+
+      {leftOut.length > 0 && <div className="proposal-left-out">
+        <p className="warn-text"><strong>{leftOut.length} operation{one ? '' : 's'} left out</strong>
+          {' '}— the assistant could not make {one ? 'it' : 'them'} valid, so {one ? 'it is' : 'they are'} not part of this proposal.</p>
+        <ul>{leftOut.map((e, i) => <li key={i}><code>{leftOutSummary(e.operation)}</code>: {e.problems.join('; ')}</li>)}</ul>
+        {proposal.status === 'pending' && <button className="link small" disabled={running || busy} title={waitTitle}
+          onClick={() => void replyToProposal('Try the left-out operations again.', proposal.agent_run_id ?? undefined, true)}>
+          Try {one ? 'it' : 'these'} again</button>}
       </div>}
 
       {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}

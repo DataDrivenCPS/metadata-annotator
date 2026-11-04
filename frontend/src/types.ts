@@ -110,6 +110,8 @@ export interface Proposal {
   diff: { added: string[]; removed: string[] }; evidence: EvidenceRef[]
   validation: { before: ValidationSummary; after: ValidationSummary; resolved: string[]; introduced: string[] } | null
   explanation: string; notes: string[]; drafting_notes?: string[]; questions: string[]
+  // operations the assistant could not make valid, as written, and why; not part of the proposal
+  left_out?: LeftOutOperation[]
   status: 'pending' | 'applied' | 'dismissed' | 'stale' | 'failed'
   agent_run_id: string | null; applied_revision: string | null
   kind: 'correction' | 'build'
@@ -267,3 +269,5 @@ export interface ViewColumn {
 }
 export interface ViewRow { id: string; kind: string; label: string; iri: string; cells: Record<string, ViewCellItem[]>; locked: string[] }
 export interface ViewData { id: string; label: string; builtin: string | null; columns: ViewColumn[]; rows: ViewRow[] }
+
+export interface LeftOutOperation { operation: Record<string, unknown>; problems: string[] }

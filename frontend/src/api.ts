@@ -82,8 +82,8 @@ export const api = {
   cancelRun: (pid: string, id: string) => req<AgentRun>('POST', `${P(pid)}/runs/${id}/cancel`),
   proposal: (pid: string, id: string) => req<Proposal>('GET', `${P(pid)}/proposals/${id}`),
   proposals: (pid: string) => req<Proposal[]>('GET', `${P(pid)}/proposals`),
-  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[]) =>
-    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions }),
+  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[], retry_left_out = false) =>
+    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions, retry_left_out }),
   applyProposal: (pid: string, id: string) => req<Revision>('POST', `${P(pid)}/proposals/${id}/apply`),
   dismissProposal: (pid: string, id: string) => req<Proposal>('POST', `${P(pid)}/proposals/${id}/dismiss`),
   regenerate: (pid: string, id: string, provider?: string) =>

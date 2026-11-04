@@ -290,9 +290,11 @@ Bounded workflow, identical for local and remote models:
    rewriting every operation to fix one brought in new mistakes. A repair that gets exactly
    the same problems again ends the repairs. When repairs end with some operations still failing, the valid
    ones become the proposal and the rest — those that failed, then any that needed them — are left
-   out, each named with its problems as a drafting note (`CorrectionOutcome.left_out`;
-   `ChangeProposal.drafting_notes`, kept when a proposal is rebased); automatic fixes never apply
-   such a proposal. Only when nothing valid is left does the run fail.
+   out (`ChangeProposal.left_out`: each operation as written, its references to entities the
+   proposal creates turned into their ids, and its problems). The panel shows them in their own
+   section with "Try these again", a reply with `retry_left_out` that shows the model those
+   operations and adds its corrections to the proposal (what still fails replaces the list);
+   automatic fixes never apply such a proposal. Only when nothing valid is left does the run fail.
 4. **Proposal**: stored with before/after per entity (every entity whose projection changes,
    flagged when outside the selection), the triple diff, the validation delta (issues resolved
    and introduced), evidence (model rows, observations, skill sections, vocabulary terms) and
@@ -306,6 +308,16 @@ returns corrections of those only (above). Refreshing a stale proposal instead i
 head and treats old operations as historical context. Draft references are checked during
 resolution; duplicate `new:*` definitions are rejected. Cancellation is checked before
 saving a proposal or publishing an automatic change.
+
+The reply grammar takes only ids the run can see in id fields: per kind, the ids of the model's
+(or the pending proposal's preview's) entities, or a `new:*` placeholder, as `$defs` rules
+(`id_defs`) that every reference field points to; every create operation requires its own
+placeholder, so later operations can refer to it. A label, an invented id (`eq-pump-1`) or an id
+of the wrong kind cannot be decoded. Past `ID_ENUM_LIMIT` entities of a kind, the rule checks the
+id's shape instead of listing ids; only the rules the offered operations use are included (each
+costs schema tokens on providers that show the schema). The rules never refer to each other:
+llama.cpp's grammar converter mishandles a `$ref` inside `$defs` and silently drops what it
+cannot convert. That a placeholder is actually created is still checked by `resolve`.
 
 Each run offers only the operations its task could use (`operation_scope`): small models fill
 optional fields with invented values, and the reply grammar cannot produce what is not

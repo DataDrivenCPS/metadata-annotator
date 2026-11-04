@@ -50,6 +50,15 @@ class LiteLLMClient:
             raise ValueError(f"provider {cfg.name!r} needs base_url")
         self.endpoint = EndpointInfo(cfg)
 
+    def _adopt(self, cfg: ProviderConfig) -> None:
+        """Run on ``cfg``'s model, with its settings; image support already known is kept unless
+        that model's settings say otherwise."""
+        self.cfg, self.model = cfg, cfg.model
+        if cfg.supports_images is not None:
+            self._images = cfg.supports_images
+        self.prompt_cache = cfg.prompt_cache if cfg.prompt_cache is not None else wants_cache_markers(cfg)
+        self.endpoint = EndpointInfo(cfg)
+
     @property
     def supports_images(self) -> bool:
         """As configured, else asked of the server once (runs pass the answer in their config)."""
@@ -85,10 +94,7 @@ class LiteLLMClient:
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int | None = None) -> LLMResult:
         if not self.model:  # a server that lists its own model; runs resolve it first, others ask here
-            told = self._images  # image support someone set on this client
-            self.__init__(self.endpoint.resolved())  # that model, with its own settings
-            if told is not None and self._images is None:
-                self._images = told
+            self._adopt(self.endpoint.resolved())
         retry_messages = list(messages)
         limit = max_tokens if max_tokens is not None else REPLY_TOKENS
         native_limit = self._native_output_limit()

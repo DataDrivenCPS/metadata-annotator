@@ -75,21 +75,30 @@ class Describer:
                            "accept images (supports_images = false; or set retrieval.describe_provider).")
 
     def _check(self) -> None:
-        """Ask the provider which model it runs and whether it reads images. A server that could
-        not be reached is asked again after a minute; an answer is kept."""
-        if self._fixed or self._vision is not None and (self._vision or time.monotonic() - self._asked < 60):
+        """Ask the provider which model it runs and whether it reads images. A yes is kept; a no,
+        or a server that could not be reached, is asked again after a minute."""
+        def settled() -> bool:
+            return bool(self._fixed or self._vision or (self._asked and time.monotonic() - self._asked < 60))
+
+        if settled():
             return
         with self._lock:
+            if settled():  # another thread just asked
+                return
             from ..llm.endpoint import EndpointInfo, ModelListError, resolved_model
 
             info = EndpointInfo(self.provider)
-            self._vision = info.supports_images()
             self._asked = time.monotonic()
-            if self._vision and self.provider.kind == "openai" and not self.provider.model:
+            if self.provider.kind == "openai" and not self.provider.model:
                 try:  # record descriptions under the model that made them
-                    self.provider = resolved_model(self.provider, info.models())
+                    entries = info.model_entries()
                 except ModelListError:
                     self._vision = None
+                    return
+                self.provider = resolved_model(self.provider, [e["id"] for e in entries])
+                self._vision = info.images_for(self.provider, entries)
+            else:
+                self._vision = info.supports_images()
 
     @property
     def reason(self) -> str | None:

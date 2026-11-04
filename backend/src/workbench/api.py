@@ -80,6 +80,7 @@ class ProposalReplyRequest(BaseModel):
     provider: str | None = None
     parent_run_id: str | None = None
     source_regions: list[SourceRegion] | None = None
+    retry_left_out: bool = False  # try again the operations the proposal left out
 
 
 class LayoutRequest(BaseModel):
@@ -681,7 +682,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             prop = p.proposal(prop_id)
             run = runs.start_revision(p, prop, instruction, body.provider, parent_run_id=body.parent_run_id,
-                                      source_regions=body.source_regions)
+                                      source_regions=body.source_regions, retry_left_out=body.retry_left_out)
         except KeyError:
             raise HTTPException(404, f"No proposal {prop_id}") from None
         except ValueError as exc:

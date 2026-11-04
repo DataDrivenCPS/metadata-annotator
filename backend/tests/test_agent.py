@@ -911,18 +911,38 @@ def test_operations_the_model_cannot_fix_are_left_out_and_noted(sample_project, 
     out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "rename it")
     assert len(llm.seen) == 2  # no third attempt at the same answer
     assert out.left_out == [
-        "Left out create_equipment 'Mystery': type 'https://watermetadata.org/ontology/watr#NoSuchThing' is "
-        "not a term in the loaded vocabulary",
-        "Left out create_point 'P-9': equipment refers to 'new:x', but no operation creates 'new:x'; give the "
-        "create_equipment for it \"id\": \"new:x\", before this operation, or leave equipment out",
+        {"operation": operations[1], "problems": [
+            "type 'https://watermetadata.org/ontology/watr#NoSuchThing' is not a term in the loaded vocabulary"]},
+        {"operation": operations[2], "problems": [
+            "equipment refers to 'new:x', but no operation creates 'new:x'; give the create_equipment for it "
+            "\"id\": \"new:x\", before this operation, or leave equipment out"]},
     ]
     prop = out.proposal
     assert prop is not None and [c.label for c in prop.changes] == ["CT-201 conductivity"]
-    assert prop.drafting_notes == out.left_out and set(out.left_out) <= set(prop.notes)
+    assert prop.left_out == out.left_out and not prop.notes
     assert any(stage == "salvaged" for stage, _, _ in events)
 
     from workbench.autofix import verify
     assert "the assistant left out 2 operation(s) it could not make valid" in verify(p, prop, [])
+
+    # Trying them again: the model sees them, and its corrections are added to the proposal.
+    fixed = {"action": "propose", "explanation": "Added the tank.", "operations": [
+        {**operations[1], "type": "watr:Tank"}, operations[2]]}
+    retry = ScriptedLLM([fixed, fixed])  # the second answers the soundness gate (the tank is unconnected)
+    again = run_correction(p, retry, guidance, p.head(), prop.selection, "Try the left-out operations again", None,
+                           lambda *_: None, CancelToken(), prior_proposal=prop, retry_left_out=True)
+    shown = retry.seen[0][0]["content"]
+    assert "LEFT OUT OF THE PENDING PROPOSAL" in shown and "NoSuchThing" in shown
+    assert again.proposal is not None and again.proposal.left_out == []
+    assert {c.label for c in again.proposal.changes} >= {"CT-201 conductivity", "Mystery", "P-9"}
+
+
+def test_a_left_out_operation_refers_to_what_the_proposal_creates_by_its_id():
+    from workbench.agent.correction import left_out_entry
+    entry = left_out_entry({"op": "create_point", "id": "new:p", "label": "P", "equipment": "new:x"},
+                           ["unit 'FT' is not a term"], {"eq-abc123": ("new:x", 1)})
+    assert entry == {"operation": {"op": "create_point", "id": "new:p", "label": "P", "equipment": "eq-abc123"},
+                     "problems": ["unit 'FT' is not a term"]}
 
 
 def test_corrections_replace_the_failed_operations_they_name():
@@ -936,3 +956,42 @@ def test_corrections_replace_the_failed_operations_they_name():
     new = {"op": "create_point", "label": "E"}
     assert splice(current, [2], [fixed, new]) == [current[0], current[1], fixed, current[3], new]
     assert splice(current, [0, 1, 2], [fixed]) == [current[0], current[1], fixed, current[3]]
+
+
+def test_the_reply_grammar_takes_only_real_ids_or_new_placeholders(sample_project):
+    """Constrained decoding cannot write a label, an invented id or a wrong-kind id where an id
+    belongs, and every create names its new entity so later operations can refer to it."""
+    jsonschema = pytest.importorskip("jsonschema")
+    import json
+    from workbench.agent.correction import ID_ENUM_LIMIT, id_defs, step_schema
+    p = sample_project
+    view = p.view(p.head())
+    pump, point = view.equipment[0], view.points[0]
+    schema = step_schema(p.vocab, rows=view.rows())
+
+    def ok(*operations):
+        try:
+            jsonschema.validate({"thought": "", "action": "propose", "operations": list(operations)}, schema)
+            return True
+        except jsonschema.ValidationError:
+            return False
+
+    assert ok({"op": "create_equipment", "id": "new:f1", "label": "Filter", "type": "watr:Tank"},
+              {"op": "create_point", "id": "new:p1", "label": "LT-1", "equipment": "new:f1"},
+              {"op": "update_point", "id": point.id, "equipment": pump.id},
+              {"op": "update_point", "id": point.id, "equipment": None})  # clearing stays possible
+    assert not ok({"op": "update_point", "id": point.id, "equipment": pump.label})  # a label
+    assert not ok({"op": "update_point", "id": point.id, "equipment": "eq-pump-1"})  # invented
+    assert not ok({"op": "update_point", "id": point.id, "equipment": point.id})  # a point, not equipment
+    assert not ok({"op": "update_equipment", "id": point.id, "label": "x"})
+    assert not ok({"op": "create_equipment", "label": "Filter", "type": "watr:Tank"})  # no id of its own
+    assert not ok({"op": "create_equipment", "id": pump.id, "label": "Filter", "type": "watr:Tank"})
+    # The choices offer the same operations.
+    assert schema["properties"]["choices"]["items"]["properties"]["options"]["items"]["properties"][
+        "operations"]["items"] == schema["properties"]["operations"]["items"]
+    # No $ref inside a $defs entry: llama.cpp's converter mishandles them.
+    assert "$ref" not in json.dumps(schema["$defs"])
+    # A large model is checked by id shape instead of listing every id.
+    many = {f"eq-{i:06x}": type("Row", (), {"kind": "equipment"})() for i in range(ID_ENUM_LIMIT + 1)}
+    assert id_defs(many)["equipment_id"]["anyOf"][0] == {"type": "string", "pattern": "^eq-[0-9a-z]+$"}
+    assert step_schema(p.vocab).get("$defs") is None  # without the run's entities, ids stay free

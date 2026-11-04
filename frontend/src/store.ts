@@ -86,7 +86,7 @@ interface State {
   redo: () => Promise<void>
   sendMessage: (text: string) => Promise<boolean>
   assist: (instruction: string, parentRunId?: string) => Promise<boolean>
-  replyToProposal: (instruction: string, parentRunId?: string) => Promise<boolean>
+  replyToProposal: (instruction: string, parentRunId?: string, retryLeftOut?: boolean) => Promise<boolean>
   startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>) => Promise<boolean>
   cancelRun: () => Promise<void>
   applyProposal: () => Promise<void>
@@ -463,14 +463,15 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  replyToProposal: async (instruction, parentRunId) => {
+  replyToProposal: async (instruction, parentRunId, retryLeftOut = false) => {
     if (readOnly()) return false
     const { projectId, proposal, provider, selection } = get()
     if (!projectId || !proposal || proposal.status !== 'pending') return false
     const project = projectGeneration
     const request = ++assistantGeneration
     try {
-      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId, selection.source_regions)
+      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId,
+        selection.source_regions, retryLeftOut)
       return acceptStartedRun(run, projectId, project, request)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false

@@ -437,13 +437,14 @@ class Project:
         return run, issues, summarize(issues, run)
 
     def build_candidate(self, base: str, operations: list, selection: SelectionScope | None = None,
-                        lock: bool = True) -> Candidate:
-        """Resolve + apply operations on a copy of ``base`` and validate the result.
+                        lock: bool = True, first: int = 0) -> Candidate:
+        """Resolve + apply operations on a copy of ``base`` and validate the result. ``first``:
+        how many of the operations are a pending proposal's saved ones (see ``resolve``).
 
         Raises OperationError for malformed operations. Does not publish anything.
         """
         before = self.graph(base)
-        resolved = ops_mod.resolve(before, self.vocab, operations)
+        resolved = ops_mod.resolve(before, self.vocab, operations, first)
         after = before.copy()
         try:
             result = ops_mod.apply(after, self.vocab, resolved, lock=lock)
@@ -554,9 +555,10 @@ class Project:
                       gate: dict | None = None,
                       persist: bool = True,
                       drafting_notes: list[str] | None = None,
+                      left_out: list[dict] | None = None,
                       ) -> ChangeProposal:
-        # How the proposal was drafted (terms read by name, operations left out): still true after
-        # a rebase, unlike the notes applying it produces, which are recomputed then.
+        # How the proposal was drafted (terms read by name): still true after a rebase, unlike the
+        # notes applying it produces, which are recomputed then.
         drafting = list(dict.fromkeys([*(drafting_notes or []), *getattr(cand.ops, "readings", [])]))
         before_expl = {i.explanation for i in before_issues if i.severity != "suggestion"}
         after_expl = {i.explanation for i in cand.issues if i.severity != "suggestion"}
@@ -580,6 +582,7 @@ class Project:
             explanation=explanation,
             notes=[*cand.result.notes, *drafting],
             drafting_notes=drafting,
+            left_out=left_out or [],
             questions=questions,
             agent_run_id=agent_run_id,
             kind=kind,  # type: ignore[arg-type]

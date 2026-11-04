@@ -598,13 +598,15 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, first: int = 0) -> R
                 hint = "; to link them through another relation, use relate"
         return f"{name(actual)}, not {name(expected)}{hint}"
 
-    created_labels: dict[str, list[str]] = {}  # label (ignoring case) -> ids created above with it
+    created_labels: dict[str, list[str]] = {}  # label (ignoring case) -> ids created or renamed above with it
+    renamed: dict[str, str] = {}  # id -> the label (ignoring case) an update above gave it
     ids_like = re.compile(f"^{id_pattern(*ID_PREFIX)}$")
 
     model_labels: dict[str, list[str]] | None = None  # label (ignoring case) -> ids, built on first use
 
     def labelled(text: str) -> list[tuple[str, str | None]]:
-        """(id, kind) of entities labelled ``text`` (ignoring case): in the model, or created above."""
+        """(id, kind) of entities labelled ``text`` (ignoring case) at this point: in the model, or
+        created or renamed above (a renamed entity no longer goes by its old label)."""
         nonlocal model_labels
         if model_labels is None:
             model_labels = {}
@@ -612,7 +614,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, first: int = 0) -> R
                 if eid := pg.id_of(node):  # type: ignore[arg-type]
                     model_labels.setdefault(str(label).strip().casefold(), []).append(eid)
         want = text.strip().casefold()
-        ids = [*created_labels.get(want, []), *(e for e in model_labels.get(want, []) if e not in deleted)]
+        ids = [e for e in [*created_labels.get(want, []), *model_labels.get(want, [])]
+               if e not in deleted and renamed.get(e, want) == want]
         return [(eid, kind_now(eid)) for eid in dict.fromkeys(ids)]
 
     def fits(kind: str | None, target: str) -> bool:
@@ -858,6 +861,9 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, first: int = 0) -> R
             report("label cannot be empty")
         if op.op.startswith("delete_"):
             deleted.add(eid)
+        elif op.op.startswith("update_") and str(data.get("label") or "").strip():
+            renamed[eid] = str(data["label"]).strip().casefold()
+            created_labels.setdefault(renamed[eid], []).append(eid)
         out.append(type(op).model_validate(data))
 
     if problems:

@@ -166,6 +166,25 @@ def test_what_a_name_names_exactly_is_read_and_the_rest_says_what_to_do(workspac
     assert caught.value.unknown_entities == [("eq-zzzzzz", "equipment")]
 
 
+def test_a_renamed_entity_goes_by_its_new_label_in_later_operations(workspace):
+    """An operation that renames something changes what later operations' labels name: the new
+    label names it, and the old one no longer does."""
+    p = workspace.create("Renames", "watr")
+    p.edit(p.head(), ops({"op": "create_equipment", "label": "Tank A", "type": "watr:Tank"}))
+    tank = p.view(p.head()).equipment[0].id
+    cand = p.build_candidate(p.head(), ops(
+        {"op": "update_equipment", "id": tank, "label": "Feed Tank"},
+        {"op": "create_point", "label": "LT-1", "equipment": "feed tank", "point_kind": "measurement"},
+    ))
+    assert next(pt for pt in project_view(cand.after, p.vocab).points if pt.label == "LT-1").equipment.id == tank
+    with pytest.raises(OperationError) as err:
+        p.build_candidate(p.head(), ops(
+            {"op": "update_equipment", "id": tank, "label": "Feed Tank"},
+            {"op": "create_point", "label": "LT-1", "equipment": "Tank A", "point_kind": "measurement"},
+        ))
+    assert err.value.failed == {1} and "'Tank A'" in err.value.problems[0]
+
+
 def test_checks_after_applying_also_name_new_entities_as_written(workspace, monkeypatch):
     from workbench import operations
 

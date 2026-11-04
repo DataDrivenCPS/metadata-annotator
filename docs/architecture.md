@@ -97,7 +97,8 @@ as `contained_in` points to `location`), instead of calling it unknown.
 
 What a name names exactly is what it means; models of every size slip on spelling, not
 meaning. A reference written as a label is read as the one entity of the expected kind with that
-label (ignoring case; in the model or created by the same list). A term written by its exact
+label (ignoring case; in the model, or created or renamed earlier in the same list — a renamed
+entity goes by its new label from then on, not its old one). A term written by its exact
 local name in any namespace (`Concentration`, `s223:Tank` when only `watr:Tank` exists), its
 label, or a unit's symbol (`mg/L`) is read as the one term of the expected kind it names
 (`Vocabulary.named`); each such reading is a drafting note on the proposal for the reviewer.

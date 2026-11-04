@@ -181,7 +181,7 @@ export function Workspace() {
           <nav className="tabs">
             <button className={`sources-toggle ${sourcesOpen ? 'open' : ''}`} onClick={toggleSources}
               aria-pressed={sourcesOpen} title={sourcesOpen ? 'Hide the sources tray' : 'Show the sources tray'}>
-              {sourcesOpen ? '◂' : '▸'} Sources
+              {sourcesOpen ? '◂' : '▸'} 📄 Sources
             </button>
             {tabs.map(([id, label]) => (
               <button key={id} className={shown === id ? 'active' : ''} onClick={() => setTab(id)}

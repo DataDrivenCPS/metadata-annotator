@@ -41,11 +41,12 @@ class EndpointInfo:
             return {}
         return value if isinstance(value, dict) else {}
 
-    def context_tokens(self) -> int | None:
+    def context_tokens(self, entries: list[dict[str, Any]] | None = None) -> int | None:
+        """``entries``: the server's /models list, when the caller has just fetched it."""
         return self.cfg.context_tokens or detected_window(
-            (f"{self.cfg.kind}:{self.base_url}", self.cfg.model), self._detect_context)
+            (f"{self.cfg.kind}:{self.base_url}", self.cfg.model), lambda: self._detect_context(entries))
 
-    def _detect_context(self) -> int | None:
+    def _detect_context(self, entries: list[dict[str, Any]] | None = None) -> int | None:
         if self.cfg.kind == "openai":
             root = self.base_url.removesuffix("/v1")
             for url in dict.fromkeys([f"{root}/props", f"{self.base_url}/props"]):
@@ -57,7 +58,8 @@ class EndpointInfo:
                 n = (m.get("recipe_options") or {}).get("ctx_size")
                 if m.get("model_name") == self.cfg.model and _positive(n):
                     return n
-            models = [m for m in self._get_json(f"{self.base_url}/models").get("data") or [] if isinstance(m, dict)]
+            models = entries if entries is not None else [
+                m for m in self._get_json(f"{self.base_url}/models").get("data") or [] if isinstance(m, dict)]
             entry = next((m for m in models if m.get("id") == self.cfg.model), models[0] if len(models) == 1 else None)
             n = launch_context(entry)  # a router's per-model --ctx-size: what the server will run with
             if n:
@@ -161,7 +163,7 @@ class EndpointInfo:
         info = resolved_model(self.cfg, models)  # with that model's own settings
         images = self.images_for(info, entries) if ok else bool(info.supports_images)
         return {"ok": ok, "detail": detail, "model": info.model, "models": models, "model_count": len(models),
-                "supports_images": images, "context_tokens": EndpointInfo(info).context_tokens() if ok else None}
+                "supports_images": images, "context_tokens": EndpointInfo(info).context_tokens(entries) if ok else None}
 
 
 def resolved_model(cfg: ProviderConfig, models: list[str]) -> ProviderConfig:

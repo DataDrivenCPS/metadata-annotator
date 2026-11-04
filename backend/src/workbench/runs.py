@@ -245,6 +245,21 @@ class RunManager:
 
     # ------------------------------------------------------------------ runs
 
+    def _launch(self, project: Project, cfg, work: Callable, supersedes: str | None = None,
+                **fields) -> AgentRun:
+        """Record a run on ``cfg``'s model and start it: ``work(llm, run_id, progress, token)``
+        does the task with a client that records its calls on the run."""
+        run = AgentRun(id=f"run-{secrets.token_hex(4)}", provider=cfg.name, model=cfg.model,
+                       model_settings=cfg.run_settings(), skill_version=self.guidance.version, **fields)
+        token = CancelToken()
+        with self._lock:
+            self.tokens[run.id] = token
+        self.supersede(project, supersedes)
+        self.save(project, run)
+        self.pool.submit(self._execute, project, run, token,
+                         lambda progress: work(self.tracked_client(cfg, project, run), run.id, progress, token))
+        return run
+
     def start_correction(self, project: Project, base: str, selection: SelectionScope,
                          instruction: str, provider: str | None = None,
                          parent_run_id: str | None = None, inherit_selection: bool = True,
@@ -254,23 +269,13 @@ class RunManager:
         history = self.history(project, parent_run_id)
         if inherit_selection:
             selection = self.continued_selection(project, parent_run_id, selection)
-        cfg = self.choose(self.settings.provider(provider))
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
-            selection=selection, instruction=instruction, parent_run_id=parent_run_id,
-            conversation=history, provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(),
-            skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.supersede(project, supersedes_proposal_id)
-        self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_with_evidence(
-                             project, self.tracked_client(cfg, project, run), self.guidance, base, selection,
-                             instruction, run.id, progress, token, history=history, agent=self.settings.agent))
-        return run
+        return self._launch(
+            project, self.choose(self.settings.provider(provider)),
+            lambda llm, rid, progress, token: run_with_evidence(
+                project, llm, self.guidance, base, selection, instruction, rid, progress, token,
+                history=history, agent=self.settings.agent),
+            supersedes_proposal_id, kind="correction", input_revision=base, selection=selection,
+            instruction=instruction, parent_run_id=parent_run_id, conversation=history)
 
     def start_autofix(self, project: Project, base: str, issue_ids: list[str],
                       provider: str | None = None) -> AgentRun:
@@ -279,20 +284,11 @@ class RunManager:
 
         if base != project.head():
             raise StaleRevision(base, project.head())
-        cfg = self.choose(self.settings.provider(provider))
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="autofix", input_revision=base,
-            instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(),
-            skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_autofix(project, self.tracked_client(cfg, project, run), self.guidance, issue_ids or None,
-                                                      run.id, progress, token, agent=self.settings.agent))
-        return run
+        return self._launch(
+            project, self.choose(self.settings.provider(provider)),
+            lambda llm, rid, progress, token: run_autofix(project, llm, self.guidance, issue_ids or None, rid,
+                                                          progress, token, agent=self.settings.agent),
+            kind="autofix", input_revision=base, instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)")
 
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
                     provider: str | None = None, source_pages: dict[str, list[int]] | None = None,
@@ -330,25 +326,15 @@ class RunManager:
         if documents and any(source.kind == "image" for source in sources) and not cfg.supports_images:
             raise SourceError(f"{cfg.model or cfg.name} does not read images; choose a vision-capable model "
                               "in the assistant panel.")
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="build", mode="build", input_revision=base, source_ids=source_ids,
-            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(), skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.supersede(project, supersedes_proposal_id)
-        self.save(project, run)
         if documents:
-            self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_source_build(
-                                 project, self.tracked_client(cfg, project, run), self.guidance, base,
-                                 selection.source_regions, instruction, run.id, progress, token, self.settings.agent))
+            def work(llm, rid, progress, token):
+                return run_source_build(project, llm, self.guidance, base, selection.source_regions, instruction,
+                                        rid, progress, token, self.settings.agent)
         else:
-            self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_build(project, self.tracked_client(cfg, project, run), self.guidance, base, source_ids,
-                                                        instruction, run.id, progress, token))
-        return run
+            def work(llm, rid, progress, token):
+                return run_build(project, llm, self.guidance, base, source_ids, instruction, rid, progress, token)
+        return self._launch(project, cfg, work, supersedes_proposal_id, kind="build", mode="build",
+                            input_revision=base, source_ids=source_ids, selection=selection, instruction=instruction)
 
     def start_revision(self, project: Project, proposal: ChangeProposal, instruction: str,
                        provider: str | None = None, reconsider: bool = False,
@@ -374,25 +360,15 @@ class RunManager:
                 "entity_ids": [i for i in selection.entity_ids if i in live],
                 "relationship_ids": [i for i in selection.relationship_ids if i in live],
             })
-        cfg = self.choose(self.settings.provider(provider))
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
-            mode="reconsider" if reconsider else "reply",
+        return self._launch(
+            project, self.choose(self.settings.provider(provider)),
+            lambda llm, rid, progress, token: run_with_evidence(
+                project, llm, self.guidance, base, selection, instruction, rid, progress, token,
+                prior_proposal=proposal, reconsider=reconsider, history=history,
+                agent=self.settings.agent, retry_left_out=retry_left_out),
+            kind="correction", input_revision=base, mode="reconsider" if reconsider else "reply",
             parent_run_id=None if reconsider else (parent_run_id or proposal.agent_run_id),
-            selection=selection, instruction=instruction, conversation=history,
-            provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(), skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_with_evidence(
-                             project, self.tracked_client(cfg, project, run), self.guidance, base,
-                             selection, instruction, run.id, progress, token,
-                             prior_proposal=proposal, reconsider=reconsider, history=history,
-                             agent=self.settings.agent, retry_left_out=retry_left_out))
-        return run
+            selection=selection, instruction=instruction, conversation=history)
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:
         with self._lock:

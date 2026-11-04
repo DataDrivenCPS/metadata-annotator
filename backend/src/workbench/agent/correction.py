@@ -280,13 +280,12 @@ class OperationScope:
         return out
 
 
-def operation_scope(project: Project, rid: str, texts: list[str], build_from_sources: bool,
+def operation_scope(view, texts: list[str], build_from_sources: bool,
                     prior: list | None = None) -> OperationScope:
     """What this run's task could use: spaces only when the model has some, or the request,
     conversation, issues, sources or a pending proposal mention or use them; the generic
     operations except in builds from sources (unless the pending proposal uses them)."""
     prior_ops = [op.model_dump(exclude_unset=True) for op in prior or []]
-    view = project.view(rid)
     spaces = (bool(view.spaces) or any(SPACE_WORDS.search(t or "") for t in texts)
               or any(ops_mod.kind_of_op_name(o["op"]) == "space" or SPACE_FIELDS & set(o) for o in prior_ops))
     generic = (not build_from_sources
@@ -950,11 +949,12 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     if prior_dismissals:
         context += "\n\nThe pending proposal would also dismiss these issues:\n" + "\n".join(
             f"  - [{d.id}] {d.explanation} (reason: {d.reason})" for d in prior_dismissals)
-    scope = operation_scope(project, rid, [instruction, context, *(i.explanation for i in open_issues.values())],
+    seen = tools._view()  # the revision, or the pending build's preview: what the run works on
+    scope = operation_scope(seen, [instruction, context, *(i.explanation for i in open_issues.values())],
                             build_from_sources, prior_proposal.operations if prior_proposal is not None else None)
     system += scope.note()
     schema = step_schema(project.vocab, token_updates=revising_build, evidence=bool(source_evidence) or search,
-                         search=search, view=view, scope=scope, rows=tools._view().rows())
+                         search=search, view=view, scope=scope, rows=seen.rows())
     window = context_window(llm)
     reply = reply_tokens(window)
     llm_options = {"max_tokens": reply} if reply < REPLY_TOKENS else {}  # else the adapter's own default

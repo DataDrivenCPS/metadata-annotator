@@ -19,6 +19,10 @@ const FIELD_LABELS: Record<string, string> = {
   subject: 'From', relation: 'Relation', object: 'To',
 }
 const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field.replace(/_/g, ' ')
+const settingsNote = (settings: Parameters<typeof settingsSummary>[0]) => {
+  const summary = settingsSummary(settings)
+  return summary ? ` (${summary})` : ''
+}
 
 /** A collapsible section whose body is only rendered while open (a closed one costs nothing to redraw). */
 function LazyDetails({ summary, className, summaryClassName, children }: {
@@ -356,7 +360,7 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
       {live && !steps.length && <li className="current"><span className="step-mark"><span className="spinner small" /></span>
         <span className="step-text">{run.status === 'queued' ? 'Waiting to start…' : 'Starting…'}</span></li>}
       {!live && <li className="run-meta muted">{run.provider} · <span title={JSON.stringify(run.model_settings ?? {}, null, 1)}>
-        {run.model}{settingsSummary(run.model_settings) ? ` (${settingsSummary(run.model_settings)})` : ''}</span> · skill {run.skill_version}
+        {run.model}{settingsNote(run.model_settings)}</span> · skill {run.skill_version}
         {run.outcome.input_tokens ? <span title={callBreakdown(run.outcome.calls)}>
           {` · ${run.outcome.estimated ? '~' : ''}${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens`}
           {run.outcome.cached_tokens ? ` (${run.outcome.cached_tokens} cached)` : ''}</span> : ''}</li>}

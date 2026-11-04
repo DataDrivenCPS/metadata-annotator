@@ -153,6 +153,43 @@ def test_attached_reference_supports_correction_and_links_evidence(workspace):
     assert row.label == 'Supply air handler' and row.evidence == [p.observations(source.id)[0].id]
 
 
+def test_proposal_citations_are_listed_per_change_before_applying(workspace):
+    p = workspace.create('Checking sources', 'brick')
+    rev, _ = p.edit(p.head(), OperationList.validate_python([
+        {'op': 'create_equipment', 'label': 'A1', 'type': 'brick:AHU'},
+        {'op': 'create_equipment', 'label': 'A2', 'type': 'brick:AHU'}]))
+    a1, a2 = sorted(p.view(rev.id).equipment, key=lambda e: e.label)
+    source = p.add_source('manual.txt', b'A1 is named Supply air handler. A2 feeds nothing.')
+    other = p.add_source('other.txt', b'This file was read and supports nothing here.')
+
+    def change(messages):
+        oid = p.observations(source.id)[0].id
+        return {'action': 'propose', 'operations': [
+            {'op': 'update_equipment', 'id': a1.id, 'label': 'Supply air handler', 'evidence': [oid]},
+            {'op': 'update_equipment', 'id': a2.id, 'label': 'Uncited name'},
+            {'op': 'relate', 'subject': a1.id, 'relation': 'brick:feeds', 'object': a2.id, 'evidence': [oid]}]}
+
+    outcome = run_with_evidence(p, ScriptedLLM([notes, notes, change]), guidance(), rev.id,
+                                SelectionScope(entity_ids=[a1.id, a2.id], source_regions=[
+                                    SourceRegion(source_id=source.id), SourceRegion(source_id=other.id)]),
+                                'Use the manual to fix names', None, lambda *_: None, CancelToken(), agent=AgentConfig())
+    assert p.head() == rev.id  # nothing applied: this is what a person checks first
+    citations = p.proposal_citations(outcome.proposal.id)
+    oid = p.observations(source.id)[0].id
+    assert citations['changes'] == {a1.id: [oid]}
+    assert citations['other'] == [oid]
+    assert citations['read'] == [p.observations(other.id)[0].id]
+    cited = citations['observations'][oid]
+    assert cited['content']['filename'] == 'manual.txt' and 'Supply air handler' in cited['content']['text']
+    assert cited['source_id'] == source.id
+    assert set(citations['observations']) == {oid, *citations['read']}
+
+
+def test_citations_leave_out_unknown_observations(workspace):
+    p = workspace.create('Unknown citation', 'brick')
+    assert p.cited_observations(['obs-gone']) == []
+
+
 def test_source_notes_reject_invented_citations(workspace):
     p = workspace.create('Citations', 'brick')
     source = p.add_source('manual.txt', b'A1 is an air handler.')

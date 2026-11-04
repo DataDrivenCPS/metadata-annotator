@@ -1,8 +1,9 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
-import { autofixCandidates, autofixProgress, autofixReport, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
-  issuesOnSelection, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type AutofixChoice, type AutofixGroup,
-  type AutofixStatus, type ProposalState } from '../assistant'
+import { autofixCandidates, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
+  issuesOnSelection, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
+import { AutofixBanner } from './AutofixReport'
+import { ActionButton, ChoiceButtons } from './Choices'
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import { attachmentSummary } from '../documents'
@@ -28,17 +29,6 @@ function LazyDetails({ summary, className, summaryClassName, children }: {
     <summary className={summaryClassName}>{summary}</summary>
     {open && children()}
   </details>
-}
-
-/** A button that shows a spinner while its action runs, so a slow click visibly registers. */
-function ActionButton({ onClick, disabled, children, ...rest }: {
-  onClick: () => Promise<unknown>; disabled?: boolean; children: ReactNode; className?: string; title?: string
-}) {
-  const [pending, setPending] = useState(false)
-  return <button {...rest} disabled={disabled || pending} aria-busy={pending} onClick={() => {
-    setPending(true)
-    void onClick().finally(() => setPending(false))
-  }}>{pending && <span className="spinner small" />}{children}</button>
 }
 
 const CONTINUE_LABEL = {
@@ -213,122 +203,6 @@ function Composer() {
       </div>
     </div>
   )
-}
-
-const STATUS_TEXT: Record<AutofixStatus, string> = {
-  fixed: 'fixed automatically', choice: 'need your choice', review: 'to review', input: 'need your input',
-  failed: 'failed', resolved: 'already fixed',
-}
-
-/** One question with its options as buttons; once one is applied, just the answer. Auto-fix options
- * were checked against the issues, so picking one applies it; a chat option opens for review first. */
-function ChoiceButtons({ choice, review = false }: { choice: AutofixChoice; review?: boolean }) {
-  const choose = useStore((s) => s.chooseOption)
-  const reviewProposal = useStore((s) => s.reviewProposal)
-  const states = useStore((s) => s.proposalStates)
-  const openId = useStore((s) => s.proposal?.id)
-  const busy = useStore((s) => s.busy)
-  const viewing = useStore((s) => s.viewing)
-  const chosen = choice.options.find((o) => states[o.proposal_id] === 'applied')
-  const closed = choice.options.every((o) => states[o.proposal_id] === 'dismissed')
-  return <div className="autofix-choice">
-    <div className="small">{choice.question}</div>
-    {chosen ? <div className="small">✓ {chosen.label}</div>
-      : closed ? <div className="muted small">No longer offered.</div>
-      : <div className="autofix-options">{choice.options.map((o) => {
-          const open = review && openId === o.proposal_id
-          return <ActionButton key={o.proposal_id} className={open ? 'chosen' : undefined}
-            disabled={busy || (!review && !!viewing) || states[o.proposal_id] === 'dismissed'}
-            title={review ? `Shows this option as a proposed change to review and apply${o.note ? `; it ${o.note}` : ''}`
-              : o.note ? `Applies this choice; ${o.note}` : 'Applies this choice'}
-            onClick={() => review ? reviewProposal(o.proposal_id) : choose(choice, o.proposal_id)}>
-            {open && '▸ '}{o.label}{o.note && <span className="muted"> · {o.note}</span>}
-          </ActionButton>
-        })}</div>}
-  </div>
-}
-
-/** One group of issues in the auto-fix report, with what the person can do about it. */
-function AutofixGroupLine({ group, onContinue }: { group: AutofixGroup; onContinue?: () => void }) {
-  const reviewProposal = useStore((s) => s.reviewProposal)
-  const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
-  const issues = useStore((s) => s.model?.issues ?? [])
-  const proposal = useStore((s) => s.proposal)
-  const open = issues.filter((i) => group.issues.includes(i.id) && i.resolution_state === 'open')
-  const title = group.explanations[0] ?? ''
-  return <li className={`autofix-group ${group.status}`}>
-    <div className="autofix-issue" title={group.explanations.join('\n')}>
-      {title}{group.explanations.length > 1 && <span className="muted"> (+{group.explanations.length - 1} like it)</span>}
-    </div>
-    {group.status === 'fixed' && group.explanation && <div className="muted small">{group.explanation}</div>}
-    {group.status !== 'fixed' && group.status !== 'choice' && !!group.reasons?.length &&
-      <div className="muted small">Why not automatic: {group.reasons.join('; ')}</div>}
-    {group.status === 'choice' ? group.choices?.map((c, k) => <ChoiceButtons key={k} choice={c} />)
-      : group.questions?.map((q) => <div key={q} className="small">❓ {q}</div>)}
-    <div className="autofix-actions">
-      {group.status === 'review' && group.proposal_id && (proposal?.id === group.proposal_id
-        ? <span className="muted small">shown below</span>
-        : <button className="link" onClick={() => void reviewProposal(group.proposal_id!).then(onContinue)}>Review the proposal</button>)}
-      {(group.status === 'input' || group.status === 'failed' || group.status === 'choice') && open.length > 0 &&
-        <button className="link" onClick={() => { addIssuesToPrompt(open); onContinue?.() }}>{group.status === 'choice' ? 'Something else… (chat)' : 'Discuss in chat'}</button>}
-    </div>
-  </li>
-}
-
-/** A running auto-fix (group k of n) or its report: fixed automatically, to review, needs input. */
-function AutofixBanner() {
-  const af = useStore((s) => s.autofix)
-  const run = useStore((s) => (s.autofix ? s.runs[s.autofix.runId] : undefined))
-  const head = useStore((s) => s.model?.head)
-  const stop = useStore((s) => s.stopAutofix)
-  const undoAll = useStore((s) => s.undoAutofix)
-  const trayRef = useRef<HTMLDetailsElement>(null)
-  if (!af) return null
-  const { groups, revisions } = autofixReport(run)
-  const counts = (Object.keys(STATUS_TEXT) as AutofixStatus[])
-    .map((st) => [st, groups.filter((g) => g.status === st).length] as const).filter(([, n]) => n > 0)
-  const tally = counts.map(([st, n]) => `${n} ${STATUS_TEXT[st]}`).join(' · ')
-  if (!run || isActive(run)) {
-    const { group, total, message } = autofixProgress(run)
-    return <div className="autofix-banner working">
-      <div className="autofix-head">
-        <strong>Auto-fix{total ? ` · group ${Math.max(group, 1)} of ${total}` : ''}</strong>
-        {tally && <span className="muted">{tally}</span>}
-        <span className="spacer" /><button onClick={() => void stop()}>Stop</button>
-      </div>
-      <div className="autofix-state"><span className="spinner small" /> {message}</div>
-    </div>
-  }
-  const byStatus = (st: AutofixStatus) => groups.filter((g) => g.status === st)
-  const pending = [...byStatus('choice'), ...byStatus('review'), ...byStatus('input'), ...byStatus('failed')]
-  const collapse = () => { if (trayRef.current) trayRef.current.open = false }
-  return <details key={af.runId} ref={trayRef}
-    className={`autofix-banner autofix-tray ${run.status === 'succeeded' ? 'done' : 'failed'}`}>
-    <summary className="autofix-tray-toggle">
-      <span className="autofix-tray-chevron" aria-hidden="true">▸</span>
-      <span className="autofix-tray-summary">
-        <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
-        <span className="muted">{tally || run.error || 'nothing to fix'}</span>
-      </span>
-      <span className="autofix-tray-hint">
-        <span className="autofix-expand">Expand results</span>
-        <span className="autofix-collapse">Collapse results</span>
-      </span>
-    </summary>
-    <div className="autofix-tray-body">
-      <div className="autofix-head autofix-toolbar">
-        {revisions.length > 0 && head && revisions.includes(head) &&
-          <button onClick={() => void undoAll()} title="Undo every automatic fix from this run">Undo automatic fixes</button>}
-        <span className="spacer" />
-        <button onClick={() => void stop()}>Close report</button>
-      </div>
-      {pending.length > 0 && <ul className="autofix-results">{pending.map((g, k) =>
-        <AutofixGroupLine key={k} group={g} onContinue={collapse} />)}</ul>}
-      {byStatus('fixed').length > 0 && <LazyDetails summary={`Fixed automatically (${byStatus('fixed').length})`}>
-        {() => <ul className="autofix-results">{byStatus('fixed').map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>}
-      </LazyDetails>}
-    </div>
-  </details>
 }
 
 /** The model endpoint the assistant uses, and whether it can be reached right now. */

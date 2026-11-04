@@ -35,7 +35,7 @@ max_repairs = 2
 # docling_idle_minutes = 10                # stop the managed parser when idle (frees ~2 GB RAM)
 # Drawings and scans (images, PDF pages with little text or with a drawing) get one written
 # description from a vision model when indexed, so search can find what they show. "auto" uses
-# describe_provider (default: [llm] default) when it accepts images (supports_images = true);
+# describe_provider (default: [llm] default) when its model accepts images;
 # each described page is one image request, made once per file version.
 # describe = "auto"                        # or "off"
 # describe_provider = "openrouter"         # e.g. a cheaper vision model than the chat default
@@ -63,8 +63,10 @@ default = "local"
 # Shared provider settings:
 # - kind = "openai" means an OpenAI-compatible Chat Completions endpoint, including
 #   llama.cpp and OpenRouter. kind = "anthropic" uses the native Messages API.
-# - supports_images must match the selected model/server. Enable for diagrams and
-#   scanned PDFs; text files and PDFs with extractable text work without vision.
+# - supports_images: leave it out to ask per model (llama-server reports whether a
+#   projector is loaded, its router and OpenRouter list each model's input modalities,
+#   LiteLLM's catalog knows native routes). Set it only to override. Vision is needed for
+#   diagrams and scanned PDFs; text files and PDFs with extractable text work without it.
 # - timeout_s limits each model request, not the whole agent run.
 # - concurrency limits simultaneous requests in parallel build batches. Agent step
 #   limits are separate: configure them in [agent] above.
@@ -86,15 +88,16 @@ default = "local"
 #   llama-server -m /path/to/model.gguf --alias local --port 8081 --jinja -c 32768 -np 1
 # model matches --alias local; change both together. Keep /v1 on base_url.
 # Match concurrency to -np and context_tokens to the context available per slot.
-# For vision, load a compatible multimodal model with its --mmproj projector.gguf
-# and set supports_images = true. If using --api-key, export that key and add
+# For vision, load a compatible multimodal model with its --mmproj projector.gguf;
+# the workbench sees the projector. If using --api-key, export that key and add
 # api_key_env = "LOCAL_API_KEY" here.
 # Server docs: https://github.com/ggml-org/llama.cpp/tree/master/tools/server
 [llm.providers.local]
 kind = "openai"
 base_url = "http://127.0.0.1:8081/v1"
-model = "local"
-supports_images = false
+# No model: the assistant panel lists whatever the server serves. A server started with
+# --models-dir (router mode) offers several; each appears as "local · <model>". Set model to
+# pin one instead.
 strict_schema = true
 timeout_s = 600
 concurrency = 1

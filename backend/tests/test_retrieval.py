@@ -650,6 +650,28 @@ def test_description_failures_and_limits_leave_the_text_indexed(sample_project, 
     assert "does not accept images" in settled(sample_project, [other.id])[other.id]["note"]
 
 
+def test_drawings_skipped_without_a_vision_model_are_described_once_one_is_available(sample_project, indexer):
+    indexer.describer = FakeDescriber(reason="the model provider 'local' does not accept images")
+    scan = sample_project.add_source("scan.pdf", text_pdf("D"))
+    image = sample_project.add_source("pid.png", png(1105, 482))
+    skipped = settled(sample_project, [scan.id, image.id])
+    assert skipped[scan.id]["drawings"] and "does not accept images" in skipped[scan.id]["note"]
+    assert skipped[image.id]["status"] == "unsupported"  # no Docling here: nothing could read it
+    indexer.maintain(sample_project)  # still no vision model: nothing to redo
+    assert settled(sample_project, [scan.id])[scan.id]["note"] == skipped[scan.id]["note"]
+
+    indexer.describer = FakeDescriber()  # e.g. the server now serves a vision model
+    indexer.maintain(sample_project)
+    time.sleep(0.2)  # let the queued jobs start
+    described = settled(sample_project, [scan.id, image.id])
+    assert described[scan.id]["description_model"] == "test:vision" and "note" not in described[scan.id]
+    assert described[image.id]["status"] == "ready" and described[image.id]["parser"] == "describe"
+    calls = len(indexer.describer.calls)
+    indexer.maintain(sample_project)  # described: not again
+    time.sleep(0.2)
+    assert len(indexer.describer.calls) == calls == 2
+
+
 class VisionLLM(ScriptedLLM):
     supports_images = True
     prompt_cache = False

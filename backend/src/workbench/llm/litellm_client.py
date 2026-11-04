@@ -44,11 +44,24 @@ class LiteLLMClient:
         self.cfg = cfg
         self.provider = cfg.name
         self.model = cfg.model
-        self.supports_images = cfg.supports_images or cfg.kind == "anthropic"
+        self._images = cfg.supports_images if cfg.supports_images is not None else (True if cfg.kind == "anthropic" else None)
         self.prompt_cache = cfg.prompt_cache if cfg.prompt_cache is not None else wants_cache_markers(cfg)
         if cfg.kind == "openai" and not cfg.base_url:
             raise ValueError(f"provider {cfg.name!r} needs base_url")
         self.endpoint = EndpointInfo(cfg)
+
+    @property
+    def supports_images(self) -> bool:
+        """As configured, else asked of the server once (runs pass the answer in their config)."""
+        if self._images is None:
+            self._images = self.endpoint.supports_images()
+            if self._images is None:  # unreachable now: no images, but ask again next time
+                return False
+        return self._images
+
+    @supports_images.setter
+    def supports_images(self, value: bool) -> None:
+        self._images = value
 
     def context_tokens(self) -> int | None:
         return self.endpoint.context_tokens()
@@ -71,6 +84,9 @@ class LiteLLMClient:
     def complete_json(self, system, messages, schema, *, images: list[ImageInput] | None = None,
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int | None = None) -> LLMResult:
+        if not self.model:  # a server that lists its own model; runs resolve it first, others ask here
+            self.cfg = self.endpoint.resolved()
+            self.model = self.cfg.model
         retry_messages = list(messages)
         limit = max_tokens if max_tokens is not None else REPLY_TOKENS
         native_limit = self._native_output_limit()

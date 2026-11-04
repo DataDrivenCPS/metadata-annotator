@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { useStore } from '../store'
+import { choiceReadsImages } from '../providers'
 import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
 import { SourceIndexStatus } from './SourceIndexStatus'
@@ -116,7 +117,8 @@ function SourceSetBuild({ sources, onClose }: { sources: Source[]; onClose: () =
     .map((s) => [s.id, (s.page_count ?? 1) > 1 ? `1-${s.page_count}` : '1'])))
   const [hint, setHint] = useState('')
   const [starting, setStarting] = useState(false)
-  const vision = providers?.find((p) => provider ? p.name === provider : p.default)?.supports_images ?? false
+  const modelVision = useStore((s) => s.modelVision)
+  const vision = choiceReadsImages(provider, providers ?? [], modelVision)
   const running = Object.values(runs).some((r) => r.status === 'queued' || r.status === 'running')
   const unmapped = sources.some((s) => s.kind === 'csv' && s.status !== 'configured')
   const needsVision = sources.some((s) => s.kind === 'image') && !vision
@@ -535,8 +537,8 @@ function DocumentBuild({ source }: { source: Source }) {
   const [hint, setHint] = useState('')
   const [pages, setPages] = useState(() => `1${(source.page_count ?? 1) > 1 ? `-${Math.min(MAX_BUILD_PAGES, source.page_count!)}` : ''}`)
   const [starting, setStarting] = useState(false)
-  const selectedProvider = providers?.find((p) => provider ? p.name === provider : p.default)
-  const vision = selectedProvider?.supports_images ?? false
+  const modelVision = useStore((s) => s.modelVision)
+  const vision = choiceReadsImages(provider, providers ?? [], modelVision)
   const running = Object.values(runs).some((r) => r.status === 'queued' || r.status === 'running')
   const canBuild = source.kind !== 'image' || vision
 

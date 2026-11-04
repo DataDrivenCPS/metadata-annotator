@@ -24,6 +24,7 @@ from .config import Settings, load_settings
 from .events import EventBus
 from . import views as views_mod
 from .llm import LLMError, make_client
+from .llm.endpoint import EndpointInfo
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
 from .projection import POINT_KIND_LABELS, entity_iri, entity_properties, sensors_of, typed_field
@@ -167,8 +168,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         providers = []
         for name, cfg in settings.providers.items():
             providers.append({"name": name, "kind": cfg.kind, "model": cfg.model, "base_url": cfg.base_url,
-                              "supports_images": cfg.supports_images or cfg.kind == "anthropic", "default": name == settings.default_provider,
-                              "has_key": bool(cfg.api_key) if cfg.api_key_env else None})
+                              "supports_images": cfg.supports_images if cfg.kind == "openai" else EndpointInfo(cfg).supports_images(),
+                              # null: the server says per model, in the health check
+                              "default": name == settings.default_provider,
+                              "has_key": bool(cfg.api_key) if cfg.api_key_env else None,
+                              # no model configured: the server's own list, from the health check
+                              "lists_models": cfg.kind == "openai" and not cfg.model})
         vocabularies = registry.status()
         default = next(v for v in vocabularies if v["name"] == settings.default_profile)
         return {"version": __version__, "vocabulary": default, "vocabularies": vocabularies,
@@ -176,7 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "skill_version": guidance.version, "providers": providers,
                 "data_dir": str(settings.data_dir)}
 
-    @app.get("/api/providers/{name}/health")
+    @app.get("/api/providers/{name:path}/health")
     def provider_health(name: str):
         try:
             cfg = settings.provider(name)
@@ -185,7 +190,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (KeyError, ValueError) as exc:
             raise HTTPException(404, str(exc)) from None
         # A fresh check that also refreshes what starting a run relies on.
-        return runs.provider_health(cfg, fresh=True)
+        health = dict(runs.provider_health(cfg, fresh=True))
+        if settings.providers[cfg.name].model:  # a configured model: the server's catalog is not offered
+            health.pop("models", None)
+        return health
 
     # --------------------------------------------------------- vocabulary
 

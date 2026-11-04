@@ -6,6 +6,7 @@ import { autofixCandidates, autofixProgress, autofixReport, callBreakdown, conti
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import { attachmentSummary } from '../documents'
+import { providerOf, providerOptions, shortModel, shownChoice } from '../providers'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
 
 const FIELD_LABELS: Record<string, string> = {
@@ -330,28 +331,47 @@ function AutofixBanner() {
   </details>
 }
 
-const shortModel = (m: string) => m.split(/[\\/]/).pop() ?? m
-
 /** The model endpoint the assistant uses, and whether it can be reached right now. */
 function ModelStatus() {
   const status = useStore((s) => s.status)
   const provider = useStore((s) => s.provider)
   const setProvider = useStore((s) => s.setProvider)
+  const listed = useStore((s) => s.providerModels)
+  const setProviderModels = useStore((s) => s.setProviderModels)
+  const setModelVision = useStore((s) => s.setModelVision)
   const [health, setHealth] = useState<ProviderHealth | null>(null)
   const [checkVersion, setCheckVersion] = useState(0)
+  const providers = useMemo(() => status?.providers ?? [], [status])
+  const current = provider ? providerOf(provider, providers) : undefined
 
   useEffect(() => {
     if (!provider) return
     let alive = true
-    const check = () => api.providerHealth(provider).then((h) => alive && setHealth(h))
-      .catch((e) => alive && setHealth({ ok: false, detail: `Could not check the model endpoint: ${(e as Error).message}` }))
+    const check = () => api.providerHealth(provider).then((h) => {
+      if (!alive) return
+      setHealth(h)
+      if (current?.lists_models && h.models) setProviderModels(current.name, h.models)
+      if (h.ok && h.supports_images !== undefined) setModelVision(provider, h.supports_images)
+    }).catch((e) => alive && setHealth({ ok: false, detail: `Could not check the model endpoint: ${(e as Error).message}` }))
     void check()
     const t = setInterval(check, 15000)
     return () => { alive = false; clearInterval(t) }
-  }, [provider, checkVersion])
+  }, [provider, checkVersion, current, setProviderModels, setModelVision])
 
+  // The other servers' lists, so their models can be chosen before switching to them.
+  useEffect(() => {
+    let alive = true
+    for (const p of providers) {
+      if (p.lists_models && p.name !== current?.name) {
+        void api.providerHealth(p.name).then((h) => { if (alive && h.models) setProviderModels(p.name, h.models) }).catch(() => {})
+      }
+    }
+    return () => { alive = false }
+  }, [providers, current, setProviderModels])
+
+  const options = providerOptions(providers, listed)
+  const shown = shownChoice(options, provider, providers, listed)
   const state = !health ? 'checking' : health.ok ? 'ok' : 'bad'
-  const current = status?.providers.find((p) => p.name === provider)
   return <>
     <div className="model-status">
       <span className={`status-pill ${state}`} title={health?.ok
@@ -359,15 +379,12 @@ function ModelStatus() {
         : health?.detail ?? 'Checking the model endpoint…'}>
         <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? 'Connected' : 'Unavailable'}
       </span>
-      <select value={provider ?? ''} title="Model endpoint" onChange={(e) => {
+      <select value={shown.value} title="Model" onChange={(e) => {
         setHealth(null)
         setProvider(e.target.value)
       }}>
-        {status?.providers.map((p) => (
-          <option key={p.name} value={p.name} disabled={p.has_key === false}>
-            {p.name} · {shortModel(p.model)}{p.has_key === false ? ' (no key)' : ''}
-          </option>
-        ))}
+        {options.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
+        {shown.missing && <option value={shown.missing.value}>{shown.missing.label}</option>}
       </select>
     </div>
     {state === 'bad' && <div className="model-status-detail">

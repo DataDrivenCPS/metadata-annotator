@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -21,10 +21,14 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 class ProviderConfig:
     name: str
     kind: Literal["openai", "anthropic", "litellm"]
-    model: str
+    # Empty for an OpenAI-compatible server (llama-server): use the model(s) it lists, chosen in
+    # the assistant panel as "<provider>/<model>".
+    model: str = ""
     base_url: str | None = None
     api_key_env: str | None = None
-    supports_images: bool = False
+    # Unset: asked per model (llama-server router and OpenRouter list input modalities, a
+    # single-model llama-server reports its projector, LiteLLM's catalog knows native routes).
+    supports_images: bool | None = None
     timeout_s: float = 300.0
     # Provider request fields for legacy kinds; LiteLLM SDK options for kind="litellm".
     request_options: dict = field(default_factory=dict)
@@ -188,10 +192,15 @@ class Settings:
         return self.data_dir / "projects"
 
     def provider(self, name: str | None = None) -> ProviderConfig:
+        """A configured provider, or ``"<provider>/<model>"``: that provider with another of its
+        server's models (model ids may contain slashes too)."""
         key = name or self.default_provider
-        if key not in self.providers:
-            raise KeyError(f"unknown model provider {key!r}; configured: {sorted(self.providers)}")
-        return self.providers[key]
+        if key in self.providers:
+            return self.providers[key]
+        base, _, model = key.partition("/")
+        if model and base in self.providers:
+            return replace(self.providers[base], model=model)
+        raise KeyError(f"unknown model provider {key!r}; configured: {sorted(self.providers)}")
 
 
 DEFAULT_PROVIDERS = {
@@ -200,8 +209,6 @@ DEFAULT_PROVIDERS = {
     "local": {
         "kind": "openai",
         "base_url": "http://127.0.0.1:8081/v1",
-        "model": "local",
-        "supports_images": False,
     },
 }
 
@@ -234,6 +241,11 @@ def load_settings(path: str | Path | None = None) -> Settings:
     providers = {
         name: ProviderConfig(name=name, **table) for name, table in provider_tables.items()
     }
+    for name, cfg in providers.items():
+        if "/" in name:
+            raise ValueError(f"model provider name {name!r} cannot contain '/' (it separates a provider from its model)")
+        if not cfg.model and cfg.kind != "openai":
+            raise ValueError(f"model provider {name!r} needs a model; only OpenAI-compatible servers list their own")
     dist = resolve(wb.get("frontend_dist"), BACKEND_DIR.parent / "frontend" / "dist")
     retrieval_table = dict(raw.get("retrieval", {}))
     if os.environ.get("WORKBENCH_OFFLINE", "").lower() in ("1", "true", "yes"):

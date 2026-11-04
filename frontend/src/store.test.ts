@@ -139,3 +139,23 @@ describe('provider choice', () => {
     expect(useStore.getState().provider).toBe('local')
   })
 })
+
+describe('server model lists', () => {
+  it('remembers a model of a provider that lists its own', async () => {
+    stored.clear()
+    useStore.setState({ provider: null, status: null })
+    vi.spyOn(api, 'status').mockResolvedValue({ version: '', skill_version: '', data_dir: '',
+      providers: [{ name: 'local', default: true, lists_models: true }] } as never)
+    stored.set('workbench.provider', 'local/qwen3-vl-8b')
+    await useStore.getState().loadStatus()
+    expect(useStore.getState().provider).toBe('local/qwen3-vl-8b')
+  })
+
+  it('only updates the list when it changed', () => {
+    useStore.setState({ providerModels: {} })
+    useStore.getState().setProviderModels('local', ['a', 'b'])
+    const first = useStore.getState().providerModels
+    useStore.getState().setProviderModels('local', ['a', 'b'])
+    expect(useStore.getState().providerModels).toBe(first)
+  })
+})

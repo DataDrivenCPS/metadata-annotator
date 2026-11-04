@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 from ..llm import CancelToken, ImageInput, LLMError
@@ -58,18 +59,51 @@ class Describer:
         self.settings = settings
         self._client = None
         self._lock = threading.Lock()
-        self.reason: str | None = None  # why descriptions are unavailable, for the status line
+        self._fixed: str | None = None  # a reason that does not change while running
+        self._vision: bool | None = None  # what the provider's server said, once asked
+        self._asked = 0.0
         if self.cfg.describe == "off":
-            self.reason = "Descriptions are off (retrieval.describe)."
+            self._fixed = "Descriptions are off (retrieval.describe)."
             return
         try:
             self.provider = settings.provider(self.cfg.describe_provider)
         except KeyError as exc:
-            self.reason = str(exc).strip("'\"")
+            self._fixed = str(exc).strip("'\"")
             return
-        if not (self.provider.supports_images or self.provider.kind == "anthropic"):
-            self.reason = (f"Drawings are not described: the model provider {self.provider.name!r} does not "
-                           "accept images (set supports_images, or retrieval.describe_provider).")
+        if self.provider.supports_images is False:
+            self._fixed = (f"Drawings are not described: the model provider {self.provider.name!r} does not "
+                           "accept images (supports_images = false; or set retrieval.describe_provider).")
+
+    def _check(self) -> None:
+        """Ask the provider which model it runs and whether it reads images. A server that could
+        not be reached is asked again after a minute; an answer is kept."""
+        if self._fixed or self._vision is not None and (self._vision or time.monotonic() - self._asked < 60):
+            return
+        with self._lock:
+            from ..llm.endpoint import EndpointInfo, ModelListError, resolved_model
+
+            info = EndpointInfo(self.provider)
+            self._vision = info.supports_images()
+            self._asked = time.monotonic()
+            if self._vision and self.provider.kind == "openai" and not self.provider.model:
+                try:  # record descriptions under the model that made them
+                    self.provider = resolved_model(self.provider, info.models())
+                except ModelListError:
+                    self._vision = None
+
+    @property
+    def reason(self) -> str | None:
+        """Why descriptions are unavailable, for the status line; None when they are available."""
+        self._check()
+        if self._fixed:
+            return self._fixed
+        if self._vision is None:
+            return (f"Drawings are not described yet: the model provider {self.provider.name!r} could not be "
+                    "reached to ask whether its model reads images.")
+        if not self._vision:
+            return (f"Drawings are not described: {self.provider.model or self.provider.name!r} does not "
+                    "accept images (choose a vision model, or set retrieval.describe_provider).")
+        return None
 
     @property
     def available(self) -> bool:

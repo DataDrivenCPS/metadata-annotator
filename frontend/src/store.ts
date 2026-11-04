@@ -5,6 +5,7 @@ import {
   siblingOptions, threadRuns, unchosenOptions, type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
+import { providerOf } from './providers'
 import {
   emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
 } from './types'
@@ -46,6 +47,10 @@ interface State {
   /** Conversation items cleared locally, retained on the server for project history. */
   assistantCleared: { runs: string[]; proposals: string[] }
   provider: string | null
+  /** Models each provider's server listed at its last health check (providers without a configured model). */
+  providerModels: Record<string, string[]>
+  /** Whether each checked model choice reads images, as its server said (providers that do not configure it). */
+  modelVision: Record<string, boolean>
   toast: Toast | null
   busy: boolean
   sourcesVersion: number
@@ -88,6 +93,8 @@ interface State {
   dismissProposal: () => Promise<void>
   regenerate: () => Promise<void>
   setProvider: (p: string) => void
+  setProviderModels: (name: string, models: string[]) => void
+  setModelVision: (choice: string, readsImages: boolean) => void
   handleEvent: (ev: { type: string; head?: string; summary?: string; run?: AgentRun }) => void
   notify: (t: Toast | null) => void
   startAutofix: (issues: ReviewIssue[]) => Promise<void>
@@ -188,6 +195,8 @@ export const useStore = create<State>((set, get) => ({
   assistantNoScope: false,
   assistantCleared: { runs: [], proposals: [] },
   provider: null,
+  providerModels: {},
+  modelVision: {},
   toast: null,
   busy: false,
   sourcesVersion: 0,
@@ -209,7 +218,7 @@ export const useStore = create<State>((set, get) => ({
     const def = status.providers.find((p) => p.default)
     // The choice made in the dropdown survives reloads while that provider is still configured.
     const saved = localStorage.getItem('workbench.provider')
-    const remembered = status.providers.some((p) => p.name === saved) ? saved : null
+    const remembered = saved && providerOf(saved, status.providers) ? saved : null
     set({ status, provider: get().provider ?? remembered ?? def?.name ?? null })
   },
 
@@ -576,6 +585,14 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  setModelVision: (choice, readsImages) => {
+    if (get().modelVision[choice] !== readsImages) set({ modelVision: { ...get().modelVision, [choice]: readsImages } })
+  },
+  setProviderModels: (name, models) => {
+    const known = get().providerModels[name]
+    if (known && known.length === models.length && known.every((m, i) => m === models[i])) return
+    set({ providerModels: { ...get().providerModels, [name]: models } })
+  },
   setProvider: (provider) => {
     if (provider) localStorage.setItem('workbench.provider', provider)
     else localStorage.removeItem('workbench.provider')

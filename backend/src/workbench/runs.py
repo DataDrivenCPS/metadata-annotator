@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import replace
 import threading
 import time
 import traceback
@@ -17,6 +18,7 @@ from .choices import chat_choices
 from .config import Settings
 from .events import EventBus
 from .llm import Cancelled, CancelToken, LLMError, make_client
+from .llm.endpoint import EndpointInfo, resolved_model
 from .llm.litellm_client import estimate_tokens
 from .project import Project, StaleRevision
 from .questions import readable_questions
@@ -85,25 +87,41 @@ class RunManager:
 
     def provider_health(self, cfg, fresh: bool = False) -> dict:
         """The endpoint's health; a recent good result is reused so starting a run is not a round trip."""
+        key = f"{cfg.name}/{cfg.model}"  # a server may offer several models; each is checked on its own
         with self._lock:
-            hit = self._health.get(cfg.name)
+            hit = self._health.get(key)
         if not fresh and hit and hit[1].get("ok") and time.monotonic() - hit[0] < HEALTH_TTL_S:
             return hit[1]
         health = make_client(cfg).health()  # type: ignore[attr-defined]
         with self._lock:
-            self._health[cfg.name] = (time.monotonic(), health)
+            self._health[key] = (time.monotonic(), health)
         return health
 
     def ensure_reachable(self, cfg) -> None:
         """Fail fast instead of starting a run that cannot reach its model."""
-        if cfg.kind == "openai":
-            health = self.provider_health(cfg)
-            if not health["ok"]:
-                raise ProviderUnavailable(health["detail"])
+        self.choose(cfg)
+
+    def choose(self, cfg):
+        """``cfg`` with the model that will actually answer, checking the endpoint is reachable.
+
+        A server that lists its own models (``model`` unset, or a single loaded model whatever
+        name is asked for) reports which one runs, so the run records what produced it.
+        """
+        if cfg.kind != "openai":
+            return replace(cfg, supports_images=EndpointInfo(cfg).supports_images())  # known without asking
+        health = self.provider_health(cfg)
+        if not health["ok"]:
+            raise ProviderUnavailable(health["detail"])
+        cfg = resolved_model(cfg, health.get("models") or [])
+        if cfg.supports_images is None:  # what the server says about the model that will answer
+            cfg = replace(cfg, supports_images=bool(health.get("supports_images")))
+        return cfg
 
     def _forget_health(self, provider: str) -> None:
+        """Drop the provider's cached checks, for every model of it."""
         with self._lock:
-            self._health.pop(provider, None)
+            for key in [k for k in self._health if k == provider or k.startswith(f"{provider}/")]:
+                self._health.pop(key)
 
     def supersede(self, project: Project, proposal_id: str | None) -> None:
         """A new request replaces the proposal the person had open: it is closed, not left pending."""
@@ -238,8 +256,7 @@ class RunManager:
         history = self.history(project, parent_run_id)
         if inherit_selection:
             selection = self.continued_selection(project, parent_run_id, selection)
-        cfg = self.settings.provider(provider)
-        self.ensure_reachable(cfg)
+        cfg = self.choose(self.settings.provider(provider))
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
             selection=selection, instruction=instruction, parent_run_id=parent_run_id,
@@ -264,8 +281,7 @@ class RunManager:
 
         if base != project.head():
             raise StaleRevision(base, project.head())
-        cfg = self.settings.provider(provider)
-        self.ensure_reachable(cfg)
+        cfg = self.choose(self.settings.provider(provider))
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="autofix", input_revision=base,
             instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model,
@@ -312,12 +328,10 @@ class RunManager:
         if selection:
             from .documents import validate_regions
             validate_regions(project, selection.source_regions, batched=True)
-        cfg = self.settings.provider(provider)
-        if documents and any(source.kind == "image" for source in sources) and not (
-            cfg.supports_images or cfg.kind == "anthropic"
-        ):
-            raise SourceError("Choose a vision-capable model in the assistant panel to read images.")
-        self.ensure_reachable(cfg)
+        cfg = self.choose(self.settings.provider(provider))
+        if documents and any(source.kind == "image" for source in sources) and not cfg.supports_images:
+            raise SourceError(f"{cfg.model or cfg.name} does not read images; choose a vision-capable model "
+                              "in the assistant panel.")
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="build", mode="build", input_revision=base, source_ids=source_ids,
             selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
@@ -358,8 +372,7 @@ class RunManager:
                 "entity_ids": [i for i in selection.entity_ids if i in live],
                 "relationship_ids": [i for i in selection.relationship_ids if i in live],
             })
-        cfg = self.settings.provider(provider)
-        self.ensure_reachable(cfg)
+        cfg = self.choose(self.settings.provider(provider))
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
             mode="reconsider" if reconsider else "reply",

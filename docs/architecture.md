@@ -474,7 +474,21 @@ No gateway process is required; the application uses its Python SDK directly. Co
 supports three kinds:
 
 - `openai` — any OpenAI-compatible `/v1/chat/completions` (llama-server by default,
-  `response_format: json_schema`, streamed).
+  `response_format: json_schema`, streamed). `model` may be left out: the server's `/models`
+  list is then what the assistant panel offers, one entry per model when it serves several
+  (llama-server's router mode), chosen as `"<provider>/<model>"` wherever a provider name is
+  accepted (`Settings.provider`). The health check returns the list; a run resolves which
+  model will answer before it starts (`RunManager.choose`: the chosen one, else the first
+  listed, and for a single-model server the one it serves whatever name was asked for) and
+  records it, so a run's `model` is always the model that produced it.
+  `supports_images` left unset is asked per model the same way (`EndpointInfo.supports_images`):
+  the router and OpenRouter list each model's `architecture.input_modalities`, a single-model
+  llama-server reports its projector in `/props`, and LiteLLM's catalog covers native routes;
+  a configured value overrides. The health check returns it for the chosen model, runs carry it
+  in their resolved config (image builds are refused for text-only models), the drawing
+  describer asks before describing (and again a minute later if the server was down), and the
+  Sources pane follows the chosen model. A router's context size per model comes from its
+  launch arguments (`--ctx-size` / `--parallel`), not the model's trained maximum.
 - `anthropic` — the native Anthropic API through LiteLLM, with schema translation and streaming.
   Existing `effort` settings remain effort-only, without implicitly enabling adaptive thinking.
   The former SDK-specific native refusal-fallback beta is no longer enabled; explicitly setting

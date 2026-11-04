@@ -163,7 +163,10 @@ export interface AgentRun {
 export interface Term { iri: string; label: string; kind?: string; symbol?: string; comment?: string }
 export interface Provider {
   name: string; kind: string; model: string; base_url: string | null
-  supports_images: boolean; default: boolean; has_key: boolean | null
+  /** null: the server says per model, in its health check (ProviderHealth.supports_images). */
+  supports_images: boolean | null; default: boolean; has_key: boolean | null
+  /** No model configured: the server's own list (from its health check) is offered instead. */
+  lists_models?: boolean
 }
 export interface VocabularyStatus {
   name: string; label: string; family: Family; description: string; sources: string[]
@@ -190,7 +193,7 @@ export interface EntityDetail {
   history: { revision_id: string; field: string; before: string; after: string; origin: string; created_at: string }[]
 }
 
-export interface ProviderHealth { ok: boolean; detail: string; model?: string; model_count?: number; context_tokens?: number | null }
+export interface ProviderHealth { ok: boolean; detail: string; model?: string; models?: string[]; model_count?: number; supports_images?: boolean; context_tokens?: number | null }
 
 export interface CsvImportConfig {
   layout: 'header_points' | 'row_points' | 'column_points'

@@ -318,6 +318,7 @@ class Indexer:
             self._cancel(project.id, sid)
             forget(project, sid)
         model = self.embedder.model_id if self.embedder else None
+        describe_now: bool | None = None  # asked once per pass, only if a source needs it
         for sid, source in sources.items():
             if not indexable(source):
                 continue
@@ -331,6 +332,19 @@ class Indexer:
                     self.enqueue(project, sid)
             elif state.get("status") in ("queued", "indexing") and not queued:
                 self.enqueue(project, sid)  # interrupted by a restart
+            elif not queued and (
+                    # drawings skipped because no vision model was available
+                    (state.get("status") == "ready" and state.get("note") and state.get("drawings")
+                     and not state.get("description_model"))
+                    # an image nothing could read (no Docling, no vision model)
+                    or (state.get("status") == "unsupported" and state.get("parser") == "none"
+                        and source.kind == "image")):
+                # Describe them once a vision model is available (e.g. supports_images was fixed or
+                # the server now serves one).
+                if describe_now is None:
+                    describe_now = self.cfg.describe != "off" and self.describer.available
+                if describe_now:
+                    self.enqueue(project, sid)
             elif state.get("status") == "ready" and model and state.get("embedding") != model and not queued:
                 self.enqueue(project, sid, embed_only=True)
 

@@ -254,11 +254,53 @@ def _clean_schema(schema: dict) -> dict:
     return s
 
 
-def operation_schema(vocab=None, evidence: bool = True) -> dict:
+SPACE_FIELDS = {"location", "part_of"}
+# Words that mean a request, conversation, issue or source is about where things are.
+SPACE_WORDS = re.compile(r"\b(rooms?|floors?|buildings?|spaces?|zones?|locations?|located|sites?|basements?|"
+                         r"storeys?|story|stories|halls?|wings?|premises|campus)\b", re.IGNORECASE)
+
+
+@dataclass
+class OperationScope:
+    """Which optional parts of the operation menu a run offers. Small models fill optional fields
+    with invented values (equipment placed in rooms nothing mentions), so a run only offers what
+    its task could use; the grammar then cannot produce the rest."""
+    spaces: bool = True  # create/update/delete_space, location, part_of
+    generic: bool = True  # create/update/delete_entity, add/remove_type, properties, relate/unrelate
+
+    def note(self) -> str:
+        """Why parts of the menu are missing, for the system prompt."""
+        out = ""
+        if not self.spaces:
+            out += ("\nThe model has no spaces (rooms, floors, buildings) and nothing here mentions any, so space "
+                    "operations and the location field are not available: do not place equipment anywhere.")
+        if not self.generic:
+            out += ("\nThis build adds equipment, points and connections; the generic operations (create_entity, "
+                    "add_type, relate, set_property...) are not available in it.")
+        return out
+
+
+def operation_scope(project: Project, rid: str, texts: list[str], build_from_sources: bool,
+                    prior: list | None = None) -> OperationScope:
+    """What this run's task could use: spaces only when the model has some, or the request,
+    conversation, issues, sources or a pending proposal mention or use them; the generic
+    operations except in builds from sources (unless the pending proposal uses them)."""
+    prior_ops = [op.model_dump(exclude_unset=True) for op in prior or []]
+    view = project.view(rid)
+    spaces = (bool(view.spaces) or any(SPACE_WORDS.search(t or "") for t in texts)
+              or any(ops_mod.kind_of_op_name(o["op"]) == "space" or SPACE_FIELDS & set(o) for o in prior_ops))
+    generic = (not build_from_sources
+               or any(ops_mod.kind_of_op_name(o["op"]) in ("entity", "relationship") for o in prior_ops))
+    return OperationScope(spaces=spaces, generic=generic)
+
+
+def operation_schema(vocab=None, evidence: bool = True, scope: OperationScope | None = None) -> dict:
     """Every operation type, or with ``vocab`` only those and the fields ``resolve`` accepts in
     its family (a smaller grammar, and fewer prompt tokens where a provider shows the schema).
-    ``evidence`` keeps the source-citation field, which only a run over sources uses."""
+    ``evidence`` keeps the source-citation field, which only a run over sources uses; ``scope``
+    leaves out what the run's task does not need."""
     allowed = ops_mod.allowed_fields(vocab) if vocab is not None else None
+    scope = scope or OperationScope()
     variants = []
     for model in get_args(get_args(ops_mod.Operation)[0]):  # every operation type
         sch = _clean_schema(model.model_json_schema())
@@ -268,8 +310,10 @@ def operation_schema(vocab=None, evidence: bool = True) -> dict:
             continue  # people lock and unlock; the assistant does not
         if allowed is not None and (kind not in allowed or (name in ops_mod.PROPERTY_OPS and "property" not in allowed[kind])):
             continue
+        if (not scope.spaces and kind == "space") or (not scope.generic and kind in ("entity", "relationship")):
+            continue
         keep = {"op", "id", *(allowed[kind] if allowed is not None else sch["properties"])} - (
-            set() if evidence else {"evidence"})
+            set() if evidence else {"evidence"}) - (set() if scope.spaces else SPACE_FIELDS)
         sch["properties"] = {k: v for k, v in sch["properties"].items() if k in keep}
         sch["properties"]["op"] = {"type": "string", "enum": [name]}
         sch["required"] = ["op", *[r for r in sch.get("required", []) if r != "op" and r in keep]]
@@ -303,10 +347,10 @@ def tool_args_schema(search: bool = False, view: bool = False) -> dict:
 
 
 def step_schema(vocab=None, token_updates: bool = True, evidence: bool = True, search: bool = False,
-                view: bool = False) -> dict:
+                view: bool = False, scope: OperationScope | None = None) -> dict:
     """The schema of one reply. With ``vocab`` the operations are those of its family;
-    ``token_updates`` only applies while revising a source build."""
-    ops = operation_schema(vocab, evidence)
+    ``token_updates`` only applies while revising a source build; ``scope`` narrows the menu."""
+    ops = operation_schema(vocab, evidence, scope)
     schema = {
         "type": "object",
         "additionalProperties": False,
@@ -712,8 +756,6 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                                           source_context(project, selection.source_regions, llm, cancel))
     revising_build = (prior_proposal is not None and prior_proposal.kind == "build" and not reconsider
                       and bool((prior_proposal.build_summary or {}).get('point_mappings')))
-    schema = step_schema(project.vocab, token_updates=revising_build, evidence=bool(source_evidence) or search,
-                         search=search, view=view)
     found_evidence: dict[str, EvidenceRef] = {}  # passages search_sources returned, citable from then on
     looked_up: set[str] = set()  # observations read with read_evidence
     context = ""  # what follows the model rows; the rows get the room this leaves
@@ -798,6 +840,11 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     if prior_dismissals:
         context += "\n\nThe pending proposal would also dismiss these issues:\n" + "\n".join(
             f"  - [{d.id}] {d.explanation} (reason: {d.reason})" for d in prior_dismissals)
+    scope = operation_scope(project, rid, [instruction, context, *(i.explanation for i in open_issues.values())],
+                            build_from_sources, prior_proposal.operations if prior_proposal is not None else None)
+    system += scope.note()
+    schema = step_schema(project.vocab, token_updates=revising_build, evidence=bool(source_evidence) or search,
+                         search=search, view=view, scope=scope)
     window = context_window(llm)
     reply = reply_tokens(window)
     llm_options = {"max_tokens": reply} if reply < REPLY_TOKENS else {}  # else the adapter's own default

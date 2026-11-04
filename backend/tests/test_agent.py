@@ -819,3 +819,47 @@ def test_each_tool_has_its_own_argument_shape():
     assert not ok({"kind": "medium"})  # a search needs its query
     plain = step_schema()
     assert all("source" not in shape["properties"] for shape in plain["properties"]["args"]["anyOf"])
+
+
+class SchemaRecordingLLM(ScriptedLLM):
+    def __init__(self, steps):
+        super().__init__(steps)
+        self.schemas: list[dict] = []
+
+    def complete_json(self, system, messages, schema, **kw):
+        self.schemas.append(schema)
+        return super().complete_json(system, messages, schema, **kw)
+
+
+def offered(schema) -> dict[str, set[str]]:
+    """Operation name -> fields, as one reply's schema offers them."""
+    variants = schema["properties"]["operations"]["items"]["anyOf"]
+    return {v["properties"]["op"]["enum"][0]: set(v["properties"]) for v in variants}
+
+
+@pytest.mark.parametrize("instruction,spaces", [
+    ("Add a cartridge filter after the feed pump", False),
+    ("Put the feed pump in the pump room", True),
+])
+def test_spaces_are_offered_only_when_the_model_or_the_request_has_any(sample_project, guidance, instruction, spaces):
+    """gemma-3-4b and qwen3-vl-8b placed every new piece of equipment in rooms nothing mentioned."""
+    llm = SchemaRecordingLLM([{"action": "propose", "explanation": "Nothing to change.", "operations": []}])
+    run(sample_project, llm, guidance, SelectionScope(), instruction)
+    menu = offered(llm.schemas[0])
+    assert ("create_space" in menu) is spaces and ("location" in menu["create_equipment"]) is spaces
+    assert "relate" in menu and "create_entity" in menu  # a correction keeps the generic operations
+    assert ("do not place equipment anywhere" in llm.systems[0]) is not spaces
+
+
+def test_a_model_with_spaces_keeps_them_and_builds_leave_out_the_generic_operations(sample_project):
+    from workbench.agent.correction import OperationScope, operation_scope
+    from workbench.operations import OperationList
+
+    p = sample_project
+    assert operation_scope(p, p.head(), ["Add a filter"], build_from_sources=True) == \
+        OperationScope(spaces=False, generic=False)
+    p.edit(p.head(), OperationList.validate_python([
+        {"op": "create_space", "label": "Pump room", "type": "s223:PhysicalSpace"}]))
+    assert operation_scope(p, p.head(), ["Add a filter"], build_from_sources=True).spaces
+    relate = OperationList.validate_python([{"op": "relate", "subject": "a", "relation": "b", "object": "c"}])
+    assert operation_scope(p, p.head(), [], build_from_sources=True, prior=relate).generic  # a pending proposal uses them

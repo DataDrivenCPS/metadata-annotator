@@ -287,6 +287,14 @@ head and treats old operations as historical context. Draft references are check
 resolution; duplicate `new:*` definitions are rejected. Cancellation is checked before
 saving a proposal or publishing an automatic change.
 
+Each run offers only the operations its task could use (`operation_scope`): small models fill
+optional fields with invented values, and the reply grammar cannot produce what is not
+offered. Spaces (`create/update/delete_space`, `location`, `part_of`) are offered when the model
+has spaces, or the request, conversation, open issues, source text or pending proposal mention
+or use them (`SPACE_WORDS`); builds from sources leave out the generic operations
+(`create_entity`, `add_type`, `set_property`, `relate`…) unless the pending proposal uses them.
+The system prompt says what is missing and why.
+
 `questions.readable_questions` normalizes structured questions and option labels into readable
 chat text, including older saved question dictionaries. Choice-only replies remain visible
 in chat and conversation history even when no ordinary operations were proposed.

@@ -54,6 +54,36 @@ Each tool call consumes one step, and the last step must propose. `max_repairs`
 cap is `max_steps + max_repairs`. These settings apply to chat, proposal revisions,
 document builds, and each autofix group. Restart the backend after changing them.
 
+To use Ollama:
+1. Set environment variables to match `workbench.toml` port and start the server. E.g.:
+
+```
+# Set the port to 8081 (default is 11434)
+export OLLAMA_HOST=127.0.0.1:8081
+
+# Increase the context length limit
+OLLAMA_CONTEXT_LENGTH=32768
+
+# Limit parallel processing to 1 request (translates from -np 1)
+export OLLAMA_NUM_PARALLEL=1
+
+# Start the Ollama backend
+ollama serve
+```
+2. Modify `workbench.toml` to use the desired model name in the `model` field under `[llm.providers.local]`. The default is `"local"`. Ensure to also change `supports_images` to the correct value depending on the model selected.
+3. Create a `Modelfile` and set the required context length limit on your desired model:
+
+```
+from <desired_model>
+
+# Set the context size to 32,768 tokens
+PARAMETER num_ctx 32768
+```
+4. Load the `Modelfile` into Ollama under the desired alias. E.g.: `ollama create local -f ./Modelfile`.
+
+> [!NOTE]
+> Ollama automatically labels the version `latest`, so the above command requires `model = "local:latest"` in `workbench.toml`
+
 **4. Start the app:**
 
 ```bash

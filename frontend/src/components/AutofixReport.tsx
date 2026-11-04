@@ -80,6 +80,9 @@ function AutofixReport({ run }: { run: AgentRun }) {
         <span className="autofix-expand">Show results</span>
         <span className="autofix-collapse">Hide results</span>
       </span>
+      <button className="bare autofix-close" aria-label="Close the auto-fix report"
+        title="Close this report; proposals it left stay available"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); void stop() }}>×</button>
     </summary>
     <div className="autofix-tray-body">
       <div className="autofix-head afx-toolbar">

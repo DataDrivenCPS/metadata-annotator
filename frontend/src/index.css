@@ -451,6 +451,8 @@ table.raw-grid td.excluded { color: #b0b7c0; text-decoration: line-through; }
 .autofix-collapse, .autofix-tray[open] > summary .autofix-expand { display: none; }
 .autofix-tray[open] > summary .autofix-collapse { display: inline; }
 .autofix-tray-toggle::-webkit-details-marker { display: none; }
+.autofix-close { flex-shrink: 0; padding: 0 6px; font-size: 18px; line-height: 1.2; color: var(--muted); border-radius: 4px; }
+.autofix-close:hover { color: var(--text); background: rgba(0, 0, 0, .07); }
 .autofix-tray-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
 .autofix-tray-chevron { color: var(--muted); transition: transform .15s; }
 .autofix-tray[open] > summary .autofix-tray-chevron { transform: rotate(90deg); }

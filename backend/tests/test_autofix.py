@@ -150,3 +150,25 @@ def test_cancellation_during_verification_prevents_automatic_publish(sample_proj
     with pytest.raises(Cancelled):
         run_autofix(p, llm, guidance(), [issue.id], "run-cancel", lambda *_: None, token)
     assert p.head() == base
+
+
+def test_an_unchanged_group_reuses_the_earlier_answer_while_it_waits_for_review(sample_project):
+    from workbench.schemas import now
+    p = sample_project
+    ct, issue = unit_issue(p)
+    fix = {"action": "propose", "explanation": "Fix the unit; it probably monitors brine.",
+           "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM", "medium": "watr:Water-Brine"}]}
+    first, _ = autofix(p, [fix], [issue.id])
+    assert first.groups[0]["status"] == "review"
+    p.store.put_body("agent_runs", "run-earlier", {"id": "run-earlier", "kind": "autofix", "status": "succeeded",
+                                                  "outcome": {"autofix": first.autofix}}, created_at=now(), status="succeeded")
+    llm = ScriptedLLM([])  # any model call would fail the group
+    again = run_autofix(p, llm, guidance(), [issue.id], "run-again", lambda *_: None, CancelToken())
+    (group,) = again.groups
+    assert llm.seen == [] and again.steps == 0
+    assert group["status"] == "review" and group["reused_from"] == "run-earlier"
+    assert group["proposal_id"] == first.groups[0]["proposal_id"]
+
+    p.dismiss_proposal(group["proposal_id"])  # the person turned it down: ask afresh
+    fresh, _ = autofix(p, [fix], [issue.id])
+    assert "reused_from" not in fresh.groups[0] and fresh.steps == 1

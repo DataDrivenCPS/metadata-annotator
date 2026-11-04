@@ -15,7 +15,7 @@ export function TokenStatus({ projectId }: { projectId: string }) {
     return () => { current = false }
   }, [projectId])
   const totals = tokenTotals(recorded ?? {}, runs)
-  return <span className="token-status" title="Provider-reported tokens for this project, including chat, source builds, and auto-fix. Updates after each model call; clearing chat keeps these totals. Providers that omit usage cannot be counted.">
+  return <span className="token-status" title="Provider-reported tokens for this project, including chat, source builds, auto-fix, and drawing descriptions made while indexing. Updates after each model call; clearing chat keeps these totals. Usage is estimated for providers that omit it; cancelled replies are not counted.">
     <span className="muted">Tokens</span>
     {error ? <span className="muted">unavailable</span> : !recorded ? <span className="muted">loading…</span> : <>
       <span>Sent <strong>{totals.input_tokens.toLocaleString()}</strong></span>

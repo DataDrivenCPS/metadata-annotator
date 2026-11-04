@@ -14,3 +14,10 @@ export function parsePageSelection(value: string, pageCount: number, maxPages = 
   if (pages.size > maxPages) throw new Error(`Choose at most ${maxPages} pages.`)
   return [...pages].sort((a, b) => a - b)
 }
+
+/** Attached sources for the composer, e.g. "2 sources, 12 pages" (pages only when chosen). */
+export function attachmentSummary(regions: { source_id: string; pages?: number[] | null }[]): string {
+  const sources = new Set(regions.map((r) => r.source_id)).size
+  const pages = regions.reduce((n, r) => n + (r.pages?.length ?? 0), 0)
+  return `${sources} source${sources === 1 ? '' : 's'}${pages ? `, ${pages} page${pages === 1 ? '' : 's'}` : ''}`
+}

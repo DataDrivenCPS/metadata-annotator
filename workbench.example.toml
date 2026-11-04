@@ -22,7 +22,45 @@
 # Model replies per request (each tool call consumes one); last reply must propose.
 max_steps = 8
 # Extra replies for repairs/validation feedback; hard cap is max_steps + max_repairs.
+# A repair shows the model only the operations that failed; repairs also end early when one
+# comes back with the same problems. Then the valid operations are proposed and the rest are
+# listed on the proposal as left out, with a "Try these again" button.
 max_repairs = 2
+
+[retrieval]
+# Uploaded PDFs, images and documents are indexed in the background for search, and the
+# assistant gets the passages a request needs instead of whole files.
+# enabled = true                           # false: no indexing; sources are read whole, as before
+# parser = "docling" (default): layout, tables, OCR of scans and drawings. The workbench installs
+#   docling-serve into <data_dir>/retrieval on first use (about 2 GB plus ~500 MB of models,
+#   CPU-only unless a GPU is present) and runs it on demand. "basic": embedded text only.
+# parser = "docling"
+# docling_url = "http://127.0.0.1:5001"    # use an existing docling-serve instead
+# docling_api_key_env = "DOCLING_API_KEY"  # its DOCLING_SERVE_API_KEY, if it has one
+# docling_idle_minutes = 10                # stop the managed parser when idle (frees ~2 GB RAM)
+# docling_version = "1.38.2"               # the docling-serve release the workbench installs
+# pages_per_batch = 10                     # PDF pages per parser request; progress is kept per batch
+# Drawings and scans (images, PDF pages with little text or with a drawing) get one written
+# description from a vision model when indexed, so search can find what they show. "auto" uses
+# describe_provider (default: [llm] default) when its model accepts images;
+# each described page is one image request, made once per file version.
+# describe = "auto"                        # or "off"
+# describe_provider = "openrouter"         # e.g. a cheaper vision model than the chat default
+# describe_max_pages = 30                  # per file
+# describe_min_text = 200                  # a PDF page with less embedded text is treated as a scan
+#
+# [retrieval.embedding]
+# kind = "fastembed"                  # in-process CPU model (default; ~70 MB download)
+# model = "BAAI/bge-small-en-v1.5"
+# batch_size = 32                     # passages per embedding request
+# timeout_s = 120                     # per embedding request
+# Or any OpenAI-compatible /embeddings endpoint, e.g. a second llama-server:
+#   llama-server -m embeddinggemma-300m.gguf --embeddings --port 8082
+# kind = "openai"
+# base_url = "http://127.0.0.1:8082/v1"
+# model = "embeddinggemma"
+# api_key_env = "EMBEDDING_API_KEY"
+# kind = "none"                       # keyword search only
 
 # Select a provider by table name: local, anthropic, openai, or openrouter.
 # WORKBENCH_PROVIDER overrides this default; the UI also offers a per-request choice.
@@ -34,8 +72,10 @@ default = "local"
 # Shared provider settings:
 # - kind = "openai" means an OpenAI-compatible Chat Completions endpoint, including
 #   llama.cpp and OpenRouter. kind = "anthropic" uses the native Messages API.
-# - supports_images must match the selected model/server. Enable for diagrams and
-#   scanned PDFs; text files and PDFs with extractable text work without vision.
+# - supports_images: leave it out to ask per model (llama-server reports whether a
+#   projector is loaded, its router and OpenRouter list each model's input modalities,
+#   LiteLLM's catalog knows native routes). Set it only to override. Vision is needed for
+#   diagrams and scanned PDFs; text files and PDFs with extractable text work without it.
 # - timeout_s limits each model request, not the whole agent run.
 # - concurrency limits simultaneous requests in parallel build batches. Agent step
 #   limits are separate: configure them in [agent] above.
@@ -47,25 +87,41 @@ default = "local"
 #   (clear). The application still validates returned operations.
 # - request_options forwards provider-specific fields; use only options supported
 #   by your model. Native kind = "litellm" uses SDK options instead.
+# - prompt_cache marks the system prompt and latest message for prompt caching, so each
+#   agent step reads the previous one's prefix at a fraction of the price. Unset: on for
+#   Claude (any kind, including OpenRouter) and Gemini on OpenRouter, which need markers.
+#   OpenAI and llama.cpp cache repeated prefixes on their own.
 
 # LOCAL LLAMA.CPP — no key needed for an unauthenticated localhost server.
 # Download an instruction-tuned GGUF (Llama, Qwen, etc.), then start separately:
 #   llama-server -m /path/to/model.gguf --alias local --port 8081 --jinja -c 32768 -np 1
-# model matches --alias local; change both together. Keep /v1 on base_url.
+# Keep /v1 on base_url. With no model set, the workbench uses what the server lists (here
+# "local", from --alias); set model only to pin one.
 # Match concurrency to -np and context_tokens to the context available per slot.
-# For vision, load a compatible multimodal model with its --mmproj projector.gguf
-# and set supports_images = true. If using --api-key, export that key and add
+# For vision, load a compatible multimodal model with its --mmproj projector.gguf;
+# the workbench sees the projector. If using --api-key, export that key and add
 # api_key_env = "LOCAL_API_KEY" here.
 # Server docs: https://github.com/ggml-org/llama.cpp/tree/master/tools/server
 [llm.providers.local]
 kind = "openai"
 base_url = "http://127.0.0.1:8081/v1"
-model = "local"
-supports_images = false
+# No model: the assistant panel lists whatever the server serves. A server started with
+# --models-dir (router mode) offers several; each appears as "local · <model>". Set model to
+# pin one instead.
 strict_schema = true
 timeout_s = 600
 concurrency = 1
 # context_tokens = 32768
+
+# Settings for one model of a provider, applied whenever that model answers (chosen in the
+# panel, or the one the server runs). request_options merge over the provider's (llama-server
+# reads sampling fields from each request); supports_images, context_tokens, timeout_s,
+# concurrency, strict_schema and prompt_cache replace the provider's. Each run records the
+# settings it was asked with. How a model is loaded (-c, --mmproj, -np) stays on the server.
+# [llm.providers.local.models."gemma-3-4b"]
+# request_options = { temperature = 1.0, top_k = 64, top_p = 0.95, min_p = 0.0 }
+# [llm.providers.local.models."qwen3-vl-8b"]
+# request_options = { temperature = 0.7, top_k = 20, top_p = 0.8, min_p = 0.0, presence_penalty = 1.5 }
 
 # ANTHROPIC — set: export ANTHROPIC_API_KEY="your-anthropic-api-key"
 # Uses the native API; no base_url needed. Use a Claude API ID without a provider

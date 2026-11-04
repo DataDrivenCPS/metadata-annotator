@@ -90,6 +90,61 @@ def pdf_page(data: bytes, page_number: int, render: bool = True) -> tuple[str, b
         raise SourceError(f"Could not read PDF page {page_number}: {exc}") from None
 
 
+VIEW_EDGE = 1568  # long edge of a region shown to a vision model: detail without wasting tokens
+VIEW_MARGIN = 0.15  # context kept around a box, as a share of its size
+
+
+def _padded(box: list[float], width: float, height: float) -> tuple[float, float, float, float]:
+    """``[x, y, w, h]`` grown by the margin and clipped to the page; (left, top, right, bottom)."""
+    x, y, w, h = (float(v) for v in box)
+    if w <= 0 or h <= 0 or x >= width or y >= height or x + w <= 0 or y + h <= 0:
+        raise SourceError("The region is outside the page or image.")
+    mx, my = max(w * VIEW_MARGIN, 8), max(h * VIEW_MARGIN, 8)
+    return max(0.0, x - mx), max(0.0, y - my), min(width, x + w + mx), min(height, y + h + my)
+
+
+def region_png(data: bytes, kind: str, page: int | None = None, box: list[float] | None = None) -> tuple[bytes, list[float]]:
+    """A PNG of a PDF page or image, or of a box on it (PDF points or image pixels from the top
+    left) with some surrounding context, rendered sharp enough to read small labels. Returns the
+    PNG and the box actually shown, in the same units."""
+    from PIL import Image, ImageOps
+
+    output = io.BytesIO()
+    if kind == "pdf":
+        import pypdfium2 as pdfium
+        try:
+            with PDF_LOCK, pdfium.PdfDocument(data) as pdf:
+                number = page or 1
+                if number < 1 or number > len(pdf):
+                    raise SourceError(f"Page {number} is outside this PDF's 1–{len(pdf)} range.")
+                with closing(pdf[number - 1]) as pdf_page_:
+                    width, height = pdf_page_.get_size()
+                    left, top, right, bottom = _padded(box, width, height) if box else (0.0, 0.0, width, height)
+                    scale = min(6.0, VIEW_EDGE / max(right - left, bottom - top))
+                    # PDFium crops are amounts cut from each edge, measured from the bottom left.
+                    with closing(pdf_page_.render(scale=scale, crop=(left, height - bottom, width - right, top))) as bitmap:
+                        with bitmap.to_pil() as image:
+                            image.save(output, format="PNG")
+        except SourceError:
+            raise
+        except Exception as exc:
+            raise SourceError(f"Could not render PDF page {page}: {exc}") from None
+    elif kind == "image":
+        with Image.open(io.BytesIO(data)) as original:
+            with ImageOps.exif_transpose(original) as image:
+                left, top, right, bottom = _padded(box, image.width, image.height) if box else (0, 0, image.width, image.height)
+                with image.crop((round(left), round(top), round(right), round(bottom))) as crop:
+                    if max(crop.size) < VIEW_EDGE // 2:  # enlarge small regions so labels are legible
+                        factor = (VIEW_EDGE // 2) / max(crop.size)
+                        crop = crop.resize((round(crop.width * factor), round(crop.height * factor)), Image.Resampling.LANCZOS)
+                    crop.thumbnail((VIEW_EDGE, VIEW_EDGE))
+                    crop.convert("RGB").save(output, format="PNG")
+    else:
+        raise SourceError("Only PDF pages and images can be viewed; read text documents as text.")
+    shown = [round(left, 1), round(top, 1), round(right - left, 1), round(bottom - top, 1)]
+    return output.getvalue(), shown
+
+
 def validate_regions(project, regions, *, batched: bool = False) -> None:
     count = 0
     for region in regions:

@@ -108,6 +108,8 @@ def verify(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue]
     introduced = (list(val.introduced) if val else []) + list((proposal.gate or {}).get("introduced", []))
     if introduced:
         reasons.append(f"it introduces {len(introduced)} new issue(s)")
+    if proposal.left_out:
+        reasons.append(f"the assistant left out {len(proposal.left_out)} operation(s) it could not make valid")
     if deleted := [c.label for c in proposal.changes if c.change == "deleted"]:
         reasons.append(f"it removes {', '.join(deleted[:3])}")
     if outside := [c.label for c in proposal.changes if c.change == "updated" and not c.in_selection]:
@@ -265,12 +267,40 @@ def _term_alternatives(project: Project, proposal: ChangeProposal, issues: list[
 class AutofixOutcome:
     groups: list[dict[str, Any]] = field(default_factory=list)
     explanation: str = ""
+    steps: int = 0  # model replies across all groups
 
     @property
     def autofix(self) -> dict[str, Any]:
         """Stored on the run's outcome for the interface."""
         return {"groups": self.groups,
                 "revisions": [g["revision"] for g in self.groups if g.get("revision")]}
+
+
+REUSABLE = ("review", "choice")
+
+
+def earlier_result(project: Project, issue_ids: list[str], run_id: str) -> dict[str, Any] | None:
+    """The latest earlier auto-fix answer for exactly these issues, if it is still waiting for the
+    person: its proposals are pending against the current head. Asking again would only spend a
+    model run on the same question."""
+    wanted = set(issue_ids)
+    for body in project.store.list_bodies("agent_runs", order="created_at DESC"):
+        if body.get("kind") != "autofix" or body.get("status") != "succeeded" or body["id"] == run_id:
+            continue
+        for group in (body.get("outcome") or {}).get("autofix", {}).get("groups", []):
+            if set(group.get("issues", [])) != wanted:
+                continue
+            if group.get("status") not in REUSABLE:
+                return None  # the latest answer was not a pending proposal: ask again
+            pending = ([group.get("proposal_id")] if group["status"] == "review"
+                       else [o["proposal_id"] for c in group.get("choices", []) for o in c["options"]])
+            try:
+                if pending and all(project.proposal(pid).status == "pending" for pid in pending if pid):
+                    return {**group, "reused_from": body["id"]}
+            except KeyError:
+                pass
+            return None
+    return None
 
 
 def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue_ids: list[str] | None,
@@ -298,6 +328,12 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
         tag = f"{n}/{len(groups)}"
         progress("group", f"Group {tag}: {group[0].explanation[:90]}" + (f" (+{len(group) - 1})" if len(group) > 1 else ""),
                  {"group": n, "issues": record["issues"]})
+        if earlier := earlier_result(project, record["issues"], run_id):
+            record.update({k: v for k, v in earlier.items() if k not in ("issues", "explanations")})
+            progress("group_done", f"Group {tag}: {record['status']} (unchanged since an earlier auto-fix; "
+                                   "its proposals are still waiting for review)",
+                     {"group": n, "status": record["status"], "reused_from": earlier["reused_from"]})
+            continue
         rows = project.view(head).rows()
         try:
             out = run_correction(project, llm, guidance, head, selection_for(group, rows), instruction(group, rows),
@@ -308,6 +344,7 @@ def run_autofix(project: Project, llm: LLMClient, guidance: SkillGuidance, issue
             record.update(status="failed", reasons=[str(exc)])
             progress("group_done", f"Group {tag}: failed ({exc})", {"group": n, "status": "failed"})
             continue
+        outcome.steps += out.steps
         record.update(explanation=out.explanation, questions=out.questions)
         selection, request = selection_for(group, rows), instruction(group, rows)
         reasons = verify(project, out.proposal, group) if out.proposal else []

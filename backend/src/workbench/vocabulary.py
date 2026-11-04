@@ -126,6 +126,11 @@ class Vocabulary:
         self.ancestors: dict[str, list[str]] = {}
         self.qk_broader: dict[str, list[str]] = {}
         self._search_index: dict[str, tuple[set[str], str]] = {}  # iri -> (search words, "label name")
+        # Exact names, for reading a term written by name (see ``named``).
+        self._by_local: dict[str, list[str]] = {}  # local name as written
+        self._by_name: dict[str, list[str]] = {}  # local name or label, ignoring case
+        self._by_symbol: dict[str, list[str]] = {}  # unit symbol as written
+        self._location_mention: re.Pattern | None = None  # see mentions_location()
         self.root_ontology: str = ""
         self.missing_imports: list[str] = []
         self._validator = None
@@ -494,6 +499,34 @@ class Vocabulary:
         for iri, t in sorted(self.terms.items(), key=lambda kv: kv[1].label.lower()):
             self.by_kind[t.kind].append(iri)
         self._search_index = {iri: _search_tokens(iri, t) for iri, t in self.terms.items()}
+        self._by_local, self._by_name, self._by_symbol = defaultdict(list), defaultdict(list), defaultdict(list)
+        for iri, t in self.terms.items():
+            if t.deprecated:
+                continue
+            local = _term_name(iri)
+            self._by_local[local].append(iri)
+            for name in {local.casefold(), t.label.strip().casefold()} - {""}:
+                self._by_name[name].append(iri)
+            if t.symbol:
+                self._by_symbol[t.symbol].append(iri)
+        # Whole names of space classes ("server room", "mezzanine level"), not their single words,
+        # so a label word such as "water" or "electricity" does not count as talk of spaces. A
+        # one-word name that other terms use too ("Level", as in "Level sensor") does not either.
+        other_words = {w for iri, t in self.terms.items() if t.kind != "location" for w in _tokens(t.label)}
+        names = set(LOCATION_WORDS)
+        for iri in self.by_kind.get("location", ()):
+            t = self.terms[iri]
+            if not t.deprecated:
+                for name in {" ".join(_tokens(t.label)), " ".join(_tokens(_term_name(iri)))} - {""}:
+                    if " " in name or name not in other_words:
+                        names.add(name)
+        self._location_mention = re.compile(
+            " (?:" + "|".join(map(re.escape, sorted(names, key=len, reverse=True))) + ")(?:e?s)? ")
+
+    def mentions_location(self, text: str) -> bool:
+        """Whether ``text`` speaks of where things are: a general word for it, or the name of one
+        of this vocabulary's space classes (singular or plural, any case or spelling of words)."""
+        return bool(self._location_mention and self._location_mention.search(f" {' '.join(_tokens(text))} "))
 
     # ------------------------------------------------------------------ lookups
 
@@ -518,6 +551,21 @@ class Vocabulary:
     def kind_of(self, iri: str) -> str | None:
         t = self.terms.get(str(iri))
         return t.kind if t else None
+
+    def named(self, value: str, kinds: set[str]) -> list[str]:
+        """Terms of these kinds that ``value`` names exactly: by local name (whatever namespace it
+        was written in, so ``s223:Tank`` finds ``watr:Tank`` when only that exists), by label, or for
+        units by symbol (``mg/L``). The first of those ways that finds anything decides; more than one
+        term means the name is ambiguous and the caller must not choose."""
+        iri = expand_term(self, value)
+        spaces = [*self.namespaces.values(), *_EXTRA_NAMESPACES.values()]
+        ns = max((n for n in spaces if n and iri.startswith(n) and len(iri) > len(n)), key=len, default="")
+        local = iri[len(ns):] if ns else _term_name(iri)
+        for index, key in ((self._by_local, local), (self._by_name, local.casefold()), (self._by_symbol, local)):
+            found = [iri for iri in index.get(key, ()) if self.terms[iri].kind in kinds]
+            if found:
+                return sorted(set(found))
+        return []
 
     def search(self, query: str, kinds: list[str] | None = None, limit: int = 12,
                include_deprecated: bool = False) -> list[Term]:
@@ -806,6 +854,26 @@ def _severity(s: str) -> str:
     return {"violation": "Violation", "warning": "Warning", "info": "Info"}.get(s.lower(), s)
 
 
+_EXTRA_NAMESPACES = {"s223": str(S223), "qudt": str(QUDT),
+                     "unit": "http://qudt.org/vocab/unit/",
+                     "quantitykind": "http://qudt.org/vocab/quantitykind/",
+                     "qk": "http://qudt.org/vocab/quantitykind/",
+                     "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+                     "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
+
+
+# Words for where things are, whatever the vocabulary has classes for (223P has few).
+LOCATION_WORDS = ("room", "floor", "building", "space", "zone", "location", "located", "site", "basement",
+                  "storey", "story", "stories", "hall", "wing", "premises", "campus")
+
+
+def _term_name(iri: str) -> str:
+    """After the last # (or /, or the prefix's colon); a bare name such as ``mg/L`` is its own."""
+    if "://" in iri or iri.startswith("urn:"):
+        return re.sub(r"^.*[#/]", "", iri)
+    return iri.split(":", 1)[1] if ":" in iri else iri
+
+
 def expand_term(vocab: Vocabulary, value: str) -> str:
     """Accept full IRIs, <IRIs>, and known prefixed names (s223:Pipe, watr:Tank, unit:PSI)."""
     v = value.strip().strip("<>")
@@ -813,12 +881,7 @@ def expand_term(vocab: Vocabulary, value: str) -> str:
         return v
     if ":" in v:
         prefix, local = v.split(":", 1)
-        known = {**vocab.namespaces, "s223": str(S223), "qudt": str(QUDT),
-                 "unit": "http://qudt.org/vocab/unit/",
-                 "quantitykind": "http://qudt.org/vocab/quantitykind/",
-                 "qk": "http://qudt.org/vocab/quantitykind/",
-                 "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-                 "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
+        known = {**vocab.namespaces, **_EXTRA_NAMESPACES}
         if prefix in known:
             return known[prefix] + local
     return v

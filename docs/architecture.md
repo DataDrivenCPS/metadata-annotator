@@ -89,7 +89,26 @@ drops the old port only if it was minted for that connection and never became a 
 point of its own (id, pairing, mapsTo). Update operations carry only the fields that change
 (explicit `null` clears). `resolve()` checks every id and
 every vocabulary term (kind, abstract, existence) and mints ids for `new:*` placeholders,
-reporting all problems at once. 223P's connection-point rules (pairing, mapsTo, one
+reporting all problems at once. Problems name entities created in the same list as they were
+written (`'new:x' (created by operation 1)`), never by the minted id, which is new on every
+attempt; this holds for the checks made after applying too. A reference to an entity of the
+wrong kind says what it is and which field or operation takes that kind (e.g. a space given
+as `contained_in` points to `location`), instead of calling it unknown.
+
+What a name names exactly is what it means; models of every size slip on spelling, not
+meaning. A reference written as a label is read as the one entity of the expected kind with that
+label (ignoring case; in the model, or created or renamed earlier in the same list — a renamed
+entity goes by its new label from then on, not its old one). A term written by its exact
+local name in any namespace (`Concentration`, `s223:Tank` when only `watr:Tank` exists), its
+label, or a unit's symbol (`mg/L`) is read as the one term of the expected kind it names
+(`Vocabulary.named`); each such reading is a drafting note on the proposal for the reviewer.
+Operations are put after the create operations whose `new:*` ids or labels they use (writing a
+reference first is an ordering slip). Several matches, or none, are never chosen between: the
+problem says what to do — a `new:*` placeholder no operation creates (give that create operation
+the id), a label several entities share (their ids), or nothing (create it first, refer to
+another operation's entity by its placeholder or label, or leave the field out); near misses
+(`StorageTank`) get suggestions, not substitutions. Only id-shaped references stay "unknown",
+with nearby ids suggested by the agent. 223P's connection-point rules (pairing, mapsTo, one
 connection per port) are checked on the result after all operations apply, so a proposal can
 create and wire ports in one go. A resolved operation list applies deterministically, so
 `apply_proposal` re-applies the stored operations and **refuses if the resulting triple diff
@@ -239,7 +258,9 @@ When the gate reports introduced violations, the correction agent gets one chanc
 (revise, or re-propose and say why they are expected) before the proposal is saved, as in
 BuildingMOTIF's gated repair loop. Source builds and replies to them are not nudged (new
 equipment starts unconnected), and a reply is only asked about violations its pending
-proposal did not already introduce.
+proposal did not already introduce. Nor is it asked when the candidate's validation shows no
+violation the base revision did not already have: the review would not show the gate's
+findings either, and in practice the model only re-proposed the same change (`gate_skipped`).
 
 A revision's stored summary is recounted on read (`issues.recount`) with the current issue
 grouping, so older revisions, History and proposal "Model checks" agree with the issue list.
@@ -263,19 +284,51 @@ Bounded workflow, identical for local and remote models:
    validated. Malformed operations go back to the model with the problems and the closest valid
    terms (up to 2 repairs). Unknown entity references also carry nearby exact ids and
    labels from the lookup state, including a pending draft when replying to one. These are
-   suggestions for the model to check; resolution never silently substitutes an id.
+   suggestions for the model to check; resolution never silently substitutes an id. When only
+   some operations fail, the model is shown just those (as it wrote them; the rejection's
+   progress record keeps them too) and answers with corrections of them only, which replace them
+   (`splice`: in order when there is one per failed operation, else by kind and id or label);
+   rewriting every operation to fix one brought in new mistakes. A repair that gets exactly
+   the same problems again ends the repairs. When repairs end with some operations still failing, the valid
+   ones become the proposal and the rest — those that failed, then any that needed them — are left
+   out (`ChangeProposal.left_out`: each operation as written, its references to entities the
+   proposal creates turned into their ids, and its problems). The panel shows them in their own
+   section with "Try these again", a reply with `retry_left_out` that shows the model those
+   operations and adds its corrections to the proposal (what still fails replaces the list);
+   automatic fixes never apply such a proposal. Only when nothing valid is left does the run fail.
 4. **Proposal**: stored with before/after per entity (every entity whose projection changes,
    flagged when outside the selection), the triple diff, the validation delta (issues resolved
    and introduced), evidence (model rows, observations, skill sections, vocabulary terms) and
    the explanation. No operations + questions = the assistant needs input.
 
 Replies to a pending proposal use its candidate graph for lookup tools, so the agent can
-inspect new entities and relationships before they are applied. Each retry or revision must
-return the complete replacement changes under that reply's operation rules, rather than a
-fragment of the previous answer. Refreshing a stale proposal instead inspects the current
+inspect new entities and relationships before they are applied. A revision, and a retry after
+problems that concern the whole answer (or every operation in it), must return the complete
+replacement changes under that reply's operation rules; a retry after some operations failed
+returns corrections of those only (above). Refreshing a stale proposal instead inspects the current
 head and treats old operations as historical context. Draft references are checked during
 resolution; duplicate `new:*` definitions are rejected. Cancellation is checked before
 saving a proposal or publishing an automatic change.
+
+The reply grammar takes only ids the run can see in id fields: per kind, the ids of the model's
+(or the pending proposal's preview's) entities, or a `new:*` placeholder, as `$defs` rules
+(`id_defs`) that every reference field points to; every create operation requires its own
+placeholder, so later operations can refer to it. A label, an invented id (`eq-pump-1`) or an id
+of the wrong kind cannot be decoded. Past `ID_ENUM_LIMIT` entities of a kind, the rule checks the
+id's shape instead of listing ids; only the rules the offered operations use are included (each
+costs schema tokens on providers that show the schema). The rules never refer to each other:
+llama.cpp's grammar converter mishandles a `$ref` inside `$defs` and silently drops what it
+cannot convert. That a placeholder is actually created is still checked by `resolve`.
+
+Each run offers only the operations its task could use (`operation_scope`): small models fill
+optional fields with invented values, and the reply grammar cannot produce what is not
+offered. Spaces (`create/update/delete_space`, `location`, `part_of`) are offered when the model
+has spaces, or the request, conversation, open issues, source text or pending proposal mention
+or use them (`Vocabulary.mentions_location`: general words for where things are, or the whole
+name of one of the vocabulary's space classes, such as Brick's "mezzanine level"; a one-word
+name other terms use too, like rec:Level, does not count); builds from sources leave out the generic operations
+(`create_entity`, `add_type`, `set_property`, `relate`…) unless the pending proposal uses them.
+The system prompt says what is missing and why.
 
 `questions.readable_questions` normalizes structured questions and option labels into readable
 chat text, including older saved question dictionaries. Choice-only replies remain visible
@@ -297,6 +350,106 @@ are supplied according to the model's image support; source regions and page ref
 retained as evidence. Source build proposals require review before applying and preserve
 existing human locks without marking extracted values as human-confirmed.
 
+Sources attached to an assistant message belong to that message: the composer drops them once
+the message starts a run, and a follow-up does not inherit them (`RunManager.continued_selection`).
+The conversation history records what was attached to each earlier message and that it was
+read then, so a later turn knows the evidence existed without paying to read it again.
+
+### Source index (`retrieval/`)
+
+Uploaded PDFs, images and text documents are indexed in the background so later work can
+retrieve passages instead of reading whole documents. CSV/TSV point lists are not indexed:
+their records are already structured observations.
+
+- **Parsing.** `parser = "docling"` (default) uses Docling through a local docling-serve
+  (`retrieval/docling.py`). The workbench installs it with uv into
+  `workbench-data/retrieval/docling-serve/v<version>/` on first use (about 2 GB, CPU PyTorch
+  unless a GPU is present; Intel Macs are unsupported) and starts it on demand on 127.0.0.1 with a
+  random API key. Its models (about 500 MB) download on first start into the same directory. It
+  stops after `docling_idle_minutes`, and a restarted workbench reuses a running one recorded in
+  `server.json`. `docling_url` points at an existing docling-serve instead. PDFs go to the parser
+  `pages_per_batch` pages at a time, so progress and passages accumulate per batch.
+- **Passages** (`retrieval/chunking.py`). Prose is packed into passages of about 1,200
+  characters under its section headings, never across pages. Tables become rows keyed by their
+  column headers. Text inside drawings, which Docling's own chunker drops, is grouped into
+  labels by proximity ("FEED PUMP P-101"), each with its box. Locations are top-left boxes in
+  PDF points or image pixels. Text documents other than .docx, and PDFs when Docling is
+  unavailable, are split at paragraphs with `text_range` offsets into the document or page
+  text, the offsets source regions already use. Images cannot be indexed without Docling.
+- **Embeddings** (`retrieval/embed.py`). `fastembed` (default) runs
+  `BAAI/bge-small-en-v1.5` on the CPU in-process; `openai` uses any OpenAI-compatible
+  `/embeddings` endpoint such as llama-server `--embeddings`; `none` keeps keyword search only.
+  Vectors are stored per model id, so changing the model re-embeds without re-parsing. If
+  embedding fails, the source is still indexed for keywords and says so.
+- **Search** (`retrieval.search`). FTS5 BM25 over passage text and headings (each query term
+  is a phrase, so tags such as `RO-1_FIT_101` match as a unit) fused with cosine similarity by
+  reciprocal rank, optionally scoped to sources. Vectors are scanned with numpy from a
+  per-project cache. That is exact search and fast enough for tens of thousands of passages.
+- **Keeping it current** (`Indexer`). The indexer listens on the event bus. Any `sources`
+  event re-checks that project: new sources and sources whose file hash changed are
+  (re)indexed, sources that no longer exist lose their passages, and a cancelled or replaced
+  job stops between batches. Opening a project resumes work interrupted by a restart. Status
+  per source (`queued`, `indexing`, `ready`, `failed`, `unsupported`, with progress) is in
+  `source_index` and published as `source_index` events. `GET …/sources` includes it, and
+  `POST …/sources/{id}/reindex` and `GET …/sources/search` act on it.
+
+How the assistant uses it (`retrieval/evidence.py`):
+
+- **Attached sources.** When a source attached to a request is indexed at its current version,
+  the request retrieves its passages instead of reading the whole file. The query is the
+  request plus the labels of the selected entities. A source of at most 4,000 characters is
+  supplied whole; otherwise up to six passages per source are kept, in reading order, within
+  a character budget sized to the model's context window. Page selections narrow the search.
+  Sources that are not indexed, point lists, image areas the person drew and exact text
+  passages are read as before by `read_source_set` into cited notes. An attached image
+  source also goes with the request as an image when the model accepts images (and with
+  every build batch when it is a reference), beside its passages, which carry the citations.
+- **Citations.** Each passage becomes an observation whose id is stable per file version and
+  passage, so asking again cites the same id. It has the page, PDF box, image box or text
+  offsets, so opening the evidence shows the passage. Operations cite it in `evidence` like
+  any other source evidence.
+- **`search_sources` tool.** Offered only when some project document is indexed. It returns
+  up to five passages, across all documents or one named file, each with an observation id.
+  Passages the model found this way become citable for the rest of the run, and the cited
+  ones join the proposal's evidence. Ids the model never saw are refused.
+- **Drawings** (`retrieval/describe.py`). OCR finds a drawing's labels but not what they
+  mean together. When a source is indexed, each image and each PDF page that is a scan (less
+  than `describe_min_text` characters of embedded text) or holds a drawing (Docling found
+  labels in a figure) gets one description from a vision model, through `complete_json` like
+  every other call, so a llama.cpp vision model or a paid provider both work. It is indexed as
+  a passage of kind `description` whose heading says it is generated, and its observation is
+  marked `generated`. At most `describe_max_pages` pages per file are described. The first
+  failed call stops descriptions for that file with a warning, and the text stays indexed.
+  The source status shows how many pages were described and the tokens spent, or why none
+  were, for example that the provider does not accept images. Without Docling an image is
+  indexed from its description alone.
+- **`view_source` tool.** Offered when the model accepts images and the project has a PDF or
+  image. It renders the region behind an observation, or a page with an optional box, at up
+  to 1,568 pixels with some margin around the box, and attaches the PNG to that tool result.
+  Messages may carry `images` on any user turn for this. Once the model has replied to a
+  view, the image is removed from later requests and the next message says so (viewing it
+  again is allowed). With prompt caching only a newer view replaces it, since cached input
+  is cheap and removing it would break the cached prefix. Retrieved passages of PDFs and
+  drawings point the model at this tool.
+- **Builds.** Indexed reference sources are not read up front. Each input batch, and the
+  point-list mapping, retrieves the reference passages relevant to its own content. The
+  passages used are kept as the build's source notes.
+
+Settings (`[retrieval]` in workbench.toml; `workbench.example.toml` shows each with its default):
+
+- `enabled` — index uploads at all (off: sources are read whole).
+- `parser` (`docling` or `basic`), `docling_url` / `docling_api_key_env` (use an existing
+  docling-serve), `docling_version` (the release the workbench installs), `docling_idle_minutes`
+  (stop the managed parser when idle), `pages_per_batch` (PDF pages per parser request).
+- `describe` (`auto` or `off`), `describe_provider` (default: `[llm] default`; any provider or
+  `"<provider>/<model>"`), `describe_max_pages` per file, `describe_min_text` (a PDF page with
+  less embedded text counts as a scan).
+- `[retrieval.embedding]`: `kind` (`fastembed`, `openai` for any `/embeddings` endpoint, or `none`
+  for keyword search only), `model`, `base_url`, `api_key_env`, `batch_size`, `timeout_s`.
+
+The env override `WORKBENCH_OFFLINE=1` indexes with the basic parser, keyword search only and no
+drawing descriptions, so nothing is installed, downloaded or called (tests set it).
+
 ### Auto-fix (`autofix.py`)
 
 Auto-fix works through issues without asking about each one. It is one background run
@@ -306,7 +459,10 @@ Auto-fix works through issues without asking about each one. It is one backgroun
    shape and path — so one decision covers every issue with the same cause (at most 8 per
    group). The RO-train sample's nine violations are three groups.
 2. For each group, on the current head, the correction agent proposes a fix, asked to use only
-   what the model, vocabulary and sources establish and to ask instead of guessing.
+   what the model, vocabulary and sources establish and to ask instead of guessing. If the
+   latest earlier auto-fix answer for exactly the same issues is a proposal or choices that
+   are all still pending against the current head, it is reused (`reused_from`) instead:
+   asking again would spend a model run on the same question.
 3. **Verify** — the checks, not the model's confidence, decide. A fix is obvious when it
    resolves the group's issues; introduces nothing (validation delta and the repair engine's
    gate); changes only the issues' own objects (new objects are fine); deletes nothing;
@@ -349,7 +505,24 @@ it resets the visible conversation without deleting server records or token usag
 `RunManager.tracked_client` publishes provider-reported usage after each call and includes
 failed attempts and malformed-output retries. Concurrent calls update totals under a lock;
 final outcomes do not count those calls a second time. The header combines persisted usage
-with current run updates. Missing provider usage cannot be inferred.
+with current run updates.
+
+Each call is also kept on the run's outcome (`calls`, up to 200): the progress step it was
+made in, its input and output tokens, input read from the provider's prompt cache
+(`cached_tokens`, a part of the input), and whether it failed. The run's token line shows the
+list on hover. When an endpoint reports no usage, the call is estimated from the request size
+(about three characters per token, 1,500 per image), counted, and marked `estimated`. A call
+cancelled mid-reply has no reported usage; its estimated input is noted on the call
+(`unreported_input_tokens`) but not counted. Drawing descriptions made while indexing are
+added to the usage endpoint as `index:<source id>` entries.
+
+Prompt caching: providers that cache only marked prompts get `cache_control` on the system
+prompt and on the latest message of each request. That covers Claude, natively, through
+LiteLLM or on OpenRouter, and Gemini on OpenRouter; `prompt_cache` on a provider overrides
+it. Each step of a run then reads the previous step's prefix from the cache. OpenAI and
+llama.cpp reuse repeated prefixes without markers. Messages are append-only for this
+reason: when a newer `view_source` image replaces an older one, the note goes in the new
+result rather than into the earlier message.
 
 ## Model providers (`llm/`)
 
@@ -359,7 +532,31 @@ No gateway process is required; the application uses its Python SDK directly. Co
 supports three kinds:
 
 - `openai` — any OpenAI-compatible `/v1/chat/completions` (llama-server by default,
-  `response_format: json_schema`, streamed).
+  `response_format: json_schema`, streamed). `model` may be left out: the server's `/models`
+  list is then what the assistant panel offers, one entry per model when it serves several
+  (llama-server's router mode), chosen as `"<provider>/<model>"` wherever a provider name is
+  accepted (`Settings.provider`). The health check returns the list; a run resolves which
+  model will answer before it starts (`RunManager.choose`: the chosen one, else the first
+  listed, and for a single-model server the one it serves whatever name was asked for) and
+  records it, so a run's `model` is always the model that produced it.
+  `supports_images` left unset is asked per model the same way (`EndpointInfo.supports_images`):
+  the router and OpenRouter list each model's `architecture.input_modalities`, a single-model
+  llama-server reports its projector in `/props`, and LiteLLM's catalog covers native routes;
+  a configured value overrides. The health check returns it for the chosen model, runs carry it
+  in their resolved config (image builds are refused for text-only models), the drawing
+  describer asks before describing (and again a minute later if the server was down), and the
+  Sources pane follows the chosen model. A router's context size per model comes from its
+  launch arguments (`--ctx-size` / `--parallel`), not the model's trained maximum.
+
+Per-model settings: `[llm.providers.<name>.models."<model>"]` holds settings for one model of
+a provider (`ProviderConfig.for_model`): `request_options` merge over the provider's (the
+model's win; llama-server reads sampling fields such as `temperature`, `top_k`, `min_p` from
+each request), and `supports_images`, `context_tokens`, `timeout_s`, `concurrency`,
+`strict_schema`, `prompt_cache` replace the provider's. Endpoint and credentials cannot be set
+per model. They apply to whichever model answers (`resolved_model` re-applies them when the
+server picks the model), and each run stores what it was asked with in `AgentRun.model_settings`
+(including the detected context size and image support), shown with the model in the run
+details. How a model is loaded (`-c`, `--mmproj`, `-np`) stays in the server's configuration.
 - `anthropic` — the native Anthropic API through LiteLLM, with schema translation and streaming.
   Existing `effort` settings remain effort-only, without implicitly enabling adaptive thinking.
   The former SDK-specific native refusal-fallback beta is no longer enabled; explicitly setting
@@ -448,9 +645,14 @@ workbench-data/
   cache/                         per-profile closure/catalog/meta caches; shared OntoEnv store
   projects/<project-id>/
     project.sqlite               meta, revisions, proposals, corrections, sources, observations,
-                                 issues, issue_dismissals, agent_runs, layout
+                                 issues, issue_dismissals, agent_runs, layout; source_index,
+                                 source_chunks (+ FTS5), chunk_vectors
     revisions/rev-N.trig
     sources/<source-id>/…
+  retrieval/
+    docling-serve/v<version>/    docling-serve's own environment (installed on first use)
+    docling-serve/models/        Docling's models; server.json, server.log, install.log
+    fastembed/                   the embedding model
 ```
 
 ## Cross-platform notes
@@ -458,4 +660,6 @@ workbench-data/
 Pure Python + wheels for all native dependencies on Windows x64, macOS arm64 and Linux x64
 (`pyshifty` has no macOS x86_64 wheel: Intel Macs need a Rust toolchain to build it). Paths
 use `pathlib`; no fork/signals/Unix sockets; SQLite connections are per-transaction; snapshot
-writes use `Path.replace`. The inference server is always a separate process reached over HTTP.
+writes use `Path.replace`. The inference server is always a separate process reached over HTTP,
+and so is the document parser (docling-serve, started with `subprocess` and stopped with
+`terminate`).

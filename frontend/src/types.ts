@@ -109,7 +109,9 @@ export interface Proposal {
   affected_ids: string[]; out_of_scope_ids: string[]; changes: EntityChange[]
   diff: { added: string[]; removed: string[] }; evidence: EvidenceRef[]
   validation: { before: ValidationSummary; after: ValidationSummary; resolved: string[]; introduced: string[] } | null
-  explanation: string; notes: string[]; questions: string[]
+  explanation: string; notes: string[]; drafting_notes?: string[]; questions: string[]
+  // operations the assistant could not make valid, as written, and why; not part of the proposal
+  left_out?: LeftOutOperation[]
   status: 'pending' | 'applied' | 'dismissed' | 'stale' | 'failed'
   agent_run_id: string | null; applied_revision: string | null
   kind: 'correction' | 'build'
@@ -136,10 +138,16 @@ export interface BuildSummary {
 }
 export interface ProgressEvent { at: string; stage: string; message: string; data: Record<string, unknown> }
 export interface TokenUsage { input_tokens: number; output_tokens: number }
+export interface ModelCall {
+  at: string; input_tokens: number; output_tokens: number; cached_tokens?: number
+  estimated?: boolean; error?: string; cancelled?: boolean; unreported_input_tokens?: number
+}
 
 export interface AgentRun {
   id: string; kind: string; input_revision: string; selection: Selection | null
   instruction: string; provider: string; model: string; skill_version: string
+  /** How the model was asked: request_options (sampling), supports_images, context_tokens, timeout_s… */
+  model_settings?: Record<string, unknown>
   source_ids?: string[]
   mode?: 'assist' | 'reply' | 'reconsider' | 'build'
   parent_run_id?: string | null
@@ -147,6 +155,10 @@ export interface AgentRun {
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   progress: ProgressEvent[]
   outcome: { proposal_id?: string | null; dismissed_proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number
+    /** Input tokens read from the provider's prompt cache; whether any call's usage was estimated. */
+    cached_tokens?: number; estimated?: boolean
+    /** Usage of each model call, with the progress step it was made in. */
+    calls?: ModelCall[]
     /** The assistant's alternatives; each option is a pending proposal to review (backend choices.py). */
     choices?: import('./assistant').AutofixChoice[]
     autofix?: { groups: import('./assistant').AutofixGroup[]; revisions: string[] } }
@@ -155,7 +167,10 @@ export interface AgentRun {
 export interface Term { iri: string; label: string; kind?: string; symbol?: string; comment?: string }
 export interface Provider {
   name: string; kind: string; model: string; base_url: string | null
-  supports_images: boolean; default: boolean; has_key: boolean | null
+  /** null: the server says per model, in its health check (ProviderHealth.supports_images). */
+  supports_images: boolean | null; default: boolean; has_key: boolean | null
+  /** No model configured: the server's own list (from its health check) is offered instead. */
+  lists_models?: boolean
 }
 export interface VocabularyStatus {
   name: string; label: string; family: Family; description: string; sources: string[]
@@ -182,7 +197,7 @@ export interface EntityDetail {
   history: { revision_id: string; field: string; before: string; after: string; origin: string; created_at: string }[]
 }
 
-export interface ProviderHealth { ok: boolean; detail: string; model?: string; model_count?: number; context_tokens?: number | null }
+export interface ProviderHealth { ok: boolean; detail: string; model?: string; models?: string[]; model_count?: number; supports_images?: boolean; context_tokens?: number | null }
 
 export interface CsvImportConfig {
   layout: 'header_points' | 'row_points' | 'column_points'
@@ -202,6 +217,18 @@ export interface Source {
   page_count?: number | null
   observation_count?: number
   modeled_count?: number
+  /** Passages indexed for retrieval (PDFs, images, documents); null until first indexed. */
+  index?: SourceIndex | null
+}
+export interface SourceIndex {
+  status: 'queued' | 'indexing' | 'ready' | 'failed' | 'unsupported'
+  sha256: string; message?: string; error?: string; warning?: string
+  parser?: 'docling' | 'basic' | 'describe' | 'none'; embedding?: string | null
+  chunks?: number; pages_done?: number; pages_total?: number | null; updated_at?: string
+  /** Drawing pages found, described by a vision model, and the tokens that took. */
+  drawings?: number; described?: number; description_model?: string; description_tokens?: number
+  /** Why drawings were not described (no vision model), when there were some. */
+  note?: string | null
 }
 export interface CsvGrid {
   rows: string[][]; total_rows: number; columns: number; delimiter: string
@@ -242,3 +269,5 @@ export interface ViewColumn {
 }
 export interface ViewRow { id: string; kind: string; label: string; iri: string; cells: Record<string, ViewCellItem[]>; locked: string[] }
 export interface ViewData { id: string; label: string; builtin: string | null; columns: ViewColumn[]; rows: ViewRow[] }
+
+export interface LeftOutOperation { operation: Record<string, unknown>; problems: string[] }

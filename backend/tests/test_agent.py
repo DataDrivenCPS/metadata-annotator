@@ -144,9 +144,10 @@ def test_zero_repair_budget_rejects_first_bad_proposal(sample_project, guidance)
 
 def test_configured_repair_budget_allows_three_corrections(sample_project, guidance):
     p = sample_project
-    bad = {"action": "propose", "operations": [
-        {"op": "update_point", "id": "pt-nope", "label": "x"}]}
-    llm = ScriptedLLM([bad] * 3 + [{"action": "propose", "operations": []}])
+
+    def bad(n):  # each answer wrong differently, so the repairs keep going
+        return {"action": "propose", "operations": [{"op": "update_point", "id": f"pt-nope{n}", "label": "x"}]}
+    llm = ScriptedLLM([bad(1), bad(2), bad(3), {"action": "propose", "operations": []}])
     out = run_correction(p, llm, guidance, p.head(), SelectionScope(), "rename", None,
                          lambda *_: None, CancelToken(),
                          agent=AgentConfig(max_steps=1, max_repairs=3))
@@ -637,7 +638,7 @@ def test_source_build_retry_repeats_equipment_and_ports_after_rejection(workspac
     rejected = [data["problems"] for stage, _, data in events if stage == "rejected"]
     assert len(rejected) == 2
     assert any("can only map to a connection point" in problem for problem in rejected[0])
-    assert any("no connection_point with id 'new:cp-1'" in problem for problem in rejected[1])
+    assert any("no operation creates 'new:cp-1'" in problem for problem in rejected[1])
     assert out.proposal is not None and p.head() == base
     rev = p.apply_proposal(out.proposal.id)
     view = p.view(rev.id)
@@ -793,3 +794,204 @@ def test_structured_question_is_readable_without_publishing(sample_project, guid
     assert outcome.questions == ["Which equipment type?\n• Tank"]
     assert outcome.proposal is None
     assert sample_project.head() == head
+
+
+def test_gate_findings_that_validation_does_not_show_are_not_asked_about(sample_project, guidance, monkeypatch):
+    p = sample_project
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    monkeypatch.setattr(p, "gate", lambda cand: {"sound": False, "progress": True, "fixed": [],
+                                                 "introduced": ["CT-201 · s223:SomeShape"]})
+    llm = ScriptedLLM([{"action": "propose", "explanation": "Permeate conductivity is in uS/cm.",
+                        "operations": [{"op": "update_point", "id": ct.id, "unit": "unit:MicroS-PER-CentiM"}]}])
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "fix the CT-201 unit")
+    assert out.steps == 1 and out.proposal is not None
+    assert [stage for stage, _, _ in events if stage in ("gated", "gate_skipped")] == ["gate_skipped"]
+
+
+def test_each_tool_has_its_own_argument_shape():
+    import jsonschema
+    from workbench.agent.correction import step_schema
+    schema = step_schema(search=True, view=True)
+    ok = lambda args: jsonschema.Draft202012Validator(schema).is_valid(  # noqa: E731
+        {"thought": "", "action": "search_terms", "args": args})
+    assert ok({"query": "pump", "kind": "equipment"}) and ok({"source": "OARO.png", "page": 1, "box": [0, 0, 5, 5]})
+    assert ok({"query": "FIT-101", "source": "manual.pdf"}) and ok({"observation_id": "obs-1"})
+    assert not ok({"kind": "medium", "quantity_kind": "", "source": "", "page": 0, "box": []})  # the mix from a real log
+    assert not ok({"kind": "medium"})  # a search needs its query
+    plain = step_schema()
+    assert all("source" not in shape["properties"] for shape in plain["properties"]["args"]["anyOf"])
+
+
+class SchemaRecordingLLM(ScriptedLLM):
+    def __init__(self, steps):
+        super().__init__(steps)
+        self.schemas: list[dict] = []
+
+    def complete_json(self, system, messages, schema, **kw):
+        self.schemas.append(schema)
+        return super().complete_json(system, messages, schema, **kw)
+
+
+def offered(schema) -> dict[str, set[str]]:
+    """Operation name -> fields, as one reply's schema offers them."""
+    variants = schema["properties"]["operations"]["items"]["anyOf"]
+    return {v["properties"]["op"]["enum"][0]: set(v["properties"]) for v in variants}
+
+
+@pytest.mark.parametrize("instruction,spaces", [
+    ("Add a cartridge filter after the feed pump", False),
+    ("Put the feed pump in the pump room", True),
+])
+def test_spaces_are_offered_only_when_the_model_or_the_request_has_any(sample_project, guidance, instruction, spaces):
+    """gemma-3-4b and qwen3-vl-8b placed every new piece of equipment in rooms nothing mentioned."""
+    llm = SchemaRecordingLLM([{"action": "propose", "explanation": "Nothing to change.", "operations": []}])
+    run(sample_project, llm, guidance, SelectionScope(), instruction)
+    menu = offered(llm.schemas[0])
+    assert ("create_space" in menu) is spaces and ("location" in menu["create_equipment"]) is spaces
+    assert "relate" in menu and "create_entity" in menu  # a correction keeps the generic operations
+    assert ("do not place equipment anywhere" in llm.systems[0]) is not spaces
+
+
+def test_a_model_with_spaces_keeps_them_and_builds_leave_out_the_generic_operations(sample_project):
+    from workbench.agent.correction import OperationScope, operation_scope
+    from workbench.operations import OperationList
+
+    p = sample_project
+    assert operation_scope(p.view(p.head()), p.vocab, ["Add a filter"], build_from_sources=True) == \
+        OperationScope(spaces=False, generic=False)
+    p.edit(p.head(), OperationList.validate_python([
+        {"op": "create_space", "label": "Pump room", "type": "s223:PhysicalSpace"}]))
+    assert operation_scope(p.view(p.head()), p.vocab, ["Add a filter"], build_from_sources=True).spaces
+    relate = OperationList.validate_python([{"op": "relate", "subject": "a", "relation": "b", "object": "c"}])
+    assert operation_scope(p.view(p.head()), p.vocab, [], build_from_sources=True, prior=relate).generic  # a pending proposal uses them
+
+
+def _three_operations(p):
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    return ct, [
+        {"op": "update_point", "id": ct.id, "label": "CT-201 conductivity"},
+        {"op": "create_equipment", "id": "new:x", "label": "Mystery", "type": "watr:NoSuchThing"},
+        {"op": "create_point", "label": "P-9", "equipment": "new:x", "point_kind": "measurement"},
+    ]
+
+
+def test_a_repair_corrects_only_the_operations_that_failed(sample_project, guidance):
+    """Rewriting every operation to fix one brought in new mistakes; the model is shown the failed
+    ones and its corrections replace just those."""
+    p = sample_project
+    ct, operations = _three_operations(p)
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "Renamed CT-201 and added the mystery unit.", "operations": operations},
+        {"action": "propose", "explanation": "fixed the type",
+         "operations": [{"op": "create_equipment", "id": "new:x", "label": "Mystery", "type": "watr:Tank"}]},
+        lambda messages: {"action": "propose", "explanation": "Renamed CT-201 and added the mystery unit.",
+                          "operations": [operations[0], {**operations[1], "type": "watr:Tank"}, operations[2]]},
+    ])  # the third answers the soundness gate (a new tank is not connected yet)
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "rename it and add the tank")
+    assert [stage for stage, _, _ in events].count("gated") <= 1
+    asked = llm.seen[1][-1]["content"]
+    assert asked.startswith("1 of your 3 operations cannot be applied:\noperation 2: ")
+    assert "NoSuchThing" in asked and "CT-201 conductivity" not in asked and "do not repeat them" in asked
+    rejected = next(d for stage, _, d in events if stage == "rejected")
+    assert list(rejected["operations"]) == ["2"]  # what the model wrote is kept on the run
+    prop = out.proposal
+    assert prop is not None and {c.label for c in prop.changes} >= {"CT-201 conductivity", "Mystery", "P-9"}
+    assert out.explanation == "Renamed CT-201 and added the mystery unit." and out.left_out == []
+
+
+def test_operations_the_model_cannot_fix_are_left_out_and_noted(sample_project, guidance):
+    """A repair that fixes nothing ends the repairs: the valid operations become the proposal, and
+    the failed ones (and those that needed them) are named for the person instead of failing it all."""
+    p = sample_project
+    ct, operations = _three_operations(p)
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "Renamed CT-201.", "operations": operations},
+        {"action": "propose", "operations": [operations[1]]},  # the same mistake again
+    ])
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "rename it")
+    assert len(llm.seen) == 2  # no third attempt at the same answer
+    assert out.left_out == [
+        {"operation": operations[1], "problems": [
+            "type 'https://watermetadata.org/ontology/watr#NoSuchThing' is not a term in the loaded vocabulary"]},
+        {"operation": operations[2], "problems": [
+            "equipment refers to 'new:x', but no operation creates 'new:x'; give the create_equipment for it "
+            "\"id\": \"new:x\", before this operation, or leave equipment out"]},
+    ]
+    prop = out.proposal
+    assert prop is not None and [c.label for c in prop.changes] == ["CT-201 conductivity"]
+    assert prop.left_out == out.left_out and not prop.notes
+    assert any(stage == "salvaged" for stage, _, _ in events)
+
+    from workbench.autofix import verify
+    assert "the assistant left out 2 operation(s) it could not make valid" in verify(p, prop, [])
+
+    # Trying them again: the model sees them, and its corrections are added to the proposal.
+    fixed = {"action": "propose", "explanation": "Added the tank.", "operations": [
+        {**operations[1], "type": "watr:Tank"}, operations[2]]}
+    retry = ScriptedLLM([fixed, fixed])  # the second answers the soundness gate (the tank is unconnected)
+    again = run_correction(p, retry, guidance, p.head(), prop.selection, "Try the left-out operations again", None,
+                           lambda *_: None, CancelToken(), prior_proposal=prop, retry_left_out=True)
+    shown = retry.seen[0][0]["content"]
+    assert "LEFT OUT OF THE PENDING PROPOSAL" in shown and "NoSuchThing" in shown
+    assert again.proposal is not None and again.proposal.left_out == []
+    assert {c.label for c in again.proposal.changes} >= {"CT-201 conductivity", "Mystery", "P-9"}
+
+
+def test_a_left_out_operation_refers_to_what_the_proposal_creates_by_its_id():
+    from workbench.agent.correction import left_out_entry
+    entry = left_out_entry({"op": "create_point", "id": "new:p", "label": "P", "equipment": "new:x"},
+                           ["unit 'FT' is not a term"], {"eq-abc123": ("new:x", 1)})
+    assert entry == {"operation": {"op": "create_point", "id": "new:p", "label": "P", "equipment": "eq-abc123"},
+                     "problems": ["unit 'FT' is not a term"]}
+
+
+def test_corrections_replace_the_failed_operations_they_name():
+    from workbench.agent.correction import splice
+    current = [{"op": "create_point", "label": "A"}, {"op": "create_point", "label": "B"},
+               {"op": "create_point", "label": "C"}, {"op": "create_equipment", "label": "D"}]
+    # One correction per failed operation: in order.
+    assert splice(current, [1, 2], [{"op": "x"}, {"op": "y"}]) == [current[0], {"op": "x"}, {"op": "y"}, current[3]]
+    # Fewer (or more): matched by kind and label; one matching none is added.
+    fixed = {"op": "create_point", "label": "C", "unit": "unit:L"}
+    new = {"op": "create_point", "label": "E"}
+    assert splice(current, [2], [fixed, new]) == [current[0], current[1], fixed, current[3], new]
+    assert splice(current, [0, 1, 2], [fixed]) == [current[0], current[1], fixed, current[3]]
+
+
+def test_the_reply_grammar_takes_only_real_ids_or_new_placeholders(sample_project):
+    """Constrained decoding cannot write a label, an invented id or a wrong-kind id where an id
+    belongs, and every create names its new entity so later operations can refer to it."""
+    jsonschema = pytest.importorskip("jsonschema")
+    import json
+    from workbench.agent.correction import ID_ENUM_LIMIT, id_defs, step_schema
+    p = sample_project
+    view = p.view(p.head())
+    pump, point = view.equipment[0], view.points[0]
+    schema = step_schema(p.vocab, rows=view.rows())
+
+    def ok(*operations):
+        try:
+            jsonschema.validate({"thought": "", "action": "propose", "operations": list(operations)}, schema)
+            return True
+        except jsonschema.ValidationError:
+            return False
+
+    assert ok({"op": "create_equipment", "id": "new:f1", "label": "Filter", "type": "watr:Tank"},
+              {"op": "create_point", "id": "new:p1", "label": "LT-1", "equipment": "new:f1"},
+              {"op": "update_point", "id": point.id, "equipment": pump.id},
+              {"op": "update_point", "id": point.id, "equipment": None})  # clearing stays possible
+    assert not ok({"op": "update_point", "id": point.id, "equipment": pump.label})  # a label
+    assert not ok({"op": "update_point", "id": point.id, "equipment": "eq-pump-1"})  # invented
+    assert not ok({"op": "update_point", "id": point.id, "equipment": point.id})  # a point, not equipment
+    assert not ok({"op": "update_equipment", "id": point.id, "label": "x"})
+    assert not ok({"op": "create_equipment", "label": "Filter", "type": "watr:Tank"})  # no id of its own
+    assert not ok({"op": "create_equipment", "id": pump.id, "label": "Filter", "type": "watr:Tank"})
+    # The choices offer the same operations.
+    assert schema["properties"]["choices"]["items"]["properties"]["options"]["items"]["properties"][
+        "operations"]["items"] == schema["properties"]["operations"]["items"]
+    # No $ref inside a $defs entry: llama.cpp's converter mishandles them.
+    assert "$ref" not in json.dumps(schema["$defs"])
+    # A large model is checked by id shape instead of listing every id.
+    many = {f"eq-{i:06x}": type("Row", (), {"kind": "equipment"})() for i in range(ID_ENUM_LIMIT + 1)}
+    assert id_defs(many)["equipment_id"]["anyOf"][0] == {"type": "string", "pattern": "^eq-[0-9a-z]+$"}
+    assert step_schema(p.vocab).get("$defs") is None  # without the run's entities, ids stay free

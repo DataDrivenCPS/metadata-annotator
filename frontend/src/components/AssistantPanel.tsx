@@ -1,10 +1,13 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
-import { autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, isActive,
-  issuesOnSelection, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type AutofixChoice, type AutofixGroup,
-  type AutofixStatus, type ProposalState } from '../assistant'
+import { autofixCandidates, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
+  issuesOnSelection, leftOutSummary, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
+import { AutofixBanner } from './AutofixReport'
+import { ActionButton, ChoiceButtons } from './Choices'
 import { summarize } from '../selection'
 import { useStore } from '../store'
+import { attachmentSummary } from '../documents'
+import { providerOf, providerOptions, settingsSummary, shortModel, shownChoice } from '../providers'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
 
 const FIELD_LABELS: Record<string, string> = {
@@ -16,6 +19,10 @@ const FIELD_LABELS: Record<string, string> = {
   subject: 'From', relation: 'Relation', object: 'To',
 }
 const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field.replace(/_/g, ' ')
+const settingsNote = (settings: Parameters<typeof settingsSummary>[0]) => {
+  const summary = settingsSummary(settings)
+  return summary ? ` (${summary})` : ''
+}
 
 /** A collapsible section whose body is only rendered while open (a closed one costs nothing to redraw). */
 function LazyDetails({ summary, className, summaryClassName, children }: {
@@ -26,17 +33,6 @@ function LazyDetails({ summary, className, summaryClassName, children }: {
     <summary className={summaryClassName}>{summary}</summary>
     {open && children()}
   </details>
-}
-
-/** A button that shows a spinner while its action runs, so a slow click visibly registers. */
-function ActionButton({ onClick, disabled, children, ...rest }: {
-  onClick: () => Promise<unknown>; disabled?: boolean; children: ReactNode; className?: string; title?: string
-}) {
-  const [pending, setPending] = useState(false)
-  return <button {...rest} disabled={disabled || pending} aria-busy={pending} onClick={() => {
-    setPending(true)
-    void onClick().finally(() => setPending(false))
-  }}>{pending && <span className="spinner small" />}{children}</button>
 }
 
 const CONTINUE_LABEL = {
@@ -176,7 +172,8 @@ function Composer() {
         </> : <span className="muted">{summary}</span>}
       </div>
       {selection.source_regions.length > 0 && <div className="composer-selection">
-        <span className="muted">Evidence attached: {selection.source_regions.length} source{selection.source_regions.length === 1 ? '' : 's'}</span>
+        <span className="muted" title="Sent with this message only; attach again to use them in a later message">
+          Attached to this message: {attachmentSummary(selection.source_regions)}</span>
         <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>clear evidence</button>
       </div>}
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
@@ -212,144 +209,47 @@ function Composer() {
   )
 }
 
-const STATUS_TEXT: Record<AutofixStatus, string> = {
-  fixed: 'fixed automatically', choice: 'need your choice', review: 'to review', input: 'need your input',
-  failed: 'failed', resolved: 'already fixed',
-}
-
-/** One question with its options as buttons; once one is applied, just the answer. Auto-fix options
- * were checked against the issues, so picking one applies it; a chat option opens for review first. */
-function ChoiceButtons({ choice, review = false }: { choice: AutofixChoice; review?: boolean }) {
-  const choose = useStore((s) => s.chooseOption)
-  const reviewProposal = useStore((s) => s.reviewProposal)
-  const states = useStore((s) => s.proposalStates)
-  const openId = useStore((s) => s.proposal?.id)
-  const busy = useStore((s) => s.busy)
-  const viewing = useStore((s) => s.viewing)
-  const chosen = choice.options.find((o) => states[o.proposal_id] === 'applied')
-  const closed = choice.options.every((o) => states[o.proposal_id] === 'dismissed')
-  return <div className="autofix-choice">
-    <div className="small">{choice.question}</div>
-    {chosen ? <div className="small">✓ {chosen.label}</div>
-      : closed ? <div className="muted small">No longer offered.</div>
-      : <div className="autofix-options">{choice.options.map((o) => {
-          const open = review && openId === o.proposal_id
-          return <ActionButton key={o.proposal_id} className={open ? 'chosen' : undefined}
-            disabled={busy || (!review && !!viewing) || states[o.proposal_id] === 'dismissed'}
-            title={review ? `Shows this option as a proposed change to review and apply${o.note ? `; it ${o.note}` : ''}`
-              : o.note ? `Applies this choice; ${o.note}` : 'Applies this choice'}
-            onClick={() => review ? reviewProposal(o.proposal_id) : choose(choice, o.proposal_id)}>
-            {open && '▸ '}{o.label}{o.note && <span className="muted"> · {o.note}</span>}
-          </ActionButton>
-        })}</div>}
-  </div>
-}
-
-/** One group of issues in the auto-fix report, with what the person can do about it. */
-function AutofixGroupLine({ group, onContinue }: { group: AutofixGroup; onContinue?: () => void }) {
-  const reviewProposal = useStore((s) => s.reviewProposal)
-  const addIssuesToPrompt = useStore((s) => s.addIssuesToPrompt)
-  const issues = useStore((s) => s.model?.issues ?? [])
-  const proposal = useStore((s) => s.proposal)
-  const open = issues.filter((i) => group.issues.includes(i.id) && i.resolution_state === 'open')
-  const title = group.explanations[0] ?? ''
-  return <li className={`autofix-group ${group.status}`}>
-    <div className="autofix-issue" title={group.explanations.join('\n')}>
-      {title}{group.explanations.length > 1 && <span className="muted"> (+{group.explanations.length - 1} like it)</span>}
-    </div>
-    {group.status === 'fixed' && group.explanation && <div className="muted small">{group.explanation}</div>}
-    {group.status !== 'fixed' && group.status !== 'choice' && !!group.reasons?.length &&
-      <div className="muted small">Why not automatic: {group.reasons.join('; ')}</div>}
-    {group.status === 'choice' ? group.choices?.map((c, k) => <ChoiceButtons key={k} choice={c} />)
-      : group.questions?.map((q) => <div key={q} className="small">❓ {q}</div>)}
-    <div className="autofix-actions">
-      {group.status === 'review' && group.proposal_id && (proposal?.id === group.proposal_id
-        ? <span className="muted small">shown below</span>
-        : <button className="link" onClick={() => void reviewProposal(group.proposal_id!).then(onContinue)}>Review the proposal</button>)}
-      {(group.status === 'input' || group.status === 'failed' || group.status === 'choice') && open.length > 0 &&
-        <button className="link" onClick={() => { addIssuesToPrompt(open); onContinue?.() }}>{group.status === 'choice' ? 'Something else… (chat)' : 'Discuss in chat'}</button>}
-    </div>
-  </li>
-}
-
-/** A running auto-fix (group k of n) or its report: fixed automatically, to review, needs input. */
-function AutofixBanner() {
-  const af = useStore((s) => s.autofix)
-  const run = useStore((s) => (s.autofix ? s.runs[s.autofix.runId] : undefined))
-  const head = useStore((s) => s.model?.head)
-  const stop = useStore((s) => s.stopAutofix)
-  const undoAll = useStore((s) => s.undoAutofix)
-  const trayRef = useRef<HTMLDetailsElement>(null)
-  if (!af) return null
-  const { groups, revisions } = autofixReport(run)
-  const counts = (Object.keys(STATUS_TEXT) as AutofixStatus[])
-    .map((st) => [st, groups.filter((g) => g.status === st).length] as const).filter(([, n]) => n > 0)
-  const tally = counts.map(([st, n]) => `${n} ${STATUS_TEXT[st]}`).join(' · ')
-  if (!run || isActive(run)) {
-    const { group, total, message } = autofixProgress(run)
-    return <div className="autofix-banner working">
-      <div className="autofix-head">
-        <strong>Auto-fix{total ? ` · group ${Math.max(group, 1)} of ${total}` : ''}</strong>
-        {tally && <span className="muted">{tally}</span>}
-        <span className="spacer" /><button onClick={() => void stop()}>Stop</button>
-      </div>
-      <div className="autofix-state"><span className="spinner small" /> {message}</div>
-    </div>
-  }
-  const byStatus = (st: AutofixStatus) => groups.filter((g) => g.status === st)
-  const pending = [...byStatus('choice'), ...byStatus('review'), ...byStatus('input'), ...byStatus('failed')]
-  const collapse = () => { if (trayRef.current) trayRef.current.open = false }
-  return <details key={af.runId} ref={trayRef}
-    className={`autofix-banner autofix-tray ${run.status === 'succeeded' ? 'done' : 'failed'}`}>
-    <summary className="autofix-tray-toggle">
-      <span className="autofix-tray-chevron" aria-hidden="true">▸</span>
-      <span className="autofix-tray-summary">
-        <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
-        <span className="muted">{tally || run.error || 'nothing to fix'}</span>
-      </span>
-      <span className="autofix-tray-hint">
-        <span className="autofix-expand">Expand results</span>
-        <span className="autofix-collapse">Collapse results</span>
-      </span>
-    </summary>
-    <div className="autofix-tray-body">
-      <div className="autofix-head autofix-toolbar">
-        {revisions.length > 0 && head && revisions.includes(head) &&
-          <button onClick={() => void undoAll()} title="Undo every automatic fix from this run">Undo automatic fixes</button>}
-        <span className="spacer" />
-        <button onClick={() => void stop()}>Close report</button>
-      </div>
-      {pending.length > 0 && <ul className="autofix-results">{pending.map((g, k) =>
-        <AutofixGroupLine key={k} group={g} onContinue={collapse} />)}</ul>}
-      {byStatus('fixed').length > 0 && <LazyDetails summary={`Fixed automatically (${byStatus('fixed').length})`}>
-        {() => <ul className="autofix-results">{byStatus('fixed').map((g, k) => <AutofixGroupLine key={k} group={g} />)}</ul>}
-      </LazyDetails>}
-    </div>
-  </details>
-}
-
-const shortModel = (m: string) => m.split(/[\\/]/).pop() ?? m
-
 /** The model endpoint the assistant uses, and whether it can be reached right now. */
 function ModelStatus() {
   const status = useStore((s) => s.status)
   const provider = useStore((s) => s.provider)
   const setProvider = useStore((s) => s.setProvider)
+  const listed = useStore((s) => s.providerModels)
+  const setProviderModels = useStore((s) => s.setProviderModels)
+  const setModelVision = useStore((s) => s.setModelVision)
   const [health, setHealth] = useState<ProviderHealth | null>(null)
   const [checkVersion, setCheckVersion] = useState(0)
+  const providers = useMemo(() => status?.providers ?? [], [status])
+  const current = provider ? providerOf(provider, providers) : undefined
 
   useEffect(() => {
     if (!provider) return
     let alive = true
-    const check = () => api.providerHealth(provider).then((h) => alive && setHealth(h))
-      .catch((e) => alive && setHealth({ ok: false, detail: `Could not check the model endpoint: ${(e as Error).message}` }))
+    const check = () => api.providerHealth(provider).then((h) => {
+      if (!alive) return
+      setHealth(h)
+      if (current?.lists_models && h.models) setProviderModels(current.name, h.models)
+      if (h.ok && h.supports_images !== undefined) setModelVision(provider, h.supports_images)
+    }).catch((e) => alive && setHealth({ ok: false, detail: `Could not check the model endpoint: ${(e as Error).message}` }))
     void check()
     const t = setInterval(check, 15000)
     return () => { alive = false; clearInterval(t) }
-  }, [provider, checkVersion])
+  }, [provider, checkVersion, current, setProviderModels, setModelVision])
 
+  // The other servers' lists, so their models can be chosen before switching to them.
+  useEffect(() => {
+    let alive = true
+    for (const p of providers) {
+      if (p.lists_models && p.name !== current?.name) {
+        void api.providerHealth(p.name).then((h) => { if (alive && h.models) setProviderModels(p.name, h.models) }).catch(() => {})
+      }
+    }
+    return () => { alive = false }
+  }, [providers, current, setProviderModels])
+
+  const options = providerOptions(providers, listed)
+  const shown = shownChoice(options, provider, providers, listed)
   const state = !health ? 'checking' : health.ok ? 'ok' : 'bad'
-  const current = status?.providers.find((p) => p.name === provider)
   return <>
     <div className="model-status">
       <span className={`status-pill ${state}`} title={health?.ok
@@ -357,15 +257,12 @@ function ModelStatus() {
         : health?.detail ?? 'Checking the model endpoint…'}>
         <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? 'Connected' : 'Unavailable'}
       </span>
-      <select value={provider ?? ''} title="Model endpoint" onChange={(e) => {
+      <select value={shown.value} title="Model" onChange={(e) => {
         setHealth(null)
         setProvider(e.target.value)
       }}>
-        {status?.providers.map((p) => (
-          <option key={p.name} value={p.name} disabled={p.has_key === false}>
-            {p.name} · {shortModel(p.model)}{p.has_key === false ? ' (no key)' : ''}
-          </option>
-        ))}
+        {options.map((o) => <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>)}
+        {shown.missing && <option value={shown.missing.value}>{shown.missing.label}</option>}
       </select>
     </div>
     {state === 'bad' && <div className="model-status-detail">
@@ -462,8 +359,11 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
       })}
       {live && !steps.length && <li className="current"><span className="step-mark"><span className="spinner small" /></span>
         <span className="step-text">{run.status === 'queued' ? 'Waiting to start…' : 'Starting…'}</span></li>}
-      {!live && <li className="run-meta muted">{run.provider} · {run.model} · skill {run.skill_version}
-        {run.outcome.input_tokens ? ` · ${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens` : ''}</li>}
+      {!live && <li className="run-meta muted">{run.provider} · <span title={JSON.stringify(run.model_settings ?? {}, null, 1)}>
+        {run.model}{settingsNote(run.model_settings)}</span> · skill {run.skill_version}
+        {run.outcome.input_tokens ? <span title={callBreakdown(run.outcome.calls)}>
+          {` · ${run.outcome.estimated ? '~' : ''}${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens`}
+          {run.outcome.cached_tokens ? ` (${run.outcome.cached_tokens} cached)` : ''}</span> : ''}</li>}
     </ol>
     {slowModel && <div className="muted small step-note">The model is still working. Self-hosted models can take a
       minute or more per step; you can keep browsing while you wait.</div>}
@@ -569,6 +469,8 @@ function proposalStateText(state: ProposalState | undefined) {
   }
 }
 
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
 function fmt(v: unknown) {
   if (v === null || v === undefined || v === '') return <span className="muted">—</span>
   return String(v)
@@ -598,6 +500,9 @@ function ProposalPreview({ proposal, running: runningProp }: {
   const lines = useMemo(() => summarizeChanges(proposal.changes, fieldLabel), [proposal])
   const outside = lines.filter((l) => l.outside).length
   const dismissals = proposal.issue_dismissals ?? []
+  const leftOut = proposal.left_out ?? []
+  const one = leftOut.length === 1
+  const replyToProposal = useStore((s) => s.replyToProposal)
   const fixes = [...new Set([...(v?.resolved ?? []), ...(proposal.gate?.fixed ?? [])])]
   const introduced = [...new Set([...(v?.introduced ?? []), ...(proposal.gate?.introduced ?? [])])]
   const show = (id: string, deleted: boolean, ctrl: boolean) => {
@@ -614,28 +519,30 @@ function ProposalPreview({ proposal, running: runningProp }: {
       <span className="ok-text">✓ {proposal.operations.length ? `Applied as ${proposal.applied_revision}` : `Dismissed ${dismissals.length} issue(s)`}</span>
       {headline && <span className="muted"> · {headline}</span>}
       {fixes.length > 0 && <span className="muted"> · fixes {fixes.length} issue{fixes.length === 1 ? '' : 's'}</span>}
-      <button className="link small" onClick={() => setExpanded(true)}>show</button>
+      <button className="link small" onClick={() => setExpanded(true)}>Show</button>
     </div>
   )
+
+  // Issues in one line: what it fixes or dismisses, and whether it adds any. Bad news stays open.
+  const checked = !!(v || proposal.gate)
+  const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? '' : 's'}`
+  const issueLine = [fixes.length > 0 && `fixes ${plural(fixes.length, 'issue')}`,
+    dismissals.length > 0 && `dismisses ${plural(dismissals.length, 'issue')}`,
+    checked && !introduced.length && 'no new issues'].filter(Boolean).join(' · ')
+  const sources = proposal.build_summary?.sources ?? []
+  const fieldChanges = proposal.changes.some((c) => c.fields.length > 2)
 
   return (
     <div className={`proposal status-${proposal.status}`}>
       <div className="proposal-head">
         <h3>Proposed change</h3>
-        {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>collapse</button>}
+        {headline && <span className="muted">{headline}</span>}
+        {outside > 0 && <span className="warn-text">{outside} outside your selection</span>}
+        <span className="spacer" />
+        {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>Collapse</button>}
       </div>
-      {!!proposal.build_summary?.sources?.length && <details className="proposal-details">
-        <summary>Sources ({proposal.build_summary.sources.length})</summary>
-        <ul>{proposal.build_summary.sources.map((source) => <li key={source.id}>
-          <a href={`${api.sourceFileUrl(projectId!, source.id)}${source.pages?.length ? `#page=${source.pages[0]}` : ''}`}
-            target="_blank" rel="noreferrer">{source.filename}</a>
-          <span className="muted"> · {source.role === 'reference' ? 'Supporting evidence' : 'Build input'}
-            {source.pages?.length ? ` · pages ${source.pages.join(', ')}` : ''}</span>
-        </li>)}</ul>
-      </details>}
+
       {lines.length > 0 && <div className="proposal-changes">
-        {(lines.length > 1 || outside > 0) && <div className="changes-head">{lines.length > 1 && headline}
-          {outside > 0 && <span className="warn-text">{lines.length > 1 ? ' · ' : ''}{outside} outside your selection</span>}</div>}
         <ul>{(allLines ? lines : lines.slice(0, FACE_LINES)).map((l) => (
           <li key={l.id} className={`change-line ${l.change}`} title="Select and inspect"
             onClick={(e) => show(l.id, l.change === 'deleted', e.ctrlKey || e.metaKey)}>
@@ -646,62 +553,83 @@ function ProposalPreview({ proposal, running: runningProp }: {
             {l.overridesEdit && <span className="badge warn" title="A person set one of these values earlier">overrides edit</span>}
           </li>))}</ul>
         {lines.length > FACE_LINES && <button className="link small" onClick={() => setAllLines(!allLines)}>
-          {allLines ? 'show fewer' : `+${lines.length - FACE_LINES} more`}</button>}
+          {allLines ? 'Show fewer' : `Show ${lines.length - FACE_LINES} more`}</button>}
       </div>}
+      {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
 
       <div className="proposal-fixes">
-        {fixes.length > 0 ? <details>
-          <summary className="resolved">Addresses {fixes.length} issue{fixes.length === 1 ? '' : 's'}</summary>
-          <ul>{fixes.map((f, i) => <li key={i}>{f}</li>)}</ul>
-        </details> : (v || proposal.gate) && <div className="muted">No existing issues resolved.</div>}
-        {dismissals.length > 0 && <details>
-          <summary>Dismisses {dismissals.length} issue{dismissals.length === 1 ? '' : 's'}</summary>
-          <ul>{dismissals.map((d) => <li key={d.id}>{d.explanation}<div className="muted">{d.reason}</div></li>)}</ul>
-        </details>}
-        {introduced.length > 0 ? <>
-          <div className="fixes-head introduced">Introduces {introduced.length} new issue{introduced.length === 1 ? '' : 's'}</div>
+        {fixes.length > 0 || dismissals.length > 0
+          ? <details>
+            <summary className={introduced.length ? undefined : 'resolved'}>{capitalize(issueLine)}</summary>
+            {fixes.length > 0 && <ul>{fixes.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+            {dismissals.length > 0 && <ul>{dismissals.map((d) => <li key={d.id}>{d.explanation}
+              <div className="muted">Dismissed: {d.reason}</div></li>)}</ul>}
+          </details>
+          : issueLine ? <div className="ok-text">{capitalize(issueLine)}</div>
+          : !checked && <div className="muted">Issue checks unavailable</div>}
+        {introduced.length > 0 && <>
+          <div className="fixes-head introduced">Adds {plural(introduced.length, 'new issue')}</div>
           <ul className="introduced">{introduced.map((f, i) => <li key={i}>{f}</li>)}</ul>
-        </> : (v || proposal.gate) ? <div className="ok-text">No new issues.</div>
-          : <div className="muted">Issue checks unavailable.</div>}
+        </>}
       </div>
 
       {proposal.questions.length > 0 && <div className="proposal-notes">
         {proposal.questions.map((q, i) => <p key={`q${i}`} className="question">? {q}</p>)}
       </div>}
 
-      {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
+      {leftOut.length > 0 && <div className="proposal-left-out">
+        <p className="warn-text"><strong>{leftOut.length} operation{one ? '' : 's'} left out</strong>
+          {' '}— the assistant could not make {one ? 'it' : 'them'} valid, so {one ? 'it is' : 'they are'} not part of this proposal.</p>
+        <ul>{leftOut.map((e, i) => <li key={i}><code>{leftOutSummary(e.operation)}</code>: {e.problems.join('; ')}</li>)}</ul>
+        {proposal.status === 'pending' && <button className="link small" disabled={running || busy} title={waitTitle}
+          onClick={() => void replyToProposal('Try the left-out operations again.', proposal.agent_run_id ?? undefined, true)}>
+          Try {one ? 'it' : 'these'} again</button>}
+      </div>}
 
-      {proposal.changes.some((c) => c.fields.length > 2) && <LazyDetails className="proposal-details" summary="All field changes">
-        {() => proposal.changes.length > 0 && <section>
-          <h4>Field changes</h4>
-          {proposal.changes.map((change) => {
-            const fields = change.fields.length ? change.fields : [{ field: change.change, before: null, after: null }]
-            return <table key={change.entity_id} className="changes">
-              <thead><tr><th colSpan={3}><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</th></tr></thead>
-              <tbody>{fields.map((field, index) => (
-                <tr key={`${field.field}-${index}`} onClick={(e) => show(change.entity_id, change.change === 'deleted', e.ctrlKey || e.metaKey)}>
-                  <td>{fieldLabel(field.field)}
-                    {change.overrides_locked.includes(field.field) && <span className="badge warn" title="A person set this value earlier">overrides earlier edit</span>}
-                  </td>
-                  <td className="before">{fmt(field.before)}</td>
-                  <td className="after">{fmt(field.after)}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          })}
-        </section>}
-      </LazyDetails>}
-
-      <LazyDetails className="proposal-details" summary={`Show RDF · +${proposal.diff.added.length} / −${proposal.diff.removed.length} triples`}>
-        {() => <pre className="code diff">{[
-          ...proposal.diff.removed.map((t) => `- ${t}`),
-          ...proposal.diff.added.map((t) => `+ ${t}`),
-        ].join('\n') || 'No RDF changes.'}</pre>}
+      {/* Everything for a closer look, in one place: sources, notes, field changes, RDF. */}
+      <LazyDetails className="proposal-details" summary={['Details', proposal.notes.length > 0 && plural(proposal.notes.length, 'note'),
+        `+${proposal.diff.added.length} / −${proposal.diff.removed.length} triples`].filter(Boolean).join(' · ')}>
+        {() => <>
+          {sources.length > 0 && <section>
+            <h4>Sources</h4>
+            <ul>{sources.map((source) => <li key={source.id}>
+              <a href={`${api.sourceFileUrl(projectId!, source.id)}${source.pages?.length ? `#page=${source.pages[0]}` : ''}`}
+                target="_blank" rel="noreferrer">{source.filename}</a>
+              <span className="muted"> · {source.role === 'reference' ? 'Supporting evidence' : 'Build input'}
+                {source.pages?.length ? ` · pages ${source.pages.join(', ')}` : ''}</span>
+            </li>)}</ul>
+          </section>}
+          {proposal.notes.length > 0 && <section className="proposal-notes">
+            <h4>Notes</h4>
+            {proposal.notes.map((n, i) => <p key={i} className="warn-text">{n}</p>)}
+          </section>}
+          {fieldChanges && <section>
+            <h4>Field changes</h4>
+            {proposal.changes.map((change) => {
+              const fields = change.fields.length ? change.fields : [{ field: change.change, before: null, after: null }]
+              return <table key={change.entity_id} className="changes">
+                <thead><tr><th colSpan={3}><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</th></tr></thead>
+                <tbody>{fields.map((field, index) => (
+                  <tr key={`${field.field}-${index}`} onClick={(e) => show(change.entity_id, change.change === 'deleted', e.ctrlKey || e.metaKey)}>
+                    <td>{fieldLabel(field.field)}
+                      {change.overrides_locked.includes(field.field) && <span className="badge warn" title="A person set this value earlier">overrides earlier edit</span>}
+                    </td>
+                    <td className="before">{fmt(field.before)}</td>
+                    <td className="after">{fmt(field.after)}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            })}
+          </section>}
+          <section>
+            <h4>RDF</h4>
+            <pre className="code diff">{[
+              ...proposal.diff.removed.map((t) => `- ${t}`),
+              ...proposal.diff.added.map((t) => `+ ${t}`),
+            ].join('\n') || 'No RDF changes.'}</pre>
+          </section>
+        </>}
       </LazyDetails>
-
-      {proposal.notes.length > 0 && <LazyDetails className="proposal-notes" summary={`Notes (${proposal.notes.length})`}>
-        {() => proposal.notes.map((n, i) => <p key={i} className="warn-text">{n}</p>)}
-      </LazyDetails>}
 
       <div className="proposal-actions">
         {(proposal.status === 'pending' || proposal.status === 'stale') && <>

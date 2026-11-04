@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import threading
@@ -23,11 +24,13 @@ from .config import Settings, load_settings
 from .events import EventBus
 from . import views as views_mod
 from .llm import LLMError, make_client
+from .llm.endpoint import EndpointInfo
 from .operations import OperationError, OperationList
 from .project import Project, ProposalMismatch, StaleRevision, Workspace
 from .projection import POINT_KIND_LABELS, entity_iri, entity_properties, sensors_of, typed_field
 from .runs import ProviderUnavailable, RunManager
 from .relations import find as find_relationship
+from . import retrieval
 from .schemas import CsvImportConfig, SelectionScope, SourceRegion
 from .sources import IMAGE_TYPES, SourceError, preview, suggest_config
 from .vocabulary import BRICK, QUDT, S223, VALUE_KINDS, Vocabulary, VocabularyRegistry
@@ -77,6 +80,7 @@ class ProposalReplyRequest(BaseModel):
     provider: str | None = None
     parent_run_id: str | None = None
     source_regions: list[SourceRegion] | None = None
+    retry_left_out: bool = False  # try again the operations the proposal left out
 
 
 class LayoutRequest(BaseModel):
@@ -95,8 +99,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     guidance = SkillGuidance(settings.skill_dir)
     workspace = Workspace(settings.projects_dir, registry, bus)
     runs = RunManager(settings, guidance, bus)
+    indexer = retrieval.Indexer(settings, workspace)
+    bus.listen(indexer.on_event)  # new, replaced and removed sources are (re)indexed in the background
+    atexit.register(indexer.shutdown)
     app = FastAPI(title="Knowledge-graph modeling workbench", version=__version__)
     app.state.settings, app.state.registry, app.state.workspace, app.state.runs = settings, registry, workspace, runs
+    app.state.indexer = indexer
 
     # Default vocabulary first; the others load right after (each is cached after first use).
     threading.Thread(target=_load_all, args=(registry, settings.default_profile), daemon=True,
@@ -127,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, str(exc)) from None
         if not getattr(p, "_recovered", False):
             runs.recover(p)
+            indexer.schedule_maintenance(p.id)  # resume indexing interrupted by a restart
             p._recovered = True  # type: ignore[attr-defined]
         return p
 
@@ -160,8 +169,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         providers = []
         for name, cfg in settings.providers.items():
             providers.append({"name": name, "kind": cfg.kind, "model": cfg.model, "base_url": cfg.base_url,
-                              "supports_images": cfg.supports_images or cfg.kind == "anthropic", "default": name == settings.default_provider,
-                              "has_key": bool(cfg.api_key) if cfg.api_key_env else None})
+                              "supports_images": cfg.supports_images if cfg.kind == "openai" else EndpointInfo(cfg).supports_images(),
+                              # null: the server says per model, in the health check
+                              "default": name == settings.default_provider,
+                              "has_key": bool(cfg.api_key) if cfg.api_key_env else None,
+                              # no model configured: the server's own list, from the health check
+                              "lists_models": cfg.kind == "openai" and not cfg.model})
         vocabularies = registry.status()
         default = next(v for v in vocabularies if v["name"] == settings.default_profile)
         return {"version": __version__, "vocabulary": default, "vocabularies": vocabularies,
@@ -169,7 +182,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "skill_version": guidance.version, "providers": providers,
                 "data_dir": str(settings.data_dir)}
 
-    @app.get("/api/providers/{name}/health")
+    @app.get("/api/providers/{name:path}/health")
     def provider_health(name: str):
         try:
             cfg = settings.provider(name)
@@ -178,7 +191,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (KeyError, ValueError) as exc:
             raise HTTPException(404, str(exc)) from None
         # A fresh check that also refreshes what starting a run relies on.
-        return runs.provider_health(cfg, fresh=True)
+        health = dict(runs.provider_health(cfg, fresh=True))
+        if settings.providers[cfg.name].model:  # a configured model: the server's catalog is not offered
+            health.pop("models", None)
+        return health
 
     # --------------------------------------------------------- vocabulary
 
@@ -452,8 +468,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for o in p.observations():
             if o.id in modeled:
                 modeled_by_source[o.source_id] = modeled_by_source.get(o.source_id, 0) + 1
+        index = retrieval.statuses(p)
         return [s.model_dump(mode="json") | {"observation_count": counts.get(s.id, 0),
-                                              "modeled_count": modeled_by_source.get(s.id, 0)} for s in p.sources()]
+                                              "modeled_count": modeled_by_source.get(s.id, 0),
+                                              "index": index.get(s.id)} for s in p.sources()]
+
+    @app.post("/api/projects/{pid}/sources/{sid}/reindex")
+    def reindex_source(pid: str, sid: str):
+        p = project(pid)
+        src = source_or_404(p, sid)
+        if not retrieval.index.indexable(src):
+            raise HTTPException(400, f"{src.filename} is not a document that is indexed.")
+        indexer.reindex(p, sid)
+        return retrieval.status(p, sid)
+
+    @app.get("/api/projects/{pid}/sources/search")
+    def search_sources(pid: str, q: str, source_id: list[str] | None = None, k: int = 8):
+        """Passages of indexed sources for a query (keyword and vector search, fused)."""
+        p = project(pid)
+        hits = retrieval.search(p, q, source_ids=source_id, k=max(1, min(k, 50)), embedder=indexer.embedder)
+        found = retrieval.chunks(p, [h.chunk_id for h in hits])
+        names = {s.id: s.filename for s in p.sources()}
+        return [found[h.chunk_id] | {"filename": names.get(h.source_id), "score": round(h.score, 5),
+                                     "keyword_rank": h.keyword_rank, "vector_rank": h.vector_rank}
+                for h in hits if h.chunk_id in found]
 
     @app.get("/api/projects/{pid}/sources/{sid}/file")
     def source_file(pid: str, sid: str):
@@ -602,7 +640,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/projects/{pid}/usage")
     def token_usage(pid: str):
-        return runs.usage(project(pid))
+        p = project(pid)
+        usage = runs.usage(p)
+        for sid, state in retrieval.statuses(p).items():  # drawing descriptions, made while indexing
+            if state.get("description_tokens"):
+                usage[f"index:{sid}"] = {"input_tokens": state.get("description_input_tokens", 0),
+                                         "output_tokens": state.get("description_output_tokens", 0)}
+        return usage
 
     @app.get("/api/projects/{pid}/runs/{run_id}")
     def get_run(pid: str, run_id: str):
@@ -638,7 +682,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             prop = p.proposal(prop_id)
             run = runs.start_revision(p, prop, instruction, body.provider, parent_run_id=body.parent_run_id,
-                                      source_regions=body.source_regions)
+                                      source_regions=body.source_regions, retry_left_out=body.retry_left_out)
         except KeyError:
             raise HTTPException(404, f"No proposal {prop_id}") from None
         except ValueError as exc:

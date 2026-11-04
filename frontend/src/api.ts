@@ -1,6 +1,7 @@
 import type {
   AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
 } from './types'
+import type { SourceIndex } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -81,8 +82,8 @@ export const api = {
   cancelRun: (pid: string, id: string) => req<AgentRun>('POST', `${P(pid)}/runs/${id}/cancel`),
   proposal: (pid: string, id: string) => req<Proposal>('GET', `${P(pid)}/proposals/${id}`),
   proposals: (pid: string) => req<Proposal[]>('GET', `${P(pid)}/proposals`),
-  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[]) =>
-    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions }),
+  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[], retry_left_out = false) =>
+    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions, retry_left_out }),
   applyProposal: (pid: string, id: string) => req<Revision>('POST', `${P(pid)}/proposals/${id}/apply`),
   dismissProposal: (pid: string, id: string) => req<Proposal>('POST', `${P(pid)}/proposals/${id}/dismiss`),
   regenerate: (pid: string, id: string, provider?: string) =>
@@ -107,6 +108,7 @@ export const api = {
   sourceConfirm: (pid: string, sid: string, cfg: CsvImportConfig) =>
     req<{ observations: number; superseded: number }>('POST', `${P(pid)}/sources/${sid}/confirm`, cfg),
   observations: (pid: string, sid: string) => req<Observation[]>('GET', `${P(pid)}/sources/${sid}/observations?limit=5000`),
+  reindexSource: (pid: string, sid: string) => req<SourceIndex>('POST', `${P(pid)}/sources/${sid}/reindex`),
   exportUrl: (pid: string, revision: string, kind: 'ttl' | 'csv') =>
     `${P(pid)}/${kind === 'ttl' ? 'export.ttl' : 'export-points.csv'}?revision=${revision}`,
   eventsUrl: (pid: string) => `${P(pid)}/events`,

@@ -3,6 +3,7 @@ import { api } from '../api'
 import { useStore } from '../store'
 import { type EntityDetail, type EntityPropertySpec, type EntityPropertyValue, type EntityRelations, type Revision } from '../types'
 import { CandidateOptions } from './cells'
+import { CitationItem } from './Citation'
 import { DismissalNote, IssueDetails } from './IssuesView'
 import { shortIri, TermPicker } from './TermPicker'
 
@@ -170,19 +171,8 @@ function Inspector() {
       <PropertiesPanel eid={detail.id} properties={detail.properties ?? []} />
       <RelationsPanel eid={detail.id} />
       <h5>Evidence</h5>
-      {detail.evidence.length ? detail.evidence.map((e) => (
-        <div key={e.id} className="evidence-item">
-          <a href={`${api.sourceFileUrl(projectId, String(e.location.source_id))}${e.location.page ? `#page=${e.location.page}` : ''}`}
-            target="_blank" rel="noreferrer">{String(e.content.filename ?? e.content.name ?? 'Source')}
-            {e.location.page ? ` · page ${e.location.page}` : ''}
-            {typeof e.location.row === 'number' ? ` · row ${e.location.row + 1}` : ''}
-            {typeof e.location.column === 'number' ? ` · column ${e.location.column + 1}` : ''}
-          </a>
-          {Array.isArray(e.location.text_range) && <span className="muted"> · characters {e.location.text_range[0] + 1}–{e.location.text_range[1]}</span>}
-          {typeof e.content.text === 'string' && <p className="evidence-excerpt">{e.content.text}</p>}
-          {!!e.content.metadata && <p className="muted">{JSON.stringify(e.content.metadata)}</p>}
-        </div>
-      )) : <p className="muted">No linked source observations.</p>}
+      {detail.evidence.length ? detail.evidence.map((e) => <CitationItem key={e.id} citation={e} />)
+        : <p className="muted">No linked source observations.</p>}
       <h5>Correction history</h5>
       {detail.history.length ? (
         <ul className="history">{detail.history.map((h, i) => (

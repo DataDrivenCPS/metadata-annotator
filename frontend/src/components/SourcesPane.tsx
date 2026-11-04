@@ -6,6 +6,8 @@ import { choiceReadsImages } from '../providers'
 import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
 import { SourceIndexStatus } from './SourceIndexStatus'
+import { boxPercent, citationBox, citationLabel, isGenerated, locatePassage, recordsToShow, zoomToBox } from '../citations'
+import { GeneratedBadge } from './Citation'
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
   ['row_points', 'Rows describe points', 'One point per row: a name column plus optional metadata columns.'],
@@ -24,8 +26,12 @@ export function SourcesPane() {
   const [choosing, setChoosing] = useState(false)
   const input = useRef<HTMLInputElement>(null)
 
+  const citation = useStore((s) => s.citation)
+  const clearCitation = useStore((s) => s.clearCitation)
+
   const load = useCallback(() => api.sources(projectId).then(setSources), [projectId])
   useEffect(() => { void load() }, [load, sourcesVersion])
+  useEffect(() => { if (citation) setActive(citation.source_id) }, [citation])
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return
@@ -95,6 +101,11 @@ export function SourcesPane() {
         sources={sources.filter((source) => selected.includes(source.id))} onClose={() => setChoosing(false)} />}
       {current && (
         <div className="source-view">
+          {citation?.source_id === current.id && <div className="citation-banner">
+            <span>Checking <strong>{citationLabel(citation)}</strong></span>
+            {isGenerated(citation) && <GeneratedBadge />}
+            <button className="link" onClick={clearCitation}>clear</button>
+          </div>}
           {current.kind === 'csv' ? <CsvSource source={current} onConfirmed={load} />
             : current.kind === 'image' ? <ImageView key={current.id} source={current} />
             : <DocumentView key={current.id} source={current} />}
@@ -186,7 +197,11 @@ function SourceSetBuild({ sources, onClose }: { sources: Source[]; onClose: () =
 
 function CsvSource({ source, onConfirmed }: { source: Source; onConfirmed: () => void }) {
   const [tab, setTab] = useState<'mapping' | 'records'>(source.status === 'configured' ? 'records' : 'mapping')
+  const citation = useStore((s) => s.citation)
   useEffect(() => { setTab(source.status === 'configured' ? 'records' : 'mapping') }, [source.id, source.status])
+  useEffect(() => {
+    if (citation?.source_id === source.id && source.status === 'configured') setTab('records')
+  }, [citation, source.id, source.status])
   return (
     <div className="csv-source">
       <nav className="tabs small">
@@ -213,9 +228,17 @@ function RecordsView({ source }: { source: Source }) {
   const [filter, setFilter] = useState('')
   const [building, setBuilding] = useState(false)
   const [hint, setHint] = useState('')
+  const citation = useStore((s) => s.citation)
+  const citedId = citation?.source_id === source.id ? citation.id : null
+  const citedRow = useRef<HTMLTableRowElement>(null)
   useEffect(() => {
     api.observations(projectId, source.id).then((o) => setObs(o.filter((x) => x.status !== 'superseded')))
   }, [projectId, source.id, sourcesVersion])
+  useEffect(() => { if (citedId) setFilter('') }, [citation, citedId])
+  const loaded = !!obs
+  useEffect(() => {
+    if (citedId && loaded) citedRow.current?.scrollIntoView({ block: 'center' })
+  }, [citation, citedId, loaded])
   if (!obs) return <p className="muted">Loading records…</p>
   const q = filter.trim().toLowerCase()
   const shown = q ? obs.filter((o) => JSON.stringify(o.content).toLowerCase().includes(q)) : obs
@@ -251,11 +274,13 @@ function RecordsView({ source }: { source: Source }) {
         <input className="filter" placeholder="Filter records…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         <span className="muted small">{shown.length} of {obs.length}</span>
       </div>
+      {citedId && !obs.some((o) => o.id === citedId) && <p className="warn-text small">
+        This record is no longer in the source's current layout; the citation above shows what it said.</p>}
       <div className="grid-scroll tall">
         <table className="raw-grid">
           <thead><tr><th>Where</th><th>Point name</th>{keys.map((k) => <th key={k}>{k}</th>)}<th title="Records stay separate from the model; each modeled point cites its record as evidence">Model</th></tr></thead>
-          <tbody>{shown.slice(0, 1000).map((o) => (
-            <tr key={o.id} title={o.id}>
+          <tbody>{recordsToShow(shown, citedId).map((o) => (
+            <tr key={o.id} title={o.id} ref={o.id === citedId ? citedRow : undefined} className={o.id === citedId ? 'cited' : undefined}>
               <th>{o.location.kind === 'csv_row' ? `row ${(o.location.row ?? 0) + 1}` : `col ${(o.location.column ?? 0) + 1}`}</th>
               <td className="name">{o.content.name}</td>
               {keys.map((k) => <td key={k}>{o.content.metadata?.[k] ?? ''}</td>)}
@@ -456,6 +481,13 @@ function ImageView({ source }: { source: Source }) {
     setView({ scale: s, x: (el.clientWidth - W * s) / 2, y: (el.clientHeight - H * s) / 2 })
   }, [W, H])
   useEffect(() => { fit() }, [fit, source.id])
+  const citation = useStore((s) => s.citation)
+  const cited = citation?.source_id === source.id ? citationBox(citation) : null
+  useEffect(() => {
+    const el = frame.current
+    const box = citation?.source_id === source.id ? citationBox(citation) : null
+    if (el && box) setView(zoomToBox(box, el.clientWidth, el.clientHeight, W, H))
+  }, [citation, source.id, W, H])
 
   const region = selection.source_regions.find((r) => r.source_id === source.id && r.bbox)?.bbox as Box | undefined
   const toImage = (e: React.MouseEvent) => {
@@ -510,6 +542,8 @@ function ImageView({ source }: { source: Source }) {
               left: Math.min(b[0], b[0] + b[2]), top: Math.min(b[1], b[1] + b[3]),
               width: Math.abs(b[2]), height: Math.abs(b[3]), borderWidth: 2 / view.scale }} />
           ))}
+          {cited && <div className="region cited" style={{ left: cited[0], top: cited[1], width: cited[2], height: cited[3],
+            borderWidth: 2 / view.scale }} />}
         </div>
       </div>
       <p className="muted small">
@@ -570,16 +604,34 @@ function DocumentBuild({ source }: { source: Source }) {
 
 function DocumentView({ source }: { source: Source }) {
   const projectId = useStore((s) => s.projectId)!
+  const citation = useStore((s) => s.citation)
   const [page, setPage] = useState(1)
-  const [result, setResult] = useState<{ page: number; preview?: { text: string; truncated: boolean }; error?: string } | null>(null)
+  const [result, setResult] = useState<{ page: number; preview?: { text: string; truncated: boolean; page_size: number[] | null }; error?: string } | null>(null)
   const preview = result?.page === page ? result.preview : null
   const error = result?.page === page ? result.error : null
+  const cited = citation?.source_id === source.id ? citation : null
+  const citedPage = cited?.location.page ?? null
+  useEffect(() => { if (cited && citedPage) setPage(citedPage) }, [cited, citedPage])
   useEffect(() => {
     let active = true
     api.documentPreview(projectId, source.id, page).then((preview) => { if (active) setResult({ page, preview }) })
       .catch((e) => { if (active) setResult({ page, error: (e as Error).message }) })
     return () => { active = false }
   }, [projectId, source.id, page])
+  const onCitedPage = !!cited && (source.kind !== 'pdf' || citedPage === page)
+  const box = onCitedPage && cited ? citationBox(cited) : null
+  const span = onCitedPage && cited && preview ? locatePassage(preview.text, cited) : null
+  const size = preview?.page_size
+  const spanStart = span?.[0]
+  const pageWidth = size?.[0]
+  const pageView = useRef<HTMLDivElement>(null)
+  const citedBox = useRef<HTMLDivElement>(null)
+  const citedText = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (cited) pageView.current?.scrollIntoView({ block: 'nearest' })  // below the build form
+    citedBox.current?.scrollIntoView({ block: 'center' })
+    citedText.current?.scrollIntoView({ block: 'center' })
+  }, [cited, spanStart, pageWidth])
   return <div className="document-view">
     <DocumentBuild source={source} />
     {source.kind === 'pdf' && <>
@@ -589,11 +641,18 @@ function DocumentView({ source }: { source: Source }) {
         <button disabled={page >= (source.page_count ?? 1)} onClick={() => setPage(page + 1)}>Next</button>
         <a className="button" href={api.sourceFileUrl(projectId, source.id)} target="_blank" rel="noreferrer">Open PDF</a>
       </div>
-      <div className="document-page"><img src={api.sourcePageUrl(projectId, source.id, page)} alt={`${source.filename}, page ${page}`} /></div>
+      <div ref={pageView} className="document-page"><div className="document-canvas">
+        {/* Keyed so the last page isn't left showing, under this page's number, while this one loads. */}
+        <img key={page} src={api.sourcePageUrl(projectId, source.id, page)} alt={`${source.filename}, page ${page}`} />
+        {box && size && <div ref={citedBox} className="region cited" style={boxPercent(box, size[0], size[1])} />}
+      </div></div>
     </>}
     {error && <p className="error-text">{error}</p>}
-    {preview && <Disclosure defaultOpen={source.kind !== 'pdf'} summary={`Readable text${preview.truncated ? ' (preview truncated)' : ''}`}>
-      <pre className="document-text">{preview.text || 'No text layer. A model that supports images can read this page visually.'}</pre>
+    {preview && <Disclosure key={span ? 'cited' : 'plain'} defaultOpen={source.kind !== 'pdf' || (!!span && !box)}
+      summary={`Readable text${preview.truncated ? ' (preview truncated)' : ''}`}>
+      <pre className="document-text">{!preview.text ? 'No text layer. A model that supports images can read this page visually.'
+        : span ? <>{preview.text.slice(0, span[0])}<mark ref={citedText}>{preview.text.slice(span[0], span[1])}</mark>{preview.text.slice(span[1])}</>
+        : preview.text}</pre>
     </Disclosure>}
   </div>
 }

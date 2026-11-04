@@ -9,7 +9,9 @@ import { summarize } from '../selection'
 import { useStore } from '../store'
 import { attachmentSummary } from '../documents'
 import { providerOf, providerOptions, settingsSummary, shortModel, shownChoice } from '../providers'
-import type { AgentRun, Proposal, ProviderHealth, RunChanges } from '../types'
+import { citationSummary } from '../citations'
+import { CitationItem } from './Citation'
+import type { AgentRun, Proposal, ProposalCitations, ProviderHealth, RunChanges } from '../types'
 
 const FIELD_LABELS: Record<string, string> = {
   label: 'Name', equipment: 'Equipment', point_kind: 'Kind', point_type: 'Point type', quantity_kind: 'Measurement', unit: 'Unit',
@@ -501,6 +503,44 @@ function fmt(v: unknown) {
 }
 
 const FACE_LINES = 8
+const CITED_CHANGES_SHOWN = 50
+
+/** What each change cites, fetched when the section opens: a build can cite many sources. */
+function ProposalSources({ proposal }: { proposal: Proposal }) {
+  const projectId = useStore((s) => s.projectId)!
+  const [data, setData] = useState<ProposalCitations | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [all, setAll] = useState(false)
+  useEffect(() => {
+    let active = true
+    api.proposalCitations(projectId, proposal.id).then((d) => { if (active) setData(d) })
+      .catch((e) => { if (active) setError((e as Error).message) })
+    return () => { active = false }
+  }, [projectId, proposal.id])
+  if (error) return <p className="error-text">{error}</p>
+  if (!data) return <p className="muted">Loading evidence…</p>
+  const items = (ids: string[]) => ids.flatMap((id) => data.observations[id] ? [data.observations[id]] : [])
+    .map((c) => <CitationItem key={c.id} citation={c} />)
+  const changes = proposal.changes.filter((c) => c.change !== 'deleted')
+  return <div className="proposal-sources">
+    {(all ? changes : changes.slice(0, CITED_CHANGES_SHOWN)).map((change) => <section key={change.entity_id}>
+      <h5><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</h5>
+      {data.changes[change.entity_id]?.length ? items(data.changes[change.entity_id])
+        : <p className="warn-text">No source linked.</p>}
+    </section>)}
+    {!all && changes.length > CITED_CHANGES_SHOWN && <button className="link" onClick={() => setAll(true)}>
+      Show all {changes.length} changes</button>}
+    {data.other.length > 0 && <section><h5>Linked to relations</h5>{items(data.other)}</section>}
+    {data.read.length > 0 && <section><h5>Read, not linked</h5>{items(data.read)}</section>}
+  </div>
+}
+
+function evidenceSummary({ cited, total, read }: { cited: number; total: number; read: number }) {
+  const parts = total ? [`${cited} of ${total} change${total === 1 ? '' : 's'} link${total === 1 ? 's' : ''} to a source`] : []
+  if (read) parts.push(`${read} read, not linked`)
+  return `Evidence · ${parts.join(' · ')}`
+}
+
 /** A proposed change with everything needed to decide on it, and Apply / Discard: in the chat, and
  * as a card in the Pending edits tab (``title`` names it there; ``applyLabel`` for a choice's option). */
 export function ProposalPreview({ proposal, running: runningProp, title, applyLabel }: {
@@ -529,6 +569,7 @@ export function ProposalPreview({ proposal, running: runningProp, title, applyLa
   const leftOut = proposal.left_out ?? []
   const one = leftOut.length === 1
   const replyToProposal = useStore((s) => s.replyToProposal)
+  const evidence = useMemo(() => citationSummary(proposal), [proposal])
   const fixes = [...new Set([...(v?.resolved ?? []), ...(proposal.gate?.fixed ?? [])])]
   const introduced = [...new Set([...(v?.introduced ?? []), ...(proposal.gate?.introduced ?? [])])]
   const show = (id: string, deleted: boolean, ctrl: boolean) => {
@@ -610,6 +651,11 @@ export function ProposalPreview({ proposal, running: runningProp, title, applyLa
           onClick={() => void replyToProposal('Try the left-out operations again.', proposal.agent_run_id ?? undefined, true, proposal)}>
           Try {one ? 'it' : 'these'} again</button>}
       </div>}
+
+      {/* Above Details, not in it: how much of this is backed by a source is part of deciding. */}
+      {(evidence.cited > 0 || evidence.read > 0) && <Disclosure className="proposal-details" summary={evidenceSummary(evidence)}>
+        {() => <ProposalSources proposal={proposal} />}
+      </Disclosure>}
 
       {/* Everything for a closer look, in one place: sources, notes, field changes, RDF. */}
       <Disclosure className="proposal-details" summary={['Details', proposal.notes.length > 0 && plural(proposal.notes.length, 'note'),

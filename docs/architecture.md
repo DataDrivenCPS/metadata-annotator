@@ -93,7 +93,11 @@ reporting all problems at once. Problems name entities created in the same list 
 written (`'new:x' (created by operation 1)`), never by the minted id, which is new on every
 attempt; this holds for the checks made after applying too. A reference to an entity of the
 wrong kind says what it is and which field or operation takes that kind (e.g. a space given
-as `contained_in` points to `location`), instead of calling it unknown. 223P's connection-point rules (pairing, mapsTo, one
+as `contained_in` points to `location`), instead of calling it unknown. A reference that names
+nothing says what to do: a `new:*` placeholder no operation creates (give that create operation
+the id), a label written where an id belongs (its id, or the operation that creates it), or
+neither (create it first, or leave the field out). Only id-shaped references stay "unknown", with
+nearby ids suggested by the agent. 223P's connection-point rules (pairing, mapsTo, one
 connection per port) are checked on the result after all operations apply, so a proposal can
 create and wire ports in one go. A resolved operation list applies deterministically, so
 `apply_proposal` re-applies the stored operations and **refuses if the resulting triple diff

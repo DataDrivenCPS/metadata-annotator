@@ -27,7 +27,7 @@ from rdflib import Literal as RDFLiteral
 from rdflib import URIRef
 from rdflib.namespace import RDF, RDFS
 
-from .graph import WB, ProjectGraph, new_id
+from .graph import ID_PREFIX, WB, ProjectGraph, new_id
 from .projection import (
     ACTUATABLE_KINDS,
     OBSERVABLE_KINDS,
@@ -523,6 +523,41 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 hint = "; to link them through another relation, use relate"
         return f"{eid!r} is {name(actual)}, not {name(expected)}{hint}"
 
+    created_labels: dict[str, tuple[str, int, bool]] = {}  # label -> (id, operation number, had a placeholder)
+    ids_like = re.compile(r"^(" + "|".join(ID_PREFIX.values()) + r")-[0-9a-z]+$")
+
+    def labelled(text: str) -> list[tuple[str, str | None]]:
+        """(id, kind) of entities labelled ``text`` (ignoring case): in the model, or created above."""
+        want = text.strip().casefold()
+        found = [(eid, kind_now(eid)) for label, (eid, _, _) in created_labels.items() if label == want]
+        for node, label in pg.model.subject_objects(RDFS.label):
+            if str(label).strip().casefold() == want and (eid := pg.id_of(node)) and eid not in deleted:  # type: ignore[arg-type]
+                found.append((eid, kind_now(eid)))
+        return found
+
+    def missing(ref: str, target: str, fname: str | None) -> str | None:
+        """What to do about a reference that names nothing, in the terms it was written in; None
+        when it looks like an id (nearby ids are suggested separately)."""
+        name, leave = target.replace("_", " "), f", or leave {fname} out" if fname else ""
+        create = f"create_{target}" if target in allowed else "create_entity"
+        if ref.startswith(PLACEHOLDER):
+            return (f"no operation creates {ref!r}; give the {create} for it \"id\": \"{ref}\", before this "
+                    f"operation{leave}")
+        if ids_like.match(ref):
+            return None
+        matches = labelled(ref)
+        if found := [m for m in matches if m[1] == target or target == "entity"] or matches:
+            eid, kind = found[0]
+            label = ref.strip().casefold()
+            if label in created_labels and created_labels[label][0] == eid and not created_labels[label][2]:
+                return (f"{ref!r} is the label of the {kind} created by operation {created_labels[label][1]}; "
+                        f"give that operation \"id\": \"new:…\" and use that id here")
+            return (f"{ref!r} is a label, not an id; use its id {eid!r}"
+                    + (f" (it is {'an' if (kind or 'x')[0] in 'aeiou' else 'a'} {(kind or 'entity').replace('_', ' ')})"
+                       if kind != target and target != "entity" else ""))
+        return (f"nothing has the id or label {ref!r}; to add a new {name}, create it first ({create} with "
+                f"\"id\": \"new:…\") and use that id{leave}")
+
     def later_placeholders(i: int) -> set[str]:
         return {o.id for o in ops[i + 1:] if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER)}
 
@@ -580,7 +615,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
             subj = placeholders.get(data["subject"], data["subject"])
             skind = created.get(subj) or (None if subj in deleted else entity_kind(pg, vocab, subj))
             if skind in (None, "relationship"):
-                problems.append(f"{where}: subject {subj!r} is not an entity in the model")
+                hint = missing(subj, "entity", None) if skind is None else None
+                problems.append(f"{where}: subject {subj!r} is not an entity in the model" + (f": {hint}" if hint else ""))
                 continue
             rel = expand_term(vocab, data["relation"])
             t = vocab.term(rel)
@@ -625,6 +661,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                     placeholders[raw] = eid
                     minted[eid] = (raw, origin[i] + 1)
             data["id"] = eid
+            if data.get("label"):
+                created_labels[str(data["label"]).strip().casefold()] = (eid, origin[i] + 1, bool(raw))
             # create_entity takes any class; later operations treat the node as what its class makes it
             created[eid] = (ROW_KIND_OF_TERM.get(vocab.kind_of(expand_term(vocab, data.get("type") or "")) or "", "entity")
                             if kind == "entity" else kind)
@@ -634,6 +672,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
             if not exists(eid, kind):
                 if kind != "entity" and (mismatch := wrong_kind(eid, kind, kind, op.op.split("_", 1)[0])):
                     problems.append(f"{where}: {mismatch}")
+                elif hint := missing(eid, kind, None):
+                    problems.append(f"{where}: id {eid!r} names no {kind.replace('_', ' ')}: {hint}")
                 else:
                     problems.append(f"{where}: no {kind} with id {eid!r}")
                     unknown_entities.append((eid, kind))
@@ -649,6 +689,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 elif not exists(ref, target_kind):
                     if mismatch := wrong_kind(ref, target_kind, kind):
                         problems.append(f"{where}: {fname} refers to {target_kind.replace('_', ' ')}, but {mismatch}")
+                    elif hint := missing(ref, target_kind, fname):
+                        problems.append(f"{where}: {fname} refers to {ref!r}, but {hint}")
                     else:
                         problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
                         unknown_entities.append((ref, target_kind))

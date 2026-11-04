@@ -637,7 +637,7 @@ def test_source_build_retry_repeats_equipment_and_ports_after_rejection(workspac
     rejected = [data["problems"] for stage, _, data in events if stage == "rejected"]
     assert len(rejected) == 2
     assert any("can only map to a connection point" in problem for problem in rejected[0])
-    assert any("no connection_point with id 'new:cp-1'" in problem for problem in rejected[1])
+    assert any("no operation creates 'new:cp-1'" in problem for problem in rejected[1])
     assert out.proposal is not None and p.head() == base
     rev = p.apply_proposal(out.proposal.id)
     view = p.view(rev.id)

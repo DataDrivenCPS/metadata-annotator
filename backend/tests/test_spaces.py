@@ -113,9 +113,36 @@ def test_rejections_name_new_entities_as_written_and_say_when_one_is_the_wrong_k
         "(created by operation 1) is a space, not an equipment; to refer to a space, use location",
         "operation 3 (update_equipment): 'new:pretreatment' (created by operation 1) is a space, "
         "not an equipment; use update_space",
-        "operation 4 (create_equipment): contained_in refers to unknown equipment 'new:missing'",
+        "operation 4 (create_equipment): contained_in refers to 'new:missing', but no operation creates "
+        "'new:missing'; give the create_equipment for it \"id\": \"new:missing\", before this operation, "
+        "or leave contained_in out",
     ]
-    assert caught.value.unknown_entities == [("new:missing", "equipment")]
+
+
+def test_references_by_label_or_to_nothing_say_what_to_do_instead(workspace):
+    """Small models (gemma-3-4b, qwen3-vl-8b) wrote labels where ids belong, used placeholders no
+    operation created, and placed equipment in rooms that exist nowhere; every retry failed alike."""
+    p = workspace.create("Labels", "watr")
+    p.edit(p.head(), ops({"op": "create_equipment", "id": "new:p", "label": "P-101 Feed Pump", "type": "s223:Pump"}))
+    pump = p.view(p.head()).equipment[0].id
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(p.head(), ops(
+            {"op": "create_equipment", "label": "Sand Filter", "type": "s223:Pump", "location": "Mechanical room 101"},
+            {"op": "create_connection", "from_equipment": "p-101 feed pump", "to_equipment": "Sand Filter",
+             "medium": "s223:Fluid-Water"},
+            {"op": "update_equipment", "id": "eq-zzzzzz", "label": "Typo"},
+        ))
+    assert caught.value.problems == [
+        "operation 1 (create_equipment): location refers to 'Mechanical room 101', but nothing has the id or label "
+        "'Mechanical room 101'; to add a new space, create it first (create_space with \"id\": \"new:…\") and use "
+        "that id, or leave location out",
+        f"operation 2 (create_connection): from_equipment refers to 'p-101 feed pump', but 'p-101 feed pump' is a "
+        f"label, not an id; use its id '{pump}'",
+        "operation 2 (create_connection): to_equipment refers to 'Sand Filter', but 'Sand Filter' is the label of the "
+        "equipment created by operation 1; give that operation \"id\": \"new:…\" and use that id here",
+        "operation 3 (update_equipment): no equipment with id 'eq-zzzzzz'",  # an id: nearby ids are suggested
+    ]
+    assert caught.value.unknown_entities == [("eq-zzzzzz", "equipment")]
 
 
 def test_checks_after_applying_also_name_new_entities_as_written(workspace, monkeypatch):

@@ -435,8 +435,19 @@ How the assistant uses it (`retrieval/evidence.py`):
   point-list mapping, retrieves the reference passages relevant to its own content. The
   passages used are kept as the build's source notes.
 
-Settings: `[retrieval]` in workbench.toml, and the env override
-`WORKBENCH_OFFLINE=1`, which indexes with the basic parser, keyword search only and no
+Settings (`[retrieval]` in workbench.toml; `workbench.example.toml` shows each with its default):
+
+- `enabled` — index uploads at all (off: sources are read whole).
+- `parser` (`docling` or `basic`), `docling_url` / `docling_api_key_env` (use an existing
+  docling-serve), `docling_version` (the release the workbench installs), `docling_idle_minutes`
+  (stop the managed parser when idle), `pages_per_batch` (PDF pages per parser request).
+- `describe` (`auto` or `off`), `describe_provider` (default: `[llm] default`; any provider or
+  `"<provider>/<model>"`), `describe_max_pages` per file, `describe_min_text` (a PDF page with
+  less embedded text counts as a scan).
+- `[retrieval.embedding]`: `kind` (`fastembed`, `openai` for any `/embeddings` endpoint, or `none`
+  for keyword search only), `model`, `base_url`, `api_key_env`, `batch_size`, `timeout_s`.
+
+The env override `WORKBENCH_OFFLINE=1` indexes with the basic parser, keyword search only and no
 drawing descriptions, so nothing is installed, downloaded or called (tests set it).
 
 ### Auto-fix (`autofix.py`)

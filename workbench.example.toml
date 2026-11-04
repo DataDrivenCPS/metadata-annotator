@@ -22,10 +22,15 @@
 # Model replies per request (each tool call consumes one); last reply must propose.
 max_steps = 8
 # Extra replies for repairs/validation feedback; hard cap is max_steps + max_repairs.
+# A repair shows the model only the operations that failed; repairs also end early when one
+# comes back with the same problems. Then the valid operations are proposed and the rest are
+# listed on the proposal as left out, with a "Try these again" button.
 max_repairs = 2
 
 [retrieval]
-# Uploaded PDFs, images and documents are indexed in the background for search.
+# Uploaded PDFs, images and documents are indexed in the background for search, and the
+# assistant gets the passages a request needs instead of whole files.
+# enabled = true                           # false: no indexing; sources are read whole, as before
 # parser = "docling" (default): layout, tables, OCR of scans and drawings. The workbench installs
 #   docling-serve into <data_dir>/retrieval on first use (about 2 GB plus ~500 MB of models,
 #   CPU-only unless a GPU is present) and runs it on demand. "basic": embedded text only.
@@ -33,6 +38,8 @@ max_repairs = 2
 # docling_url = "http://127.0.0.1:5001"    # use an existing docling-serve instead
 # docling_api_key_env = "DOCLING_API_KEY"  # its DOCLING_SERVE_API_KEY, if it has one
 # docling_idle_minutes = 10                # stop the managed parser when idle (frees ~2 GB RAM)
+# docling_version = "1.38.2"               # the docling-serve release the workbench installs
+# pages_per_batch = 10                     # PDF pages per parser request; progress is kept per batch
 # Drawings and scans (images, PDF pages with little text or with a drawing) get one written
 # description from a vision model when indexed, so search can find what they show. "auto" uses
 # describe_provider (default: [llm] default) when its model accepts images;
@@ -45,6 +52,8 @@ max_repairs = 2
 # [retrieval.embedding]
 # kind = "fastembed"                  # in-process CPU model (default; ~70 MB download)
 # model = "BAAI/bge-small-en-v1.5"
+# batch_size = 32                     # passages per embedding request
+# timeout_s = 120                     # per embedding request
 # Or any OpenAI-compatible /embeddings endpoint, e.g. a second llama-server:
 #   llama-server -m embeddinggemma-300m.gguf --embeddings --port 8082
 # kind = "openai"
@@ -86,7 +95,8 @@ default = "local"
 # LOCAL LLAMA.CPP — no key needed for an unauthenticated localhost server.
 # Download an instruction-tuned GGUF (Llama, Qwen, etc.), then start separately:
 #   llama-server -m /path/to/model.gguf --alias local --port 8081 --jinja -c 32768 -np 1
-# model matches --alias local; change both together. Keep /v1 on base_url.
+# Keep /v1 on base_url. With no model set, the workbench uses what the server lists (here
+# "local", from --alias); set model only to pin one.
 # Match concurrency to -np and context_tokens to the context available per slot.
 # For vision, load a compatible multimodal model with its --mmproj projector.gguf;
 # the workbench sees the projector. If using --api-key, export that key and add

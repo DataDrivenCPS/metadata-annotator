@@ -85,8 +85,10 @@ class LiteLLMClient:
                       cancel: CancelToken | None = None, on_progress: ProgressFn | None = None,
                       max_tokens: int | None = None) -> LLMResult:
         if not self.model:  # a server that lists its own model; runs resolve it first, others ask here
-            self.cfg = self.endpoint.resolved()
-            self.model = self.cfg.model
+            told = self._images  # image support someone set on this client
+            self.__init__(self.endpoint.resolved())  # that model, with its own settings
+            if told is not None and self._images is None:
+                self._images = told
         retry_messages = list(messages)
         limit = max_tokens if max_tokens is not None else REPLY_TOKENS
         native_limit = self._native_output_limit()

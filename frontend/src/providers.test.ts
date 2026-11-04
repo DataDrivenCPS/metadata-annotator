@@ -50,3 +50,13 @@ describe('reading images', () => {
     expect(choiceReadsImages(null, list, checked)).toBe(true)  // nothing chosen: the default provider
   })
 })
+
+describe('run settings', () => {
+  it('summarizes sampling, context and images, leaving nested routing options to the tooltip', async () => {
+    const { settingsSummary } = await import('./providers')
+    expect(settingsSummary({ request_options: { temperature: 1, top_k: 64, provider: { require_parameters: true } },
+                             context_tokens: 32768, supports_images: true, timeout_s: 600 }))
+      .toBe('temperature 1 · top_k 64 · context 32768 · images')
+    expect(settingsSummary(undefined)).toBe('')
+  })
+})

@@ -115,6 +115,8 @@ class RunManager:
         cfg = resolved_model(cfg, health.get("models") or [])
         if cfg.supports_images is None:  # what the server says about the model that will answer
             cfg = replace(cfg, supports_images=bool(health.get("supports_images")))
+        if cfg.context_tokens is None and health.get("context_tokens"):  # recorded with the run
+            cfg = replace(cfg, context_tokens=health["context_tokens"])
         return cfg
 
     def _forget_health(self, provider: str) -> None:
@@ -260,7 +262,7 @@ class RunManager:
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
             selection=selection, instruction=instruction, parent_run_id=parent_run_id,
-            conversation=history, provider=cfg.name, model=cfg.model,
+            conversation=history, provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(),
             skill_version=self.guidance.version,
         )
         token = CancelToken()
@@ -284,7 +286,7 @@ class RunManager:
         cfg = self.choose(self.settings.provider(provider))
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="autofix", input_revision=base,
-            instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model,
+            instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(),
             skill_version=self.guidance.version,
         )
         token = CancelToken()
@@ -334,7 +336,7 @@ class RunManager:
                               "in the assistant panel.")
         run = AgentRun(
             id=f"run-{secrets.token_hex(4)}", kind="build", mode="build", input_revision=base, source_ids=source_ids,
-            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
+            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(), skill_version=self.guidance.version,
         )
         token = CancelToken()
         with self._lock:
@@ -378,7 +380,7 @@ class RunManager:
             mode="reconsider" if reconsider else "reply",
             parent_run_id=None if reconsider else (parent_run_id or proposal.agent_run_id),
             selection=selection, instruction=instruction, conversation=history,
-            provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
+            provider=cfg.name, model=cfg.model, model_settings=cfg.run_settings(), skill_version=self.guidance.version,
         )
         token = CancelToken()
         with self._lock:

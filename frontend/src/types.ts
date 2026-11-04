@@ -144,6 +144,8 @@ export interface ModelCall {
 export interface AgentRun {
   id: string; kind: string; input_revision: string; selection: Selection | null
   instruction: string; provider: string; model: string; skill_version: string
+  /** How the model was asked: request_options (sampling), supports_images, context_tokens, timeout_s… */
+  model_settings?: Record<string, unknown>
   source_ids?: string[]
   mode?: 'assist' | 'reply' | 'reconsider' | 'build'
   parent_run_id?: string | null

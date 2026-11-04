@@ -6,7 +6,7 @@ import { autofixCandidates, autofixProgress, autofixReport, callBreakdown, conti
 import { summarize } from '../selection'
 import { useStore } from '../store'
 import { attachmentSummary } from '../documents'
-import { providerOf, providerOptions, shortModel, shownChoice } from '../providers'
+import { providerOf, providerOptions, settingsSummary, shortModel, shownChoice } from '../providers'
 import type { AgentRun, Proposal, ProviderHealth } from '../types'
 
 const FIELD_LABELS: Record<string, string> = {
@@ -481,7 +481,8 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
       })}
       {live && !steps.length && <li className="current"><span className="step-mark"><span className="spinner small" /></span>
         <span className="step-text">{run.status === 'queued' ? 'Waiting to start…' : 'Starting…'}</span></li>}
-      {!live && <li className="run-meta muted">{run.provider} · {run.model} · skill {run.skill_version}
+      {!live && <li className="run-meta muted">{run.provider} · <span title={JSON.stringify(run.model_settings ?? {}, null, 1)}>
+        {run.model}{settingsSummary(run.model_settings) ? ` (${settingsSummary(run.model_settings)})` : ''}</span> · skill {run.skill_version}
         {run.outcome.input_tokens ? <span title={callBreakdown(run.outcome.calls)}>
           {` · ${run.outcome.estimated ? '~' : ''}${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens`}
           {run.outcome.cached_tokens ? ` (${run.outcome.cached_tokens} cached)` : ''}</span> : ''}</li>}

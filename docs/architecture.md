@@ -489,6 +489,16 @@ supports three kinds:
   describer asks before describing (and again a minute later if the server was down), and the
   Sources pane follows the chosen model. A router's context size per model comes from its
   launch arguments (`--ctx-size` / `--parallel`), not the model's trained maximum.
+
+Per-model settings: `[llm.providers.<name>.models."<model>"]` holds settings for one model of
+a provider (`ProviderConfig.for_model`): `request_options` merge over the provider's (the
+model's win; llama-server reads sampling fields such as `temperature`, `top_k`, `min_p` from
+each request), and `supports_images`, `context_tokens`, `timeout_s`, `concurrency`,
+`strict_schema`, `prompt_cache` replace the provider's. Endpoint and credentials cannot be set
+per model. They apply to whichever model answers (`resolved_model` re-applies them when the
+server picks the model), and each run stores what it was asked with in `AgentRun.model_settings`
+(including the detected context size and image support), shown with the model in the run
+details. How a model is loaded (`-c`, `--mmproj`, `-np`) stays in the server's configuration.
 - `anthropic` — the native Anthropic API through LiteLLM, with schema translation and streaming.
   Existing `effort` settings remain effort-only, without implicitly enabling adaptive thinking.
   The former SDK-specific native refusal-fallback beta is no longer enabled; explicitly setting

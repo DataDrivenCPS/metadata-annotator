@@ -214,3 +214,80 @@ def test_drawing_descriptions_follow_what_the_server_says(tmp_path, monkeypatch)
     router(monkeypatch, [entry("text-only", "--ctx-size", "8192", images=False)])
     down._asked -= 61  # a minute later it asks again
     assert "does not accept images" in down.reason
+
+
+MODEL_SETTINGS = '''
+[llm.providers.local]
+kind = "openai"
+base_url = "http://settings/v1"
+request_options = { provider = { require_parameters = true }, temperature = 0.2 }
+timeout_s = 600
+
+[llm.providers.local.models."gemma-3-4b"]
+request_options = { temperature = 1.0, top_k = 64, top_p = 0.95, min_p = 0.0 }
+
+[llm.providers.local.models."text-only"]
+supports_images = false
+timeout_s = 900
+'''
+
+
+def test_each_model_is_asked_with_its_own_settings(tmp_path):
+    settings = settings_with(tmp_path, MODEL_SETTINGS)
+    gemma = settings.provider("local/gemma-3-4b")
+    assert gemma.request_options == {"provider": {"require_parameters": True}, "temperature": 1.0,
+                                     "top_k": 64, "top_p": 0.95, "min_p": 0.0}  # merged, the model's win
+    assert gemma.timeout_s == 600  # the provider's, where the model sets nothing
+    text = gemma.for_model("text-only")  # another model drops gemma's settings
+    assert (text.request_options, text.supports_images, text.timeout_s) == (
+        {"provider": {"require_parameters": True}, "temperature": 0.2}, False, 900)
+
+
+def test_per_model_settings_cannot_change_the_endpoint(tmp_path):
+    with pytest.raises(ValueError, match="base_url cannot be set per model"):
+        settings_with(tmp_path, MODEL_SETTINGS + '\n[llm.providers.local.models."x"]\nbase_url = "http://elsewhere/v1"\n')
+
+
+def test_the_model_a_server_picks_brings_its_settings(tmp_path, monkeypatch):
+    settings = settings_with(tmp_path, MODEL_SETTINGS)
+    router(monkeypatch, [entry("text-only", "--ctx-size", "8192"), entry("gemma-3-4b", "--ctx-size", "32768")])
+    health = EndpointInfo(settings.provider("local")).health()  # nothing chosen: the first listed
+    assert (health["model"], health["supports_images"]) == ("text-only", False)  # its setting beats the server
+    router(monkeypatch, [entry("gemma-3-4b", "--ctx-size", "32768")])
+    served = EndpointInfo(settings.provider("local/text-only")).resolved()  # one model loaded: that one answers
+    assert served.model == "gemma-3-4b" and served.request_options["top_k"] == 64
+
+
+def test_runs_record_how_the_model_was_asked(sample_project, tmp_path, monkeypatch):
+    from workbench.schemas import SelectionScope
+
+    settings = settings_with(tmp_path, MODEL_SETTINGS)
+    monkeypatch.setattr("workbench.runs.make_client", lambda cfg: SimpleNamespace(health=lambda: {
+        "ok": True, "models": ["gemma-3-4b", "text-only"], "supports_images": True, "context_tokens": 32768}))
+    manager = RunManager(settings, SimpleNamespace(version="skill"), EventBus())
+    monkeypatch.setattr(manager.pool, "submit", lambda *a, **kw: None)  # record the run; do not run it
+    manager.save = lambda project, run: None
+    try:
+        run = manager.start_correction(sample_project, sample_project.head(), SelectionScope(), "Check",
+                                       provider="local/gemma-3-4b")
+        assert (run.provider, run.model) == ("local", "gemma-3-4b")
+        assert run.model_settings["request_options"]["top_k"] == 64
+        assert (run.model_settings["context_tokens"], run.model_settings["supports_images"]) == (32768, True)
+    finally:
+        manager.pool.shutdown()
+
+
+def test_a_client_that_finds_its_model_late_keeps_the_request_images(monkeypatch):
+    from workbench.llm import ImageInput
+    from workbench.llm.litellm_client import LiteLLMClient
+
+    router(monkeypatch, [entry("gemma", "--ctx-size", "8192")])
+    client = LiteLLMClient(local(url="http://late/v1"))
+    sent = {}
+    monkeypatch.setattr(client, "_params", lambda system, messages, schema, images, limit: sent.setdefault("images", images) and {})
+    picture = [ImageInput(data=b"png")]
+    try:
+        client.complete_json("system", [{"role": "user", "content": "look"}], {"type": "object"}, images=picture)
+    except Exception:
+        pass  # only what was prepared matters here
+    assert client.model == "gemma" and sent["images"] == picture

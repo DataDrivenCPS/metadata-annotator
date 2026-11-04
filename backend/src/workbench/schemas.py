@@ -241,6 +241,8 @@ class AgentRun(BaseModel):
     conversation: list[dict[str, str]] = Field(default_factory=list)
     provider: str
     model: str
+    # How the model was asked: sampling (request_options), image support, context, timeout.
+    model_settings: dict[str, Any] = Field(default_factory=dict)
     skill_version: str
     status: Literal["queued", "running", "succeeded", "failed", "cancelled"] = "queued"
     progress: list[ProgressEvent] = Field(default_factory=list)

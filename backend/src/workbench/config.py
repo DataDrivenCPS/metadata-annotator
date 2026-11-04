@@ -45,10 +45,40 @@ class ProviderConfig:
     # fraction). Unset: on for Claude (native, LiteLLM or OpenRouter) and Gemini on OpenRouter,
     # which need explicit markers; OpenAI and llama.cpp cache repeated prefixes on their own.
     prompt_cache: bool | None = None
+    # Settings for particular models of this provider ([llm.providers.<name>.models."<model>"]),
+    # applied when that model answers: request_options merge (the model's win), others replace.
+    models: dict[str, dict] = field(default_factory=dict)
+    # The provider's own settings, when this config is one of its models (see for_model).
+    provider_level: ProviderConfig | None = field(default=None, repr=False, compare=False)
 
     @property
     def api_key(self) -> str | None:
         return os.environ.get(self.api_key_env) if self.api_key_env else None
+
+    def for_model(self, model: str) -> ProviderConfig:
+        """This provider running ``model``, with that model's settings (and no other model's)."""
+        base = self.provider_level or self
+        own = base.models.get(model) or {}
+        options = _merged(base.request_options, own.get("request_options") or {})
+        return replace(base, **{**own, "request_options": options}, model=model, provider_level=base)
+
+    def run_settings(self) -> dict:
+        """What shapes this provider's answers, as recorded on each run."""
+        return {"request_options": self.request_options, "supports_images": self.supports_images,
+                "context_tokens": self.context_tokens, "timeout_s": self.timeout_s,
+                "prompt_cache": self.prompt_cache, "strict_schema": self.strict_schema}
+
+
+# Per-model settings may change how a model is asked, not which endpoint or credentials are used.
+MODEL_SETTINGS = {"supports_images", "timeout_s", "request_options", "concurrency", "context_tokens",
+                  "strict_schema", "prompt_cache"}
+
+
+def _merged(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for key, value in over.items():
+        out[key] = _merged(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict) else value
+    return out
 
 
 @dataclass
@@ -196,10 +226,11 @@ class Settings:
         server's models (model ids may contain slashes too)."""
         key = name or self.default_provider
         if key in self.providers:
-            return self.providers[key]
+            cfg = self.providers[key]
+            return cfg.for_model(cfg.model) if cfg.model else cfg
         base, _, model = key.partition("/")
         if model and base in self.providers:
-            return replace(self.providers[base], model=model)
+            return self.providers[base].for_model(model)
         raise KeyError(f"unknown model provider {key!r}; configured: {sorted(self.providers)}")
 
 
@@ -246,6 +277,12 @@ def load_settings(path: str | Path | None = None) -> Settings:
             raise ValueError(f"model provider name {name!r} cannot contain '/' (it separates a provider from its model)")
         if not cfg.model and cfg.kind != "openai":
             raise ValueError(f"model provider {name!r} needs a model; only OpenAI-compatible servers list their own")
+        for model, table in cfg.models.items():
+            if not isinstance(table, dict):
+                raise ValueError(f"[llm.providers.{name}.models.\"{model}\"] must be a table of settings")
+            if bad := sorted(set(table) - MODEL_SETTINGS):
+                raise ValueError(f"[llm.providers.{name}.models.\"{model}\"]: {', '.join(bad)} cannot be set per model "
+                                 f"(per-model settings: {', '.join(sorted(MODEL_SETTINGS))})")
     dist = resolve(wb.get("frontend_dist"), BACKEND_DIR.parent / "frontend" / "dist")
     retrieval_table = dict(raw.get("retrieval", {}))
     if os.environ.get("WORKBENCH_OFFLINE", "").lower() in ("1", "true", "yes"):

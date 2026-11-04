@@ -55,3 +55,13 @@ export function shownChoice(options: ProviderOption[], choice: string | null, pr
   const model = provider ? choice.slice(provider.name.length + 1) : choice
   return { value: choice, missing: { value: choice, label: `${provider?.name ?? choice} · ${shortModel(model)} (not offered)` } }
 }
+
+/** A run's model settings in one line: its sampling options, context size and image support. */
+export function settingsSummary(settings: Record<string, unknown> | undefined): string {
+  if (!settings) return ''
+  const options = (settings.request_options ?? {}) as Record<string, unknown>
+  const parts = Object.entries(options).filter(([, v]) => v === null || typeof v !== 'object').map(([k, v]) => `${k} ${v}`)
+  if (typeof settings.context_tokens === 'number') parts.push(`context ${settings.context_tokens}`)
+  if (settings.supports_images === true) parts.push('images')
+  return parts.join(' · ')
+}

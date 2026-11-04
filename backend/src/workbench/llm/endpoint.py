@@ -152,9 +152,9 @@ class EndpointInfo:
             ok, detail = False, f"{self.base_url} lists no models; load one into the server"
         elif self.cfg.model and len(models) > 1 and self.cfg.model not in models:
             ok, detail = False, f"'{self.cfg.model}' is not offered by {self.base_url}"
-        model = resolved_model(self.cfg, models).model if models else self.cfg.model
-        info = replace(self.cfg, model=model)
-        images = self.cfg.supports_images
+        info = resolved_model(self.cfg, models)  # with that model's own settings
+        model = info.model
+        images = info.supports_images
         if images is None:
             images = self._vision(next((e for e in entries if e["id"] == model), None)) if ok else False
         return {"ok": ok, "detail": detail, "model": model, "models": models, "model_count": len(models),
@@ -162,11 +162,11 @@ class EndpointInfo:
 
 
 def resolved_model(cfg: ProviderConfig, models: list[str]) -> ProviderConfig:
-    """The model a request to this server runs on, given the models it lists."""
-    if len(models) == 1:
-        return replace(cfg, model=models[0])  # what answers, whatever name was asked for
+    """The model a request to this server runs on, given the models it lists, with its settings."""
+    if len(models) == 1 and models[0] != cfg.model:
+        return cfg.for_model(models[0])  # what answers, whatever name was asked for
     if not cfg.model and models:
-        return replace(cfg, model=models[0])
+        return cfg.for_model(models[0])
     return cfg
 
 

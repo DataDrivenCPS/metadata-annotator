@@ -544,7 +544,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, first: int = 0) -> R
         return f"operation {pos + 1 - first}" if pos >= first else f"saved operation {pos + 1}"
 
     def add(pos: int, where: str, message: str) -> None:
-        report(f"{message}")
+        problems.append(f"{where}: {message}")
         positions.append(pos - first if pos >= first else None)
         messages.append(message)
 
@@ -638,7 +638,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, first: int = 0) -> R
             return None
         matches = labelled(ref)
         if len(several := [eid for eid, kind in matches if fits(kind, target)]) > 1:
-            return (f"{ref!r} is the label of {len(several)} {name} entities ({', '.join(map(repr, several))}); "
+            return (f"{ref!r} is the label of {len(several)} {name} entities ({', '.join(map(repr, sorted(several)))}); "
                     "use the id of the one you mean")
         if matches:
             eid, _ = matches[0]

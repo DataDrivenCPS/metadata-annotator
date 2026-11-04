@@ -180,6 +180,8 @@ class ChangeProposal(BaseModel):
     validation: ValidationDelta | None = None
     explanation: str = ""
     notes: list[str] = Field(default_factory=list)
+    # The notes on how it was drafted (also in notes): terms read by name, operations left out.
+    drafting_notes: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     status: Literal["pending", "applied", "dismissed", "stale", "failed"] = "pending"
     agent_run_id: str | None = None

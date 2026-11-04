@@ -646,6 +646,51 @@ class CorrectionOutcome:
     input_tokens: int = 0
     output_tokens: int = 0
     transcript: list[dict[str, Any]] = field(default_factory=list)
+    # Operations the model could not make valid, left out of the proposal (also its drafting notes)
+    left_out: list[str] = field(default_factory=list)
+
+
+PATCH_RULES = (
+    "\nThe other operations are valid and are kept as they are; do not repeat them. Answer with action "
+    "\"propose\" whose operations are corrected versions of only the operations listed above, one for each, "
+    "in the same order. If you cannot correct one, give it unchanged: it will be left out of the proposal and "
+    "reported to the person. To refer to an entity another operation creates, use its \"new:…\" id or its "
+    "exact label. Your explanation, issue dismissals and token updates carry forward unless you give new ones. "
+    "Use tools if you need correct current-model ids or vocabulary terms."
+)
+
+
+def splice(current: list[dict], failed: list[int], fixes: list) -> list:
+    """``current`` with the failed operations replaced by the model's corrections of them. One
+    correction per failed operation replaces them in order; otherwise each correction replaces the
+    failed operation of the same kind with the same id or label, and any other is added."""
+    out: list = [copy.deepcopy(o) for o in current]
+    if len(fixes) == len(failed):
+        for pos, fix in zip(failed, fixes):
+            out[pos] = fix
+        return out
+    free, extra = list(failed), []
+
+    def same(a: Any, b: dict) -> bool:
+        return isinstance(a, dict) and a.get("op") == b.get("op") and any(
+            a.get(k) and a.get(k) == b.get(k) for k in ("id", "label", "subject"))
+
+    for fix in fixes:
+        pos = next((p for p in free if same(fix, current[p])), None)
+        if pos is None:
+            extra.append(fix)
+        else:
+            free.remove(pos)
+            out[pos] = fix
+    return out + extra
+
+
+def left_out_note(op: Any, why: list[str]) -> str:
+    """For the person: an operation the assistant could not make valid, and why."""
+    op = op if isinstance(op, dict) else {}
+    name = op.get("label") or op.get("id") or op.get("subject") or ""
+    return (f"{ops_mod.LEFT_OUT}{op.get('op') or 'an operation'}{' ' + repr(name) if name else ''}: "
+            + ("; ".join(why) or "it depends on another operation that was left out"))
 
 
 def _expand_build_token_updates(project: Project, prior: ChangeProposal,
@@ -882,6 +927,92 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             "do not repeat the saved proposal's operations. Use its preview ids for entities it creates."
         )
 
+    # Positions in messages count the saved proposal's operations first (they are applied together).
+    offset = len(prior_proposal.operations) if prior_proposal is not None and not reconsider else 0
+    current_ops: list | None = None  # the last rejected operations, while only some of them failed
+    failed: list[int] = []  # their positions: what the model is asked to correct
+    last_problems: set[str] | None = None  # what was wrong with the last rejected answer
+    answer: dict[str, Any] = {}  # the last complete answer (a correction of some operations is not one)
+    all_token_updates: list = []
+
+    def problems_of(exc: Exception, ops_list: list) -> list[str]:
+        """Each problem as "operation N (op): …", N counting the operations of this answer."""
+        if isinstance(exc, ops_mod.OperationError):
+            problems = list(exc.problems)
+        else:
+            problems = []
+            for e in exc.errors()[:10]:  # type: ignore[attr-defined]
+                loc = e["loc"]
+                if loc and isinstance(loc[0], int) and loc[0] < len(ops_list):
+                    op = ops_list[loc[0]].get("op") if isinstance(ops_list[loc[0]], dict) else None
+                    at = ".".join(map(str, loc[2:])) or "operation"
+                    problems.append(f"operation {loc[0] + 1 + offset} ({op or 'unknown'}): {at}: {e['msg']}")
+                else:
+                    problems.append(f"{'.'.join(map(str, loc))}: {e['msg']}")
+        if offset:
+            problems = [re.sub(r"\boperation (\d+)\b", lambda m: f"operation {int(m.group(1)) - offset}"
+                               if int(m.group(1)) > offset else m.group(0), p) for p in problems]
+        return problems
+
+    def attempt(ops_list: list):
+        """(candidate, parsed operations) for these operations, or raises what is wrong with them."""
+        if source_evidence or found_evidence:
+            source_ids = {ref.ref for ref in source_evidence} | set(found_evidence) | looked_up
+            if prior_proposal:
+                source_ids.update(ref.ref for ref in prior_proposal.evidence if ref.kind == "observation")
+            uncited = []
+            for n, raw_op in enumerate(ops_list):
+                if isinstance(raw_op, dict) and (str(raw_op.get("op", "")).startswith(("create_", "update_"))
+                                                or raw_op.get('op') == 'relate'):
+                    refs = raw_op.get("evidence") or (
+                        sorted(ref.ref for ref in source_evidence) if raw_op.get("op", "").startswith("create_") else [])
+                    if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in source_ids for ref in refs):
+                        uncited.append(f"operation {n + 1 + offset} ({raw_op.get('op')}): cite only observation ids "
+                                       "from the supplied source evidence")
+                    else:
+                        raw_op["evidence"] = refs
+            if uncited:
+                raise ops_mod.OperationError(uncited)
+        parsed = ops_mod.OperationList.validate_python(ops_list)
+        unknown = [f"operation {n + 1 + offset} ({op.op}): unknown source observation {oid!r}; cite existing "
+                   "source evidence" for n, op in enumerate(parsed)
+                   for oid in op.evidence or [] if project.store.get_body('observations', oid) is None]
+        if unknown:
+            raise ops_mod.OperationError(unknown)
+        combined = [*prior_proposal.operations, *parsed] if prior_proposal and not reconsider else parsed
+        cand = project.build_candidate(rid, combined, selection,
+                                       lock=not build_from_sources and (prior_proposal is None or prior_proposal.kind != "build"))
+        cited = {oid for op in parsed for oid in op.evidence or []}
+        evidence.extend(ref for oid, ref in found_evidence.items()
+                        if oid in cited and all(e.ref != oid for e in evidence))
+        return cand, parsed
+
+    def salvage(ops_list: list, bad: set[int], problems: list[str]):
+        """The valid operations once those that failed, and then any that needed them, are left
+        out: (candidate, parsed, notes on what was left out and why); None if nothing is left."""
+        keep = list(range(len(ops_list)))
+        dropped: dict[int, list[str]] = {}
+        while True:
+            for problem in problems:
+                if (m := ops_mod.FAILED_AT.match(problem)) and int(m.group(1)) - 1 in bad:
+                    dropped.setdefault(keep[int(m.group(1)) - 1], []).append(
+                        re.sub(r"^operation \d+ \([a-z_]+\): ", "", problem))
+            for x in bad:
+                dropped.setdefault(keep[x], [])
+            keep = [k for i, k in enumerate(keep) if i not in bad]
+            if not keep:
+                return None
+            subset = [ops_list[k] for k in keep]
+            try:
+                cand, parsed = attempt(subset)
+            except (ValidationError, ops_mod.OperationError) as exc:
+                problems = problems_of(exc, subset)
+                if (found := ops_mod.failed_operations(problems)) is None:
+                    return None
+                bad = found
+                continue
+            return cand, parsed, [left_out_note(ops_list[k], why) for k, why in sorted(dropped.items())]
+
     for step in range(max_steps + max_repairs):
         cancel.check()
         outcome.steps = step + 1
@@ -964,14 +1095,27 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             messages.append({"role": "user", "content": "Reply with a tool call or action \"propose\"."})
             continue
 
-        outcome.explanation = str(data.get("explanation") or "")
-        outcome.questions = readable_questions(data.get("questions"))
-        outcome.choices = [{"question": str(c.get("question") or ""),
-                            "options": [{"label": str(o.get("label") or ""), "operations": list(o.get("operations") or [])}
-                                        for o in c.get("options") or [] if isinstance(o, dict)]}
-                           for c in data.get("choices") or [] if isinstance(c, dict)]
-        raw_ops = data.get("operations") or []
+        written = data.get("operations") or []
+        choices = [{"question": str(c.get("question") or ""),
+                    "options": [{"label": str(o.get("label") or ""), "operations": list(o.get("operations") or [])}
+                                for o in c.get("options") or [] if isinstance(o, dict)]}
+                   for c in data.get("choices") or [] if isinstance(c, dict)]
         token_updates = data.get("token_updates") or []
+        if current_ops is not None and failed and len(written) != len(current_ops):
+            # Corrections of the failed operations only: the rest of the previous answer stands.
+            raw_ops = splice(current_ops, failed, written)
+            outcome.questions = list(dict.fromkeys([*outcome.questions, *readable_questions(data.get("questions"))]))
+            outcome.choices = choices or outcome.choices
+            if data.get("dismiss_issues") or data.get("withdraw_dismissals"):
+                answer = {**answer, "dismiss_issues": data.get("dismiss_issues") or [],
+                          "withdraw_dismissals": data.get("withdraw_dismissals") or []}
+            all_token_updates = [*all_token_updates, *token_updates]
+        else:
+            outcome.explanation = str(data.get("explanation") or "")
+            outcome.questions = readable_questions(data.get("questions"))
+            outcome.choices = choices
+            raw_ops, answer, all_token_updates = written, data, list(token_updates)
+        current_ops, failed = None, []
         if token_updates:
             try:
                 if reconsider:
@@ -992,8 +1136,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                                     if reconsider else "\nUse a token id from the source mapping table, then propose again.")
                                  + replacement_rules})
                 continue
-        dismissals, problems = resolve_dismissals(open_issues, prior_dismissals, data.get("dismiss_issues") or [],
-                                                  data.get("withdraw_dismissals") or [])
+        dismissals, problems = resolve_dismissals(open_issues, prior_dismissals, answer.get("dismiss_issues") or [],
+                                                  answer.get("withdraw_dismissals") or [])
         if problems:
             repairs += 1
             progress("rejected", "Issue dismissals could not be used; asking the model to fix them", {"problems": problems})
@@ -1017,45 +1161,50 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                      "The assistant needs more information" if outcome.questions else "No change proposed", {})
             return outcome
         try:
-            if source_evidence or found_evidence:
-                source_ids = {ref.ref for ref in source_evidence} | set(found_evidence) | looked_up
-                if prior_proposal:
-                    source_ids.update(ref.ref for ref in prior_proposal.evidence if ref.kind == "observation")
-                for raw_op in raw_ops:
-                    if isinstance(raw_op, dict) and (str(raw_op.get("op", "")).startswith(("create_", "update_"))
-                                                    or raw_op.get('op') == 'relate'):
-                        refs = raw_op.get("evidence") or (
-                            sorted(ref.ref for ref in source_evidence) if raw_op.get("op", "").startswith("create_") else [])
-                        if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in source_ids for ref in refs):
-                            raise ops_mod.OperationError(["Cite only observation ids from the supplied source evidence."])
-                        raw_op["evidence"] = refs
-            parsed = ops_mod.OperationList.validate_python(raw_ops)
-            for op in parsed:
-                for oid in op.evidence or []:
-                    if project.store.get_body('observations', oid) is None:
-                        raise ops_mod.OperationError([f'Unknown source observation {oid!r}; cite existing source evidence.'])
-            cited = {oid for op in parsed for oid in op.evidence or []}
-            evidence.extend(ref for oid, ref in found_evidence.items()
-                            if oid in cited and all(e.ref != oid for e in evidence))
-            progress("candidate", f"Building a candidate model with {len(parsed)} operation(s)"
+            progress("candidate", f"Building a candidate model with {len(raw_ops)} operation(s)"
                      + (f" and {len(dismissals)} issue dismissal(s)" if dismissals else ""), {})
-            combined = [*prior_proposal.operations, *parsed] if prior_proposal and not reconsider else parsed
-            cand = project.build_candidate(rid, combined, selection,
-                                           lock=not build_from_sources and (prior_proposal is None or prior_proposal.kind != "build"))
+            cand, parsed = attempt(raw_ops)
         except (ValidationError, ops_mod.OperationError) as exc:
-            problems = exc.problems if isinstance(exc, ops_mod.OperationError) else [
-                f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:10]]
-            repairs += 1
+            problems = problems_of(exc, raw_ops)
+            bad = ops_mod.failed_operations(problems)
+            some = bad is not None and 0 < len(bad) < len(raw_ops)  # the rest of the answer is valid
+            hints = []
             if isinstance(exc, ops_mod.OperationError):
-                problems = problems + suggest_terms(project, exc.unknown_terms)
-                problems += suggest_entities(tools, exc.unknown_entities)
-            progress("rejected", "Operations were malformed; asking the model to fix them", {"problems": problems})
-            if repairs > max_repairs:
-                raise LLMError("the model could not produce valid operations: " + "; ".join(problems[:5]))
-            messages.append({"role": "user", "content":
-                             "Those operations cannot be applied:\n- " + "\n- ".join(problems)
-                             + replacement_rules})
-            continue
+                hints = suggest_terms(project, exc.unknown_terms) + suggest_entities(tools, exc.unknown_entities)
+            repairs += 1
+            # The same problems again: the repair changed nothing, and another would not either.
+            # (Counts are not compared: a different answer can be worse on the way to right.)
+            stalled = last_problems == set(problems)
+            last_problems = set(problems)
+            final = repairs > max_repairs or stalled
+            progress("rejected", "Operations were malformed; " + (
+                     "keeping the valid ones" if final and some else "giving up" if final else
+                     f"asking the model to fix {len(bad or ())} of {len(raw_ops)}" if some else
+                     "asking the model to fix them"),
+                     {"problems": problems + hints,
+                      **({"operations": {str(n + 1): raw_ops[n] for n in sorted(bad or ())}} if some else {})})
+            if final:
+                rescued = salvage(raw_ops, bad or set(), problems) if some else None
+                if rescued is None:
+                    raise LLMError("the model could not produce valid operations: " + "; ".join(problems[:5]))
+                cand, parsed, outcome.left_out = rescued
+                gate_checked = True  # what is left is what the model could make valid; don't reopen it
+                progress("salvaged", f"Kept {len(parsed)} valid operation(s); left out {len(outcome.left_out)}"
+                         + (" (the last repair fixed nothing)" if stalled and repairs <= max_repairs else ""),
+                         {"left_out": outcome.left_out})
+            elif some:
+                current_ops, failed = copy.deepcopy(raw_ops), sorted(bad or ())
+                messages.append({"role": "user", "content":
+                                 f"{len(failed)} of your {len(raw_ops)} operations cannot be applied:\n"
+                                 + "\n".join(f"operation {n + 1}: {json.dumps(raw_ops[n], ensure_ascii=False)}"
+                                             for n in failed)
+                                 + "\nProblems:\n- " + "\n- ".join(problems + hints) + PATCH_RULES})
+                continue
+            else:
+                messages.append({"role": "user", "content":
+                                 "Those operations cannot be applied:\n- " + "\n- ".join(problems + hints)
+                                 + replacement_rules})
+                continue
         cancel.check()
         progress("validated", f"Validated candidate: {cand.summary.violations} violation(s)",
                  {"conforms": cand.summary.conforms})
@@ -1106,7 +1255,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         if build_summary:
             build_summary["revised"] = True
             build_summary["revision_note"] = "This draft includes your reply. Token-wide changes appear in the mapping table; open Individual changes for specific edits."
-            for update in token_updates:
+            for update in all_token_updates:
                 mapping = next((m for m in build_summary.get("point_mappings", []) if m["id"] == update["id"]), None)
                 if mapping is None:
                     continue
@@ -1125,9 +1274,9 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             build_summary["unmapped_records"] = sum(m["count"] for m in build_summary.get("point_mappings", [])
                                                     if not m["mapped"])
         followup_issues = prior_proposal.followup_issues if prior_proposal and not reconsider else None
-        if followup_issues and token_updates:
+        if followup_issues and all_token_updates:
             changed_tokens = {m["token"] for m in build_summary["point_mappings"]
-                              if m["id"] in {u["id"] for u in token_updates} and m["mapped"]}
+                              if m["id"] in {u["id"] for u in all_token_updates} and m["mapped"]}
             followup_issues = [i for i in followup_issues if i.get("details", {}).get("token") not in changed_tokens]
         cancel.check()
         if prior_proposal:
@@ -1141,7 +1290,9 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             parent_proposal_id=prior_proposal.id if prior_proposal else None,
             conversation=conversation,
             issue_dismissals=dismissals,
-            gate=gate, persist=persist)
+            gate=gate, persist=persist,
+            drafting_notes=[*(prior_proposal.drafting_notes if prior_proposal and not reconsider else []),
+                            *outcome.left_out])
         if prior_proposal and persist:
             project.dismiss_proposal(prior_proposal.id)
         return outcome

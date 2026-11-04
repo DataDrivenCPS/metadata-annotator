@@ -6,6 +6,7 @@ from rdflib import URIRef
 
 from conftest import by_label
 from workbench.operations import OperationError, OperationList
+from workbench.projection import project as project_view
 from workbench.vocabulary import BRICK, REC, S223
 
 
@@ -119,27 +120,47 @@ def test_rejections_name_new_entities_as_written_and_say_when_one_is_the_wrong_k
     ]
 
 
-def test_references_by_label_or_to_nothing_say_what_to_do_instead(workspace):
-    """Small models (gemma-3-4b, qwen3-vl-8b) wrote labels where ids belong, used placeholders no
-    operation created, and placed equipment in rooms that exist nowhere; every retry failed alike."""
+def test_what_a_name_names_exactly_is_read_and_the_rest_says_what_to_do(workspace):
+    """Models (gemma-3-4b, qwen3-vl-8b, and larger ones) wrote labels where ids belong, bare or
+    wrongly prefixed term names, and references before the operation creating their target. Where
+    the name names exactly one thing, that is what it means; otherwise the problem says what to do."""
     p = workspace.create("Labels", "watr")
-    p.edit(p.head(), ops({"op": "create_equipment", "id": "new:p", "label": "P-101 Feed Pump", "type": "s223:Pump"}))
-    pump = p.view(p.head()).equipment[0].id
+    p.edit(p.head(), ops({"op": "create_equipment", "id": "new:p", "label": "P-101 Feed Pump", "type": "s223:Pump"},
+                         {"op": "create_equipment", "label": "Tank A", "type": "watr:Tank"},
+                         {"op": "create_equipment", "label": "tank a", "type": "watr:Tank"}))
+    pump = next(e.id for e in p.view(p.head()).equipment if e.label == "P-101 Feed Pump")
+    cand = p.build_candidate(p.head(), ops(
+        {"op": "create_point", "label": "AIT-101", "equipment": "Sand Filter", "point_kind": "measurement",
+         "quantity_kind": "Concentration", "unit": "http://qudt.org/vocab/unit/mg/L"},
+        {"op": "create_equipment", "label": "Sand Filter", "type": "http://data.ashrae.org/standard223#Tank"},
+        {"op": "create_connection", "from_equipment": "p-101 feed pump", "to_equipment": "Sand Filter",
+         "medium": "s223:Fluid-Water"},
+    ))
+    view = project_view(cand.after, p.vocab)
+    sand = next(e for e in view.equipment if e.label == "Sand Filter")
+    assert sand.type.iri == "https://watermetadata.org/ontology/watr#Tank"
+    assert next(pt for pt in view.points if pt.label == "AIT-101").equipment.id == sand.id  # created after it, by label
+    assert {(c.from_equipment.id, c.to_equipment.id) for c in view.connections} == {(pump, sand.id)}  # type: ignore[union-attr]
+    assert cand.ops.readings == [  # type: ignore[attr-defined]  (in the order applied: the filter first)
+        "Sand Filter: type 'http://data.ashrae.org/standard223#Tank' was read as watr:Tank (Tank)",
+        "AIT-101: quantity_kind 'Concentration' was read as quantitykind:Concentration (Concentration)",
+        "AIT-101: unit 'http://qudt.org/vocab/unit/mg/L' was read as unit:MilliGM-PER-L (Milligram per Litre, mg/L)",
+    ]
+
+    tanks = sorted(e.id for e in p.view(p.head()).equipment if e.label.casefold() == "tank a")
     with pytest.raises(OperationError) as caught:
         p.build_candidate(p.head(), ops(
-            {"op": "create_equipment", "label": "Sand Filter", "type": "s223:Pump", "location": "Mechanical room 101"},
-            {"op": "create_connection", "from_equipment": "p-101 feed pump", "to_equipment": "Sand Filter",
-             "medium": "s223:Fluid-Water"},
+            {"op": "create_equipment", "label": "Filter", "type": "Pump", "location": "Mechanical room 101"},
+            {"op": "create_point", "label": "LT-1", "equipment": "Tank A", "point_kind": "measurement"},
             {"op": "update_equipment", "id": "eq-zzzzzz", "label": "Typo"},
         ))
     assert caught.value.problems == [
         "operation 1 (create_equipment): location refers to 'Mechanical room 101', but nothing has the id or label "
         "'Mechanical room 101'; to add a new space, create it first (create_space with \"id\": \"new:…\") and use "
-        "that id, or leave location out",
-        f"operation 2 (create_connection): from_equipment refers to 'p-101 feed pump', but 'p-101 feed pump' is a "
-        f"label, not an id; use its id '{pump}'",
-        "operation 2 (create_connection): to_equipment refers to 'Sand Filter', but 'Sand Filter' is the label of the "
-        "equipment created by operation 1; give that operation \"id\": \"new:…\" and use that id here",
+        "that id, or refer to one another operation creates by its \"new:…\" id or exact label, or leave location out",
+        "operation 1 (create_equipment): type 'Pump' is not a term in the loaded vocabulary",  # s223:Pump or watr:Pump
+        f"operation 2 (create_point): equipment refers to 'Tank A', but 'Tank A' is the label of 2 equipment "
+        f"entities ({tanks[0]!r}, {tanks[1]!r}); use the id of the one you mean",
         "operation 3 (update_equipment): no equipment with id 'eq-zzzzzz'",  # an id: nearby ids are suggested
     ]
     assert caught.value.unknown_entities == [("eq-zzzzzz", "equipment")]

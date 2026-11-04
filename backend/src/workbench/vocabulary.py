@@ -126,6 +126,7 @@ class Vocabulary:
         self.ancestors: dict[str, list[str]] = {}
         self.qk_broader: dict[str, list[str]] = {}
         self._search_index: dict[str, tuple[set[str], str]] = {}  # iri -> (search words, "label name")
+        self._names: list[dict[str, list[str]]] = [{}, {}, {}]  # see named()
         self.root_ontology: str = ""
         self.missing_imports: list[str] = []
         self._validator = None
@@ -494,6 +495,18 @@ class Vocabulary:
         for iri, t in sorted(self.terms.items(), key=lambda kv: kv[1].label.lower()):
             self.by_kind[t.kind].append(iri)
         self._search_index = {iri: _search_tokens(iri, t) for iri, t in self.terms.items()}
+        # Exact names, for reading a term written by name (see ``named``): local name as
+        # written; local name or label ignoring case; unit symbol as written.
+        self._names: list[dict[str, list[str]]] = [defaultdict(list), defaultdict(list), defaultdict(list)]
+        for iri, t in self.terms.items():
+            if t.deprecated:
+                continue
+            local = _local_name(iri)
+            self._names[0][local].append(iri)
+            for name in {local.casefold(), t.label.strip().casefold()} - {""}:
+                self._names[1][name].append(iri)
+            if t.symbol:
+                self._names[2][t.symbol].append(iri)
 
     # ------------------------------------------------------------------ lookups
 
@@ -518,6 +531,21 @@ class Vocabulary:
     def kind_of(self, iri: str) -> str | None:
         t = self.terms.get(str(iri))
         return t.kind if t else None
+
+    def named(self, value: str, kinds: set[str]) -> list[str]:
+        """Terms of these kinds that ``value`` names exactly: by local name (whatever namespace it
+        was written in, so ``s223:Tank`` finds ``watr:Tank`` when only that exists), by label, or for
+        units by symbol (``mg/L``). The first of those ways that finds anything decides; more than one
+        term means the name is ambiguous and the caller must not choose."""
+        iri = expand_term(self, value)
+        spaces = [*self.namespaces.values(), *_EXTRA_NAMESPACES.values()]
+        ns = max((n for n in spaces if n and iri.startswith(n) and len(iri) > len(n)), key=len, default="")
+        local = iri[len(ns):] if ns else _local_name(iri)
+        for index, key in zip(self._names, (local, local.casefold(), local)):
+            found = [iri for iri in index.get(key, ()) if self.terms[iri].kind in kinds]
+            if found:
+                return sorted(set(found))
+        return []
 
     def search(self, query: str, kinds: list[str] | None = None, limit: int = 12,
                include_deprecated: bool = False) -> list[Term]:
@@ -806,6 +834,21 @@ def _severity(s: str) -> str:
     return {"violation": "Violation", "warning": "Warning", "info": "Info"}.get(s.lower(), s)
 
 
+_EXTRA_NAMESPACES = {"s223": str(S223), "qudt": str(QUDT),
+                     "unit": "http://qudt.org/vocab/unit/",
+                     "quantitykind": "http://qudt.org/vocab/quantitykind/",
+                     "qk": "http://qudt.org/vocab/quantitykind/",
+                     "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+                     "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
+
+
+def _local_name(iri: str) -> str:
+    """After the last # (or /, or the prefix's colon); a bare name such as ``mg/L`` is its own."""
+    if "://" in iri or iri.startswith("urn:"):
+        return re.sub(r"^.*[#/]", "", iri)
+    return iri.split(":", 1)[1] if ":" in iri else iri
+
+
 def expand_term(vocab: Vocabulary, value: str) -> str:
     """Accept full IRIs, <IRIs>, and known prefixed names (s223:Pipe, watr:Tank, unit:PSI)."""
     v = value.strip().strip("<>")
@@ -813,12 +856,7 @@ def expand_term(vocab: Vocabulary, value: str) -> str:
         return v
     if ":" in v:
         prefix, local = v.split(":", 1)
-        known = {**vocab.namespaces, "s223": str(S223), "qudt": str(QUDT),
-                 "unit": "http://qudt.org/vocab/unit/",
-                 "quantitykind": "http://qudt.org/vocab/quantitykind/",
-                 "qk": "http://qudt.org/vocab/quantitykind/",
-                 "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#", "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
-                 "owl": "http://www.w3.org/2002/07/owl#", "skos": "http://www.w3.org/2004/02/skos/core#"}
+        known = {**vocab.namespaces, **_EXTRA_NAMESPACES}
         if prefix in known:
             return known[prefix] + local
     return v

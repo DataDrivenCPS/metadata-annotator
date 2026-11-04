@@ -407,11 +407,59 @@ class OperationError(Exception):
 
 
 class Resolved(list):
-    """Resolved operations, plus where each minted id came from: ``{id: (placeholder, position)}``."""
+    """Resolved operations, plus where each minted id came from: ``{id: (placeholder, position)}``,
+    and how terms written by name were read (``readings``, for the proposal's notes)."""
 
-    def __init__(self, ops: list, minted: dict[str, tuple[str, int]]):
+    def __init__(self, ops: list, minted: dict[str, tuple[str, int]], readings: list[str] | None = None):
         super().__init__(ops)
         self.minted = minted
+        self.readings = readings or []
+
+
+# How a drafting note about an operation the assistant could not make valid begins.
+LEFT_OUT = "Left out "
+
+FAILED_AT = re.compile(r"^operation (\d+) \(")
+
+
+def failed_operations(problems: list[str]) -> set[int] | None:
+    """Positions (from 0, as written) of the operations these problems are about; None when a
+    problem names no operation (it concerns the change as a whole)."""
+    found = [FAILED_AT.match(problem) for problem in problems]
+    if not found or not all(found):
+        return None
+    return {int(m.group(1)) - 1 for m in found if m}
+
+
+def creation_order(ops: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
+    """The same operations, each after the create operations whose ``new:*`` ids or labels it
+    refers to; otherwise as written. Writing a reference before the entity's create is an ordering slip, not a different
+    change. (Dependencies that form a cycle stay as written and are reported.)"""
+    def names(o: dict) -> set[str]:  # how later operations may refer to what this one creates
+        if not str(o.get("op", "")).startswith("create_"):
+            return set()
+        found = {str(o["id"])} if str(o.get("id") or "").startswith(PLACEHOLDER) else set()
+        return found | ({"label:" + str(o["label"]).strip().casefold()} if o.get("label") else set())
+
+    created = set().union(*(names(o) for _, o in ops)) if ops else set()
+    fields = {*REF_FIELDS, "subject", "object"}
+
+    def needs(o: dict) -> set[str]:
+        refs = {str(v) for k, v in o.items() if isinstance(v, str) and (
+            k in fields or (k == "id" and not str(o.get("op", "")).startswith("create_")))}
+        return ({r for r in refs if r in created}
+                | {"label:" + r.strip().casefold() for r in refs if "label:" + r.strip().casefold() in created}) - names(o)
+
+    done: set[str] = set()
+    pending, out = list(ops), []
+    while pending:
+        ready = next((n for n, (_, o) in enumerate(pending) if needs(o) <= done), None)
+        if ready is None:
+            return out + pending
+        pair = pending.pop(ready)
+        out.append(pair)
+        done |= names(pair[1])
+    return out
 
 
 @dataclass
@@ -475,12 +523,14 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
     operations on stored facts. Raises OperationError listing every problem found.
     """
     expanded, problems = expand(pg, vocab, [o.model_dump() for o in ops])
+    expanded = creation_order(expanded)
     origin = [i for i, _ in expanded]  # positions as written, for messages
     ops = OperationList.validate_python([o for _, o in expanded])
     unknown_terms: list[tuple[str, str, str | None]] = []
     unknown_entities: list[tuple[str, str]] = []
     placeholders: dict[str, str] = {}
     minted: dict[str, tuple[str, int]] = {}  # minted id -> (placeholder, operation number as written)
+    readings: list[str] = []  # terms written by name, and what they were read as
     created: dict[str, str] = {}  # id -> kind, for entities created earlier in the list
     created_relationships: set[str] = set()
     deleted: set[str] = set()
@@ -523,19 +573,30 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 hint = "; to link them through another relation, use relate"
         return f"{eid!r} is {name(actual)}, not {name(expected)}{hint}"
 
-    created_labels: dict[str, tuple[str, int, bool]] = {}  # label -> (id, operation number, had a placeholder)
+    created_labels: dict[str, list[str]] = {}  # label (ignoring case) -> ids created above with it
     ids_like = re.compile(r"^(" + "|".join(ID_PREFIX.values()) + r")-[0-9a-z]+$")
 
     def labelled(text: str) -> list[tuple[str, str | None]]:
         """(id, kind) of entities labelled ``text`` (ignoring case): in the model, or created above."""
         want = text.strip().casefold()
-        found = [(eid, kind_now(eid)) for label, (eid, _, _) in created_labels.items() if label == want]
+        found = {eid: kind_now(eid) for eid in created_labels.get(want, [])}
         for node, label in pg.model.subject_objects(RDFS.label):
             if str(label).strip().casefold() == want and (eid := pg.id_of(node)) and eid not in deleted:  # type: ignore[arg-type]
-                found.append((eid, kind_now(eid)))
-        return found
+                found[eid] = kind_now(eid)
+        return list(found.items())
 
-    def missing(ref: str, target: str, fname: str | None) -> str | None:
+    def fits(kind: str | None, target: str) -> bool:
+        return kind == target or (target == "entity" and kind not in (None, "relationship"))
+
+    def by_label(ref: str, target: str) -> str | None:
+        """The one entity of the expected kind labelled ``ref`` (ignoring case), if exactly one is:
+        a label names what it names. Several, or none, stay a problem to report."""
+        if ref.startswith(PLACEHOLDER) or ids_like.match(ref):
+            return None
+        found = [eid for eid, kind in labelled(ref) if fits(kind, target)]
+        return found[0] if len(found) == 1 else None
+
+    def missing(ref: str, target: str, fname: str | None, op_kind: str) -> str | None:
         """What to do about a reference that names nothing, in the terms it was written in; None
         when it looks like an id (nearby ids are suggested separately)."""
         name, leave = target.replace("_", " "), f", or leave {fname} out" if fname else ""
@@ -546,17 +607,30 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
         if ids_like.match(ref):
             return None
         matches = labelled(ref)
-        if found := [m for m in matches if m[1] == target or target == "entity"] or matches:
-            eid, kind = found[0]
-            label = ref.strip().casefold()
-            if label in created_labels and created_labels[label][0] == eid and not created_labels[label][2]:
-                return (f"{ref!r} is the label of the {kind} created by operation {created_labels[label][1]}; "
-                        f"give that operation \"id\": \"new:…\" and use that id here")
-            return (f"{ref!r} is a label, not an id; use its id {eid!r}"
-                    + (f" (it is {'an' if (kind or 'x')[0] in 'aeiou' else 'a'} {(kind or 'entity').replace('_', ' ')})"
-                       if kind != target and target != "entity" else ""))
+        if len(several := [eid for eid, kind in matches if fits(kind, target)]) > 1:
+            return (f"{ref!r} is the label of {len(several)} {name} entities ({', '.join(map(repr, several))}); "
+                    "use the id of the one you mean")
+        if matches:
+            eid, _ = matches[0]
+            mismatch = wrong_kind(eid, target, op_kind) or f"{eid!r}"
+            return f"{ref!r} is the label of " + mismatch.replace(f"{eid!r} is ", f"{eid!r}, which is ", 1)
         return (f"nothing has the id or label {ref!r}; to add a new {name}, create it first ({create} with "
-                f"\"id\": \"new:…\") and use that id{leave}")
+                f"\"id\": \"new:…\") and use that id, or refer to one another operation creates by its "
+                f"\"new:…\" id or exact label{leave}")
+
+    def read_term(written: str, kinds: set[str], where: str, subject: str | None, fname: str) -> str:
+        """The term ``written`` names: as an IRI or prefixed name, else by its exact name if that
+        names exactly one term of these kinds (``vocab.named``), which is noted for the reviewer."""
+        iri = expand_term(vocab, written)
+        if vocab.term(iri) is not None or not kinds:
+            return iri
+        named = vocab.named(written, kinds)
+        if len(named) != 1:
+            return iri
+        t = vocab.terms[named[0]]
+        readings.append(f"{subject or where}: {fname} {written!r} was read as {vocab.curie(t.iri)} "
+                        f"({t.label}{', ' + t.symbol if t.symbol else ''})")
+        return t.iri
 
     def later_placeholders(i: int) -> set[str]:
         return {o.id for o in ops[i + 1:] if o.op.startswith("create_") and (o.id or "").startswith(PLACEHOLDER)}
@@ -614,11 +688,13 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 continue
             subj = placeholders.get(data["subject"], data["subject"])
             skind = created.get(subj) or (None if subj in deleted else entity_kind(pg, vocab, subj))
+            if skind is None and (named := by_label(subj, "entity")):
+                subj, skind = named, kind_now(named)
             if skind in (None, "relationship"):
-                hint = missing(subj, "entity", None) if skind is None else None
+                hint = missing(subj, "entity", None, kind) if skind is None else None
                 problems.append(f"{where}: subject {subj!r} is not an entity in the model" + (f": {hint}" if hint else ""))
                 continue
-            rel = expand_term(vocab, data["relation"])
+            rel = read_term(data["relation"], {"relation"}, where, None, "relation")
             t = vocab.term(rel)
             if t is None or t.kind != "relation":
                 problems.append(f"{where}: {data['relation']!r} is not a relation in the loaded vocabulary")
@@ -626,6 +702,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 continue
             obj = placeholders.get(data["object"], data["object"])
             okind = created.get(obj) or (None if obj in deleted else entity_kind(pg, vocab, obj))
+            if okind is None and (named := by_label(obj, "entity")):
+                obj, okind = named, kind_now(named)
             if okind is None or okind == "relationship":
                 term = expand_term(vocab, obj)
                 if vocab.term(term) is None:
@@ -662,17 +740,24 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                     minted[eid] = (raw, origin[i] + 1)
             data["id"] = eid
             if data.get("label"):
-                created_labels[str(data["label"]).strip().casefold()] = (eid, origin[i] + 1, bool(raw))
+                created_labels.setdefault(str(data["label"]).strip().casefold(), []).append(eid)
             # create_entity takes any class; later operations treat the node as what its class makes it
-            created[eid] = (ROW_KIND_OF_TERM.get(vocab.kind_of(expand_term(vocab, data.get("type") or "")) or "", "entity")
-                            if kind == "entity" else kind)
+            if kind == "entity":
+                type_iri = expand_term(vocab, data.get("type") or "")
+                if vocab.term(type_iri) is None and len(named_types := vocab.named(data.get("type") or "", set(CLASS_KINDS))) == 1:
+                    type_iri = named_types[0]
+                created[eid] = ROW_KIND_OF_TERM.get(vocab.kind_of(type_iri) or "", "entity")
+            else:
+                created[eid] = kind
         else:
             eid = placeholders.get(data["id"], data["id"])
+            if not exists(eid, kind) and (named := by_label(eid, kind)):
+                eid = named
             data["id"] = eid
             if not exists(eid, kind):
                 if kind != "entity" and (mismatch := wrong_kind(eid, kind, kind, op.op.split("_", 1)[0])):
                     problems.append(f"{where}: {mismatch}")
-                elif hint := missing(eid, kind, None):
+                elif hint := missing(eid, kind, None, kind):
                     problems.append(f"{where}: id {eid!r} names no {kind.replace('_', ' ')}: {hint}")
                 else:
                     problems.append(f"{where}: no {kind} with id {eid!r}")
@@ -682,6 +767,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
         for fname, target_kind in REF_FIELDS.items():
             if fname in data and data[fname] is not None:
                 ref = placeholders.get(data[fname], data[fname])
+                if not exists(ref, target_kind) and ref not in later_placeholders(i) and (named := by_label(ref, target_kind)):
+                    ref = named
                 data[fname] = ref
                 if ref in later_placeholders(i):
                     problems.append(f"{where}: {fname} refers to {ref!r}, which a later operation creates; "
@@ -689,7 +776,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
                 elif not exists(ref, target_kind):
                     if mismatch := wrong_kind(ref, target_kind, kind):
                         problems.append(f"{where}: {fname} refers to {target_kind.replace('_', ' ')}, but {mismatch}")
-                    elif hint := missing(ref, target_kind, fname):
+                    elif hint := missing(ref, target_kind, fname, kind):
                         problems.append(f"{where}: {fname} refers to {ref!r}, but {hint}")
                     else:
                         problems.append(f"{where}: {fname} refers to unknown {target_kind.replace('_', ' ')} {ref!r}")
@@ -699,10 +786,11 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
 
         for fname, term_kind in TERM_FIELDS.items():
             if fname in data and data[fname] is not None:
-                iri = expand_term(vocab, data[fname])
-                data[fname] = iri
                 expected = term_kind or {"equipment": "equipment", "connection": "connection", "space": "location",
                                          "entity": "class"}.get(kind)
+                kinds = set(CLASS_KINDS) if kind == "entity" and fname == "type" else {expected} if expected else set()
+                iri = read_term(str(data[fname]), kinds, where, data.get("label"), fname)
+                data[fname] = iri
                 t = vocab.term(iri)
                 if t is None:
                     problems.append(f"{where}: {fname} {iri!r} is not a term in the loaded vocabulary")
@@ -732,7 +820,7 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> Resolved:
 
     if problems:
         raise OperationError(problems, unknown_terms, unknown_entities).written_as(minted)
-    return Resolved(out, minted)
+    return Resolved(out, minted, readings)
 
 
 class GenericOps:

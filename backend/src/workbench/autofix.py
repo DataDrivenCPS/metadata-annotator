@@ -33,7 +33,7 @@ from rdflib import URIRef
 from .choices import MAX_OPTIONS, build_option
 from .config import AgentConfig
 from .llm import Cancelled
-from .operations import TERM_FIELDS, OperationError, OperationList
+from .operations import LEFT_OUT, TERM_FIELDS, OperationError, OperationList
 from .schemas import ChangeProposal, ReviewIssue, SelectionScope
 
 if TYPE_CHECKING:
@@ -108,6 +108,8 @@ def verify(project: Project, proposal: ChangeProposal, issues: list[ReviewIssue]
     introduced = (list(val.introduced) if val else []) + list((proposal.gate or {}).get("introduced", []))
     if introduced:
         reasons.append(f"it introduces {len(introduced)} new issue(s)")
+    if left_out := [n for n in proposal.drafting_notes if n.startswith(LEFT_OUT)]:
+        reasons.append(f"the assistant left out {len(left_out)} operation(s) it could not make valid")
     if deleted := [c.label for c in proposal.changes if c.change == "deleted"]:
         reasons.append(f"it removes {', '.join(deleted[:3])}")
     if outside := [c.label for c in proposal.changes if c.change == "updated" and not c.in_selection]:

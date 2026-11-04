@@ -109,7 +109,7 @@ export interface Proposal {
   affected_ids: string[]; out_of_scope_ids: string[]; changes: EntityChange[]
   diff: { added: string[]; removed: string[] }; evidence: EvidenceRef[]
   validation: { before: ValidationSummary; after: ValidationSummary; resolved: string[]; introduced: string[] } | null
-  explanation: string; notes: string[]; questions: string[]
+  explanation: string; notes: string[]; drafting_notes?: string[]; questions: string[]
   status: 'pending' | 'applied' | 'dismissed' | 'stale' | 'failed'
   agent_run_id: string | null; applied_revision: string | null
   kind: 'correction' | 'build'

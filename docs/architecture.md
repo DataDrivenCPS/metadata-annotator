@@ -93,11 +93,21 @@ reporting all problems at once. Problems name entities created in the same list 
 written (`'new:x' (created by operation 1)`), never by the minted id, which is new on every
 attempt; this holds for the checks made after applying too. A reference to an entity of the
 wrong kind says what it is and which field or operation takes that kind (e.g. a space given
-as `contained_in` points to `location`), instead of calling it unknown. A reference that names
-nothing says what to do: a `new:*` placeholder no operation creates (give that create operation
-the id), a label written where an id belongs (its id, or the operation that creates it), or
-neither (create it first, or leave the field out). Only id-shaped references stay "unknown", with
-nearby ids suggested by the agent. 223P's connection-point rules (pairing, mapsTo, one
+as `contained_in` points to `location`), instead of calling it unknown.
+
+What a name names exactly is what it means; models of every size slip on spelling, not
+meaning. A reference written as a label is read as the one entity of the expected kind with that
+label (ignoring case; in the model or created by the same list). A term written by its exact
+local name in any namespace (`Concentration`, `s223:Tank` when only `watr:Tank` exists), its
+label, or a unit's symbol (`mg/L`) is read as the one term of the expected kind it names
+(`Vocabulary.named`); each such reading is a drafting note on the proposal for the reviewer.
+Operations are put after the create operations whose `new:*` ids or labels they use (writing a
+reference first is an ordering slip). Several matches, or none, are never chosen between: the
+problem says what to do — a `new:*` placeholder no operation creates (give that create operation
+the id), a label several entities share (their ids), or nothing (create it first, refer to
+another operation's entity by its placeholder or label, or leave the field out); near misses
+(`StorageTank`) get suggestions, not substitutions. Only id-shaped references stay "unknown",
+with nearby ids suggested by the agent. 223P's connection-point rules (pairing, mapsTo, one
 connection per port) are checked on the result after all operations apply, so a proposal can
 create and wire ports in one go. A resolved operation list applies deterministically, so
 `apply_proposal` re-applies the stored operations and **refuses if the resulting triple diff
@@ -273,16 +283,26 @@ Bounded workflow, identical for local and remote models:
    validated. Malformed operations go back to the model with the problems and the closest valid
    terms (up to 2 repairs). Unknown entity references also carry nearby exact ids and
    labels from the lookup state, including a pending draft when replying to one. These are
-   suggestions for the model to check; resolution never silently substitutes an id.
+   suggestions for the model to check; resolution never silently substitutes an id. When only
+   some operations fail, the model is shown just those (as it wrote them; the rejection's
+   progress record keeps them too) and answers with corrections of them only, which replace them
+   (`splice`: in order when there is one per failed operation, else by kind and id or label);
+   rewriting every operation to fix one brought in new mistakes. A repair that gets exactly
+   the same problems again ends the repairs. When repairs end with some operations still failing, the valid
+   ones become the proposal and the rest — those that failed, then any that needed them — are left
+   out, each named with its problems as a drafting note (`CorrectionOutcome.left_out`;
+   `ChangeProposal.drafting_notes`, kept when a proposal is rebased); automatic fixes never apply
+   such a proposal. Only when nothing valid is left does the run fail.
 4. **Proposal**: stored with before/after per entity (every entity whose projection changes,
    flagged when outside the selection), the triple diff, the validation delta (issues resolved
    and introduced), evidence (model rows, observations, skill sections, vocabulary terms) and
    the explanation. No operations + questions = the assistant needs input.
 
 Replies to a pending proposal use its candidate graph for lookup tools, so the agent can
-inspect new entities and relationships before they are applied. Each retry or revision must
-return the complete replacement changes under that reply's operation rules, rather than a
-fragment of the previous answer. Refreshing a stale proposal instead inspects the current
+inspect new entities and relationships before they are applied. A revision, and a retry after
+problems that concern the whole answer (or every operation in it), must return the complete
+replacement changes under that reply's operation rules; a retry after some operations failed
+returns corrections of those only (above). Refreshing a stale proposal instead inspects the current
 head and treats old operations as historical context. Draft references are checked during
 resolution; duplicate `new:*` definitions are rejected. Cancellation is checked before
 saving a proposal or publishing an automatic change.

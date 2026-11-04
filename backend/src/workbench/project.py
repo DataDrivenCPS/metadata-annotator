@@ -553,7 +553,11 @@ class Project:
                       issue_dismissals: list | None = None,
                       gate: dict | None = None,
                       persist: bool = True,
+                      drafting_notes: list[str] | None = None,
                       ) -> ChangeProposal:
+        # How the proposal was drafted (terms read by name, operations left out): still true after
+        # a rebase, unlike the notes applying it produces, which are recomputed then.
+        drafting = list(dict.fromkeys([*(drafting_notes or []), *getattr(cand.ops, "readings", [])]))
         before_expl = {i.explanation for i in before_issues if i.severity != "suggestion"}
         after_expl = {i.explanation for i in cand.issues if i.severity != "suggestion"}
         selected = set(selection.entity_ids + selection.relationship_ids)
@@ -574,7 +578,8 @@ class Project:
                 before=before_summary, after=cand.summary,
                 resolved=sorted(before_expl - after_expl), introduced=sorted(after_expl - before_expl)),
             explanation=explanation,
-            notes=cand.result.notes,
+            notes=[*cand.result.notes, *drafting],
+            drafting_notes=drafting,
             questions=questions,
             agent_run_id=agent_run_id,
             kind=kind,  # type: ignore[arg-type]
@@ -654,7 +659,7 @@ class Project:
                         before=before, after=cand.summary,
                         resolved=sorted(before_expl - after_expl),
                         introduced=sorted(after_expl - before_expl))
-                    prop.notes = cand.result.notes
+                    prop.notes = [*cand.result.notes, *prop.drafting_notes]
                     prop.gate = self.gate(cand) if cand.diff.added or cand.diff.removed else None
                 else:
                     cand = self.build_candidate(head, prop.operations, prop.selection, lock=not build)

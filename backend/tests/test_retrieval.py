@@ -524,7 +524,7 @@ def test_search_sources_finds_passages_the_assistant_can_cite(workspace, indexer
     outcome = run_correction(p, llm, guidance(), rev.id, SelectionScope(entity_ids=[equipment.id]),
                              "Rename this air handler to its drawing name", None, lambda *_: None, CancelToken())
     assert "search_sources(query, source?)" in llm.systems[0]
-    assert any("Cite only observation ids" in m["content"] for m in llm.seen[2])  # the invented id was refused
+    assert any("cite only observation ids" in m["content"] for m in llm.seen[2])  # the invented id was refused
     oid = outcome.proposal.operations[0].evidence[0]
     assert "Supply air handler" in p.store.get_body("observations", oid)["content"]["text"]
     assert [ref.ref for ref in outcome.proposal.evidence if ref.kind == "observation"] == [oid]

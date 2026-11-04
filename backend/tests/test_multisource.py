@@ -237,4 +237,4 @@ def test_correction_rejects_invented_citations_without_new_attachments(workspace
     result = run_with_evidence(p, client, guidance(), p.head(), SelectionScope(), 'Add A1', None,
                               lambda *_: None, CancelToken(), agent=AgentConfig())
     assert result.proposal is None
-    assert 'Unknown source observation' in client.seen[1][-1]['content']
+    assert 'unknown source observation' in client.seen[1][-1]['content']

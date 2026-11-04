@@ -144,9 +144,10 @@ def test_zero_repair_budget_rejects_first_bad_proposal(sample_project, guidance)
 
 def test_configured_repair_budget_allows_three_corrections(sample_project, guidance):
     p = sample_project
-    bad = {"action": "propose", "operations": [
-        {"op": "update_point", "id": "pt-nope", "label": "x"}]}
-    llm = ScriptedLLM([bad] * 3 + [{"action": "propose", "operations": []}])
+
+    def bad(n):  # each answer wrong differently, so the repairs keep going
+        return {"action": "propose", "operations": [{"op": "update_point", "id": f"pt-nope{n}", "label": "x"}]}
+    llm = ScriptedLLM([bad(1), bad(2), bad(3), {"action": "propose", "operations": []}])
     out = run_correction(p, llm, guidance, p.head(), SelectionScope(), "rename", None,
                          lambda *_: None, CancelToken(),
                          agent=AgentConfig(max_steps=1, max_repairs=3))
@@ -863,3 +864,75 @@ def test_a_model_with_spaces_keeps_them_and_builds_leave_out_the_generic_operati
     assert operation_scope(p, p.head(), ["Add a filter"], build_from_sources=True).spaces
     relate = OperationList.validate_python([{"op": "relate", "subject": "a", "relation": "b", "object": "c"}])
     assert operation_scope(p, p.head(), [], build_from_sources=True, prior=relate).generic  # a pending proposal uses them
+
+
+def _three_operations(p):
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    return ct, [
+        {"op": "update_point", "id": ct.id, "label": "CT-201 conductivity"},
+        {"op": "create_equipment", "id": "new:x", "label": "Mystery", "type": "watr:NoSuchThing"},
+        {"op": "create_point", "label": "P-9", "equipment": "new:x", "point_kind": "measurement"},
+    ]
+
+
+def test_a_repair_corrects_only_the_operations_that_failed(sample_project, guidance):
+    """Rewriting every operation to fix one brought in new mistakes; the model is shown the failed
+    ones and its corrections replace just those."""
+    p = sample_project
+    ct, operations = _three_operations(p)
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "Renamed CT-201 and added the mystery unit.", "operations": operations},
+        {"action": "propose", "explanation": "fixed the type",
+         "operations": [{"op": "create_equipment", "id": "new:x", "label": "Mystery", "type": "watr:Tank"}]},
+        lambda messages: {"action": "propose", "explanation": "Renamed CT-201 and added the mystery unit.",
+                          "operations": [operations[0], {**operations[1], "type": "watr:Tank"}, operations[2]]},
+    ])  # the third answers the soundness gate (a new tank is not connected yet)
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "rename it and add the tank")
+    assert [stage for stage, _, _ in events].count("gated") <= 1
+    asked = llm.seen[1][-1]["content"]
+    assert asked.startswith("1 of your 3 operations cannot be applied:\noperation 2: ")
+    assert "NoSuchThing" in asked and "CT-201 conductivity" not in asked and "do not repeat them" in asked
+    rejected = next(d for stage, _, d in events if stage == "rejected")
+    assert list(rejected["operations"]) == ["2"]  # what the model wrote is kept on the run
+    prop = out.proposal
+    assert prop is not None and {c.label for c in prop.changes} >= {"CT-201 conductivity", "Mystery", "P-9"}
+    assert out.explanation == "Renamed CT-201 and added the mystery unit." and out.left_out == []
+
+
+def test_operations_the_model_cannot_fix_are_left_out_and_noted(sample_project, guidance):
+    """A repair that fixes nothing ends the repairs: the valid operations become the proposal, and
+    the failed ones (and those that needed them) are named for the person instead of failing it all."""
+    p = sample_project
+    ct, operations = _three_operations(p)
+    llm = ScriptedLLM([
+        {"action": "propose", "explanation": "Renamed CT-201.", "operations": operations},
+        {"action": "propose", "operations": [operations[1]]},  # the same mistake again
+    ])
+    out, events = run(p, llm, guidance, SelectionScope(entity_ids=[ct.id]), "rename it")
+    assert len(llm.seen) == 2  # no third attempt at the same answer
+    assert out.left_out == [
+        "Left out create_equipment 'Mystery': type 'https://watermetadata.org/ontology/watr#NoSuchThing' is "
+        "not a term in the loaded vocabulary",
+        "Left out create_point 'P-9': equipment refers to 'new:x', but no operation creates 'new:x'; give the "
+        "create_equipment for it \"id\": \"new:x\", before this operation, or leave equipment out",
+    ]
+    prop = out.proposal
+    assert prop is not None and [c.label for c in prop.changes] == ["CT-201 conductivity"]
+    assert prop.drafting_notes == out.left_out and set(out.left_out) <= set(prop.notes)
+    assert any(stage == "salvaged" for stage, _, _ in events)
+
+    from workbench.autofix import verify
+    assert "the assistant left out 2 operation(s) it could not make valid" in verify(p, prop, [])
+
+
+def test_corrections_replace_the_failed_operations_they_name():
+    from workbench.agent.correction import splice
+    current = [{"op": "create_point", "label": "A"}, {"op": "create_point", "label": "B"},
+               {"op": "create_point", "label": "C"}, {"op": "create_equipment", "label": "D"}]
+    # One correction per failed operation: in order.
+    assert splice(current, [1, 2], [{"op": "x"}, {"op": "y"}]) == [current[0], {"op": "x"}, {"op": "y"}, current[3]]
+    # Fewer (or more): matched by kind and label; one matching none is added.
+    fixed = {"op": "create_point", "label": "C", "unit": "unit:L"}
+    new = {"op": "create_point", "label": "E"}
+    assert splice(current, [2], [fixed, new]) == [current[0], current[1], fixed, current[3], new]
+    assert splice(current, [0, 1, 2], [fixed]) == [current[0], current[1], fixed, current[3]]

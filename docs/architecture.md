@@ -102,6 +102,10 @@ entity goes by its new label from then on, not its old one). A term written by i
 local name in any namespace (`Concentration`, `s223:Tank` when only `watr:Tank` exists), its
 label, or a unit's symbol (`mg/L`) is read as the one term of the expected kind it names
 (`Vocabulary.named`); each such reading is a drafting note on the proposal for the reviewer.
+A term copied with the label the lookup tools print beside it (`s223:Fluid-Water (Water)`,
+`Water [s223:Fluid-Water]`, `s223:Fluid-Water - Water`, or `Fluid-Water (Water)` without a prefix) is read without that
+label (`expand_term`, `named`), since ids cannot contain spaces; a name that is itself a label
+with parentheses (Brick's "Laboratory (dry)") is still read as written.
 Operations are put after the create operations whose `new:*` ids or labels they use (writing a
 reference first is an ordering slip). Several matches, or none, are never chosen between: the
 problem says what to do — a `new:*` placeholder no operation creates (give that create operation

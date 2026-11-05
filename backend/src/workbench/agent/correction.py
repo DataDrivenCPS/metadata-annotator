@@ -33,6 +33,7 @@ from ..project import Project, StaleRevision
 from ..projection import project as project_view
 from ..questions import readable_questions
 from ..schemas import ChangeProposal, EvidenceRef, IssueDismissal, SelectionScope
+from .citing import naming, observation_text
 from .guidance import SkillGuidance
 from .tools import AgentTools, curie, entity_line
 
@@ -1092,11 +1093,23 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             if prior_proposal:
                 source_ids.update(ref.ref for ref in prior_proposal.evidence if ref.kind == "observation")
             uncited = []
+            supplied = sorted(ref.ref for ref in source_evidence)
+            texts: dict[str, str] | None = None  # read once, and only if something needs them
+            unlinked = by_label = 0
             for n, raw_op in enumerate(ops_list):
                 if isinstance(raw_op, dict) and (str(raw_op.get("op", "")).startswith(("create_", "update_"))
                                                 or raw_op.get('op') == 'relate'):
-                    refs = raw_op.get("evidence") or (
-                        sorted(ref.ref for ref in source_evidence) if raw_op.get("op", "").startswith("create_") else [])
+                    refs = raw_op.get("evidence")
+                    if not refs and str(raw_op.get("op", "")).startswith("create_") and supplied:
+                        # Created without a citation: link it to the sources that name it (agent/citing.py),
+                        # or, when none does, to every source supplied with it.
+                        if texts is None:
+                            texts = {oid: observation_text(project.store.get_body("observations", oid)) for oid in supplied}
+                        named = naming(raw_op.get("label"), texts)
+                        unlinked += 1
+                        by_label += bool(named)
+                        refs = named or supplied
+                    refs = refs or []
                     if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in source_ids for ref in refs):
                         uncited.append((n, str(raw_op.get("op")), "cite only observation ids from the supplied "
                                                                    "source evidence"))
@@ -1104,6 +1117,10 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                         raw_op["evidence"] = refs
             if uncited:
                 raise ops_mod.OperationError.at(uncited)
+            if unlinked:
+                progress("linked", f"{unlinked} created object(s) cited no source: {by_label} linked to the sources "
+                                   f"that name them, {unlinked - by_label} to every source supplied",
+                         {"uncited": unlinked, "by_label": by_label})
         parsed = ops_mod.OperationList.validate_python(ops_list)
         unknown = [(n, op.op, f"unknown source observation {oid!r}; cite existing source evidence")
                    for n, op in enumerate(parsed)

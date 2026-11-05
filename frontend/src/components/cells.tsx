@@ -41,7 +41,7 @@ export function PropertyEditor({ spec, value, unit, onCommit, onCancel }: {
           {units.map((x) => <option key={x.iri} value={x.iri}>{x.symbol || x.label}</option>)}
         </select>
       )}
-      <button className="link" onMouseDown={(e) => e.preventDefault()} onClick={done}>save</button>
+      <button className="link" onMouseDown={(e) => e.preventDefault()} onClick={done}>Save</button>
     </span>
   )
 }

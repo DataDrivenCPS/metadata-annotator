@@ -25,6 +25,6 @@ export function SourceIndexStatus({ source }: { source: Source }) {
   return <span className={`src-index ${index.status}${index.warning ? ' warned' : ''}`} title={detail}>
     {text}{index.warning && index.status === 'ready' ? ' ⚠' : ''}
     {(index.status === 'failed' || index.status === 'unsupported' || (index.status === 'ready' && index.warning)) &&
-      <button className="link" onClick={retry}>retry</button>}
+      <button className="link" onClick={retry}>Retry</button>}
   </span>
 }

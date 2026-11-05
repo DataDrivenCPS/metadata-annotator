@@ -1,8 +1,9 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { autofixCandidates, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
   issuesOnSelection, leftOutSummary, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
 import { AutofixBanner } from './AutofixReport'
+import { Disclosure } from './Disclosure'
 import { ActionButton, ChoiceButtons } from './Choices'
 import { summarize } from '../selection'
 import { useStore } from '../store'
@@ -22,17 +23,6 @@ const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field.replace(/_/g,
 const settingsNote = (settings: Parameters<typeof settingsSummary>[0]) => {
   const summary = settingsSummary(settings)
   return summary ? ` (${summary})` : ''
-}
-
-/** A collapsible section whose body is only rendered while open (a closed one costs nothing to redraw). */
-function LazyDetails({ summary, className, summaryClassName, children }: {
-  summary: ReactNode; className?: string; summaryClassName?: string; children: () => ReactNode
-}) {
-  const [open, setOpen] = useState(false)
-  return <details className={className} onToggle={(e) => setOpen(e.currentTarget.open)}>
-    <summary className={summaryClassName}>{summary}</summary>
-    {open && children()}
-  </details>
 }
 
 const CONTINUE_LABEL = {
@@ -164,8 +154,8 @@ function Composer() {
         {chosen.length ? <>
           {chosen.slice(0, 6).map((r) => <span key={r!.id} className={`chip ${r!.kind}`}>{r!.label}</span>)}
           {chosen.length > 6 && <span className="muted">+{chosen.length - 6} more</span>}
-          {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
-          {source === 'conversation' && <button className="link" onClick={dropScope}>clear</button>}
+          {source === 'current' && <button className="link" onClick={clearSelection}>Clear</button>}
+          {source === 'conversation' && <button className="link" onClick={dropScope}>Clear</button>}
           {fixable.length > 0 && <button className="link" disabled={running}
             title="The assistant fixes these issues group by group; fixes that pass every check are applied (and can be undone), the rest wait for you"
             onClick={() => void startAutofix(fixable)}>· Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>}
@@ -174,14 +164,14 @@ function Composer() {
       {selection.source_regions.length > 0 && <div className="composer-selection">
         <span className="muted" title="Sent with this message only; attach again to use them in a later message">
           Attached to this message: {attachmentSummary(selection.source_regions)}</span>
-        <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>clear evidence</button>
+        <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>Clear</button>
       </div>}
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
         {next ? <>
           <span>↩ {CONTINUE_LABEL[next.kind]}</span>
           <button className="link" onClick={() => setNewRequest(true)}>Start a new request</button>
         </> : <>
-          <span>New request — the assistant won’t see the earlier conversation</span>
+          <span title="The assistant won’t see the earlier conversation">New request</span>
           <button className="link" onClick={() => setNewRequest(false)}>Continue instead</button>
         </>}
       </div>}
@@ -199,7 +189,7 @@ function Composer() {
         }}
       />
       <div className="assist-actions">
-        <span className="muted small">Enter to send · Shift+Enter for a new line</span>
+        <span className="spacer" />
         <button className="primary" disabled={!!viewing || !text.trim() || running || sending} onClick={() => void send()}
           title="Enter to send · Shift+Enter for a new line">
           {next?.kind === 'proposal' ? 'Send reply' : 'Send'}
@@ -255,7 +245,7 @@ function ModelStatus() {
       <span className={`status-pill ${state}`} title={health?.ok
         ? `Connected to ${current?.base_url ?? provider} · ${shortModel(health.model ?? current?.model ?? '')}`
         : health?.detail ?? 'Checking the model endpoint…'}>
-        <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? 'Connected' : 'Unavailable'}
+        <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? '' : 'Unavailable'}
       </span>
       <select value={shown.value} title="Model" onChange={(e) => {
         setHealth(null)
@@ -273,6 +263,7 @@ function ModelStatus() {
 }
 
 const STARTER_ISSUES = 10
+const AUTOFIX_HINT = 'Fixes that pass every check are applied (and can be undone); the rest wait for you'
 
 /** One-click ways to start a conversation; each fills the message box for review first. */
 function Starters() {
@@ -288,12 +279,12 @@ function Starters() {
   const starters = [
     onSelection.length > 0 && {
       label: `Auto-fix the ${onSelection.length} issue${onSelection.length === 1 ? '' : 's'} on the selection`,
-      hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
+      hint: AUTOFIX_HINT,
       run: () => void startAutofix(onSelection),
     },
     violations.length > 1 && !autofixing && {
       label: `Auto-fix the ${violations.length} open violations`,
-      hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
+      hint: AUTOFIX_HINT,
       run: () => void startAutofix(autofixCandidates(issues ?? [], new Set())),
     },
     violations.length > 0 && {
@@ -314,10 +305,8 @@ function Starters() {
     },
   ].filter((x) => !!x)
   return <div className="thread-empty">
-    <p className="muted">Select rows in a table or the graph, then describe what is wrong or what to add. The assistant
-      replies with an explanation, questions, or a proposed change you review before it is applied.</p>
     <div className="starters">
-      <span className="muted small">Or start with</span>
+      <span className="muted small">Start with</span>
       {starters.map((st) => <button key={st.label} onClick={st.run} title={st.hint}>{st.label}</button>)}
     </div>
   </div>
@@ -346,7 +335,7 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
   const slowModel = current?.stage === 'model' && durations[durations.length - 1] > 20000
   return <>
     <ol className="steps run-steps">
-      {hidden > 0 && <li className="muted"><button className="link small" onClick={() => setShowAll(true)}>
+      {hidden > 0 && <li className="muted"><button className="link" onClick={() => setShowAll(true)}>
         {hidden} earlier step{hidden === 1 ? '' : 's'}</button></li>}
       {steps.slice(hidden).map((p, i) => {
         const index = i + hidden
@@ -365,8 +354,7 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
           {` · ${run.outcome.estimated ? '~' : ''}${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens`}
           {run.outcome.cached_tokens ? ` (${run.outcome.cached_tokens} cached)` : ''}</span> : ''}</li>}
     </ol>
-    {slowModel && <div className="muted small step-note">The model is still working. Self-hosted models can take a
-      minute or more per step; you can keep browsing while you wait.</div>}
+    {slowModel && <div className="muted small step-note">Still working; local models can take a minute or more per step.</div>}
   </>
 }
 
@@ -392,7 +380,7 @@ function LongText({ text }: { text: string }) {
   const long = text.length > 420 || text.split('\n').length > 8
   return <>
     <div className={`msg-text ${long && !open ? 'clamped' : ''}`}>{text}</div>
-    {long && <button className="link small" onClick={() => setOpen(!open)}>{open ? 'Show less' : 'Show more'}</button>}
+    {long && <button className="link" onClick={() => setOpen(!open)}>{open ? 'Show less' : 'Show more'}</button>}
   </>
 }
 
@@ -401,7 +389,6 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
   const proposal = useStore((s) => s.proposal)
   const states = useStore((s) => s.proposalStates)
   const focusAssistant = useStore((s) => s.focusAssistant)
-  const [open, setOpen] = useState(false)
   const active = isActive(run)
   const now = useNow(active)
   const elapsed = (active ? now : Date.parse(run.finished_at ?? run.created_at)) - Date.parse(run.created_at)
@@ -442,18 +429,13 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
         ? <ProposalPreview proposal={current} running={false} />
         : proposalId && <div className="proposal-ref">Proposed change · {states[proposalId] === undefined && isLast
           ? <><span className="spinner small" /> loading…</> : proposalStateText(states[proposalId])}</div>}
-      {!active && proposalId ? <LazyDetails className="proposal-run-details" summary="Run details">
+      {!active && <Disclosure className="run-details"
+        summary={`Run details · ${run.progress.length} step${run.progress.length === 1 ? '' : 's'} · ${formatDuration(elapsed)}`}>
         {() => <>
-          {run.outcome.explanation && <LongText text={run.outcome.explanation} />}
+          {proposalId && run.outcome.explanation && <LongText text={run.outcome.explanation} />}
           <RunSteps run={run} live={false} />
         </>}
-      </LazyDetails> : !active && <>
-        <div className="msg-foot">
-          <button className="link" onClick={() => setOpen(!open)}>{open ? 'hide steps' : `${run.progress.length} steps`}</button>
-          <span className="muted"> · took {formatDuration(elapsed)}</span>
-        </div>
-        {open && <RunSteps run={run} live={false} />}
-      </>}
+      </Disclosure>}
     </div>
   )
 }
@@ -519,7 +501,7 @@ function ProposalPreview({ proposal, running: runningProp }: {
       <span className="ok-text">✓ {proposal.operations.length ? `Applied as ${proposal.applied_revision}` : `Dismissed ${dismissals.length} issue(s)`}</span>
       {headline && <span className="muted"> · {headline}</span>}
       {fixes.length > 0 && <span className="muted"> · fixes {fixes.length} issue{fixes.length === 1 ? '' : 's'}</span>}
-      <button className="link small" onClick={() => setExpanded(true)}>Show</button>
+      <button className="link" onClick={() => setExpanded(true)}>Show</button>
     </div>
   )
 
@@ -539,7 +521,7 @@ function ProposalPreview({ proposal, running: runningProp }: {
         {headline && <span className="muted">{headline}</span>}
         {outside > 0 && <span className="warn-text">{outside} outside your selection</span>}
         <span className="spacer" />
-        {proposal.status === 'applied' && <button className="link small" onClick={() => setExpanded(false)}>Collapse</button>}
+        {proposal.status === 'applied' && <button className="link" onClick={() => setExpanded(false)}>Hide</button>}
       </div>
 
       {lines.length > 0 && <div className="proposal-changes">
@@ -552,19 +534,18 @@ function ProposalPreview({ proposal, running: runningProp }: {
             {l.outside && <span className="badge" title="Outside your selection">outside</span>}
             {l.overridesEdit && <span className="badge warn" title="A person set one of these values earlier">overrides edit</span>}
           </li>))}</ul>
-        {lines.length > FACE_LINES && <button className="link small" onClick={() => setAllLines(!allLines)}>
+        {lines.length > FACE_LINES && <button className="link" onClick={() => setAllLines(!allLines)}>
           {allLines ? 'Show fewer' : `Show ${lines.length - FACE_LINES} more`}</button>}
       </div>}
       {!lines.length && !dismissals.length && <p className="muted">No model changes were needed.</p>}
 
       <div className="proposal-fixes">
         {fixes.length > 0 || dismissals.length > 0
-          ? <details>
-            <summary className={introduced.length ? undefined : 'resolved'}>{capitalize(issueLine)}</summary>
+          ? <Disclosure summary={capitalize(issueLine)} summaryClassName={introduced.length ? undefined : 'resolved'}>
             {fixes.length > 0 && <ul>{fixes.map((f, i) => <li key={i}>{f}</li>)}</ul>}
             {dismissals.length > 0 && <ul>{dismissals.map((d) => <li key={d.id}>{d.explanation}
               <div className="muted">Dismissed: {d.reason}</div></li>)}</ul>}
-          </details>
+          </Disclosure>
           : issueLine ? <div className="ok-text">{capitalize(issueLine)}</div>
           : !checked && <div className="muted">Issue checks unavailable</div>}
         {introduced.length > 0 && <>
@@ -581,13 +562,13 @@ function ProposalPreview({ proposal, running: runningProp }: {
         <p className="warn-text"><strong>{leftOut.length} operation{one ? '' : 's'} left out</strong>
           {' '}— the assistant could not make {one ? 'it' : 'them'} valid, so {one ? 'it is' : 'they are'} not part of this proposal.</p>
         <ul>{leftOut.map((e, i) => <li key={i}><code>{leftOutSummary(e.operation)}</code>: {e.problems.join('; ')}</li>)}</ul>
-        {proposal.status === 'pending' && <button className="link small" disabled={running || busy} title={waitTitle}
+        {proposal.status === 'pending' && <button className="link" disabled={running || busy} title={waitTitle}
           onClick={() => void replyToProposal('Try the left-out operations again.', proposal.agent_run_id ?? undefined, true)}>
           Try {one ? 'it' : 'these'} again</button>}
       </div>}
 
       {/* Everything for a closer look, in one place: sources, notes, field changes, RDF. */}
-      <LazyDetails className="proposal-details" summary={['Details', proposal.notes.length > 0 && plural(proposal.notes.length, 'note'),
+      <Disclosure className="proposal-details" summary={['Details', proposal.notes.length > 0 && plural(proposal.notes.length, 'note'),
         `+${proposal.diff.added.length} / −${proposal.diff.removed.length} triples`].filter(Boolean).join(' · ')}>
         {() => <>
           {sources.length > 0 && <section>
@@ -629,7 +610,7 @@ function ProposalPreview({ proposal, running: runningProp }: {
             ].join('\n') || 'No RDF changes.'}</pre>
           </section>
         </>}
-      </LazyDetails>
+      </Disclosure>
 
       <div className="proposal-actions">
         {(proposal.status === 'pending' || proposal.status === 'stale') && <>

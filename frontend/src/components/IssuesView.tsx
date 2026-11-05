@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Disclosure } from './Disclosure'
 import { api } from '../api'
 import { autofixCandidates, isActive } from '../assistant'
 import { useStore } from '../store'
@@ -55,9 +56,11 @@ export function IssuesView() {
       {validation && (() => {
         const fromValidation = issues.filter((i) => i.origin === 'validation')
         const count = (severity: string) => fromValidation.filter((i) => i.severity === severity).length
-        return <p className="issue-summary muted small">
-          Validation: {count('violation')} violations, {count('warning')} warnings, {count('suggestion')} suggestions.
-          The Issues list also includes source extraction and association findings.
+        const parts = [['violation', 'violation'], ['warning', 'warning'], ['suggestion', 'suggestion']]
+          .map(([severity, word]) => [count(severity), word] as const).filter(([n]) => n > 0)
+          .map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`)
+        return <p className="issue-summary muted small" title="Validation findings; the list also has source extraction and association issues">
+          Validation: {parts.length ? parts.join(' · ') : 'no findings'}
         </p>
       })()}
       <div className="issue-selection-bar">
@@ -97,18 +100,18 @@ export function IssuesView() {
             </details>
             <span className="issue-actions">
               {!viewing && <button className="link" onClick={() => addToPrompt([i])}
-                title="Add this issue to the assistant prompt and select its objects">add to chat</button>}
-              {i.affected_ids.some((id) => rows.has(id)) && <button className="link" onClick={() => showInTable(i)}>show in table</button>}
+                title="Add this issue to the assistant prompt and select its objects">Add to chat</button>}
+              {i.affected_ids.some((id) => rows.has(id)) && <button className="link" onClick={() => showInTable(i)}>Show in table</button>}
               {!viewing && <button className="link" onClick={() => void api.setIssueState(projectId, i.id,
                 i.resolution_state === 'dismissed' ? 'open' : 'dismissed').then(reload)}>
-                {i.resolution_state === 'dismissed' ? 'reopen' : 'dismiss'}
+                {i.resolution_state === 'dismissed' ? 'Reopen' : 'Dismiss'}
               </button>}
             </span>
           </li>
         ))}
       </ul>
-      {hidden > 0 && <button className="link pad" onClick={() => setShowAll(!showAll)}>
-        {showAll ? 'hide suggestions and dismissed' : `show ${hidden} suggestion(s)/dismissed`}</button>}
+      {hidden > 0 && <div className="pad"><button className="link" onClick={() => setShowAll(!showAll)}>
+        {showAll ? 'Hide suggestions and dismissed' : `Show ${hidden} more (suggestions and dismissed)`}</button></div>}
     </div>
   )
 }
@@ -140,13 +143,13 @@ export function RepairLine({ repair }: { repair: IssueRepair }) {
 }
 
 export function RepairDetail({ repair }: { repair: IssueRepair }) {
-  return <details className="repair-detail" open>
-    <summary>Repair engine (pyshifty){repair.shape ? ` · shape ${repair.shape}` : ''}{repair.blocked ? ' · blocked' : ''}</summary>
+  return <Disclosure className="repair-detail" defaultOpen
+    summary={`Repair engine (pyshifty)${repair.shape ? ` · shape ${repair.shape}` : ''}${repair.blocked ? ' · blocked' : ''}`}>
     <ul>{repair.summary.map((s) => <li key={s}>{s}</li>)}</ul>
     {repair.missing.length > 0 && <><h6>Missing</h6><ul>{repair.missing.map((m) => <li key={m}>{m}</li>)}</ul></>}
     {repair.offending.length > 0 && <><h6>Offending values</h6><ul>{repair.offending.map((o) => <li key={o}>{o}</li>)}</ul></>}
     {repair.repair && <><h6>{repair.blocked ? 'Repair tree' : 'Edits that would satisfy it'}</h6><pre className="code">{repair.repair}</pre></>}
-  </details>
+  </Disclosure>
 }
 
 export function DismissalNote({ dismissal }: { dismissal: IssueDismissalRecord }) {

@@ -64,6 +64,11 @@ button.primary:hover:not(:disabled) { background: var(--accent-strong); }
 button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 /* a button that reads as a row or heading: no chrome, wraps, left-aligned (no added specificity, so component rules win) */
+/* Show/hide (Disclosure): one look everywhere, a muted summary with a turning chevron. */
+.disclosure > summary { cursor: pointer; color: var(--muted); list-style: none; }
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary::before { content: '▸'; display: inline-block; width: 1em; transition: transform .15s; }
+.disclosure[open] > summary::before { transform: rotate(90deg); }
 button:where(.bare) { border: none; background: none; padding: 0; white-space: normal; text-align: left; }
 button:where(.bare):hover:not(:disabled) { background: none; }
 input, select, textarea { border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; background: var(--panel); }
@@ -196,7 +201,7 @@ table.data td.empty { text-align: center; color: var(--muted); padding: 30px; }
 .repair-line { display: block; margin-top: 2px; font-size: var(--fs-sm); color: var(--proposed-strong); }
 .repair-tag { margin-right: 6px; }
 .repair-detail { margin-top: 6px; font-size: var(--fs-sm); border-top: 1px solid var(--border); padding-top: 6px; }
-.repair-detail summary { cursor: pointer; color: var(--proposed-strong); font-weight: 600; }
+.repair-detail > summary { color: var(--proposed-strong); font-weight: 600; }
 .repair-detail ul { margin: 4px 0; padding-left: 20px; }
 .repair-detail h6 { margin: 6px 0 2px; font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
 .repair-detail pre.code { max-height: 200px; white-space: pre-wrap; }
@@ -243,7 +248,7 @@ pre.code { background: var(--subtle); border: 1px solid var(--border); border-ra
 .model-status select { flex: 1; min-width: 0; font-size: var(--fs-sm); padding: 4px 6px; }
 .status-pill { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; font-size: var(--fs-sm); padding: 2px 8px; border-radius: var(--radius-lg); background: var(--hover); color: var(--muted); cursor: default; }
 .status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.status-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.status-pill.ok { background: none; color: var(--ok); gap: 0; padding: 2px 4px; }
 .status-pill.bad { background: var(--bad-soft); color: var(--bad); }
 .model-status-detail { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: var(--fs-sm); color: var(--bad); line-height: 1.4; }
 .starters { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 16px auto 0; max-width: 300px; }
@@ -276,8 +281,6 @@ pre.code { background: var(--subtle); border: 1px solid var(--border); border-ra
 .msg.agent { align-self: stretch; border-left: 3px solid var(--proposed-strong); padding: 2px 0 2px 10px; display: flex; flex-direction: column; gap: 6px; }
 .msg.agent .msg-author { color: var(--proposed-strong); margin-bottom: 0; }
 .msg.agent.run-failed { border-left-color: var(--bad); }
-.msg-foot { display: flex; justify-content: flex-end; }
-.msg-foot button.link { font-size: var(--fs-xs); color: var(--muted); }
 .needs-input { border: 1.5px solid var(--proposed-strong); background: var(--proposed); border-radius: var(--radius-lg); padding: 8px 10px; }
 .needs-input-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--proposed-strong); }
 .needs-input-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--proposed-strong); color: white; font-size: var(--fs-sm); }
@@ -333,13 +336,7 @@ table.changes .after { color: var(--ok); font-weight: 500; }
 .validation-delta { font-size: var(--fs-md); margin: 8px 0; padding: 6px 8px; background: var(--subtle); border-radius: var(--radius); }
 .validation-delta .resolved { color: var(--ok); }
 .validation-delta .introduced { color: var(--bad); }
-.proposal details { margin: 6px 0; font-size: var(--fs-md); }
-.proposal summary { cursor: pointer; color: var(--muted); }
-.change-accordions { margin: 4px 0; }
-.change-accordions > details { border-top: 1px solid var(--proposed); margin: 0; }
-.change-accordions > details > summary { padding: 6px 4px; color: var(--text); }
-.change-accordions > details[open] { background: var(--panel); }
-.change-accordions table.changes { margin: 0 0 6px 16px; width: calc(100% - 14px); }
+.proposal .disclosure { margin: 6px 0; font-size: var(--fs-md); }
 .evidence { padding-left: 16px; margin: 4px 0; }
 .ev-kind { font-size: var(--fs-tag); text-transform: uppercase; color: var(--muted); }
 .proposal-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
@@ -455,9 +452,8 @@ table.raw-grid td.excluded { color: var(--faint); text-decoration: line-through;
 .change-detail { grid-column: 2; min-width: 0; overflow-wrap: anywhere; line-height: 1.45; }
 .change-line .badge { grid-column: 2; justify-self: start; margin-left: 0; }
 .proposal-fixes summary.resolved { color: var(--ok); }
-.proposal-run-details { font-size: var(--fs-sm); color: var(--muted); }
-.proposal-run-details > summary { cursor: pointer; }
-.proposal-run-details .msg-text { margin: 8px 0; color: var(--text); }
+.run-details { margin-top: 4px; font-size: var(--fs-sm); color: var(--muted); }
+.run-details .msg-text { margin: 8px 0; color: var(--text); }
 .build-line { margin: 4px 0; }
 .proposal-notes p { margin: 4px 0; font-size: var(--fs-md); }
 .proposal-left-out { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--warn); background: rgba(0, 0, 0, 0.02); }
@@ -535,7 +531,7 @@ table.raw-grid td.excluded { color: var(--faint); text-decoration: line-through;
 h5.afx-label { margin: 0 0 2px; font-size: var(--fs-xs); }
 .afx-entities { margin-top: 0; }
 .afx-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
-.afx-actions button { font-size: var(--fs-sm); padding: 2px 10px; }
+.afx-actions button { font-size: var(--fs-sm); padding: 2px 8px; }
 
 /* browsing an earlier revision */
 .viewing-banner { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--field); border-bottom: 1px solid var(--warn-line); font-size: var(--fs-md); }

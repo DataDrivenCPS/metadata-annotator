@@ -123,7 +123,7 @@ function Inspector() {
   const repairs = useStore((s) => s.repairs?.byIssue)
   const { inspectId, detail, error, refresh } = useEntityDetail()
 
-  if (!inspectId) return <p className="muted pad">Select an object to inspect its ontology terms, evidence, and history.</p>
+  if (!inspectId) return <p className="muted pad">Select an object to inspect it.</p>
   if (isTermId(inspectId)) return <TermInspector iri={inspectId} />
   if (error) return <p className="error-text pad">{error}</p>
   if (!detail) return <p className="muted pad">Loading…</p>
@@ -250,8 +250,8 @@ function PropertiesPanel({ eid, properties }: { eid: string; properties: EntityP
             {spec.unit_terms.length > 1 && <option value="" disabled>unit…</option>}
             {spec.unit_terms.map((u) => <option key={u.iri} value={u.iri}>{u.symbol || u.label}</option>)}
           </select>}
-          <button className="link" disabled={!ready} onClick={save}>save</button>
-          <button className="link" onClick={() => setEditing(null)}>cancel</button>
+          <button className="link" disabled={!ready} onClick={save}>Save</button>
+          <button className="link" onClick={() => setEditing(null)}>Cancel</button>
         </div>)}
   </>
 }
@@ -314,7 +314,7 @@ function RelationsPanel({ eid }: { eid: string }) {
               describe={(c) => `${c.label}${c.kind === 'value' ? ` (${c.curie})` : ` · ${(c.kind ?? '').replace('_', ' ')}`}`} />
           </select> : <p className="muted small">Nothing else in the model to relate yet; create it first (or ask the assistant).</p>}
         </>}
-        <button className="link" onClick={() => setAdding(null)}>cancel</button>
+        <button className="link" onClick={() => setAdding(null)}>Cancel</button>
       </div>)}
   </>
 }

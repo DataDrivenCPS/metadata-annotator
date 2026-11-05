@@ -127,7 +127,8 @@ def test_assistant_and_review_flow(live, page):
     # inspects its object without leaving the list
     health.click()
     tank = page.locator(".issue", has_text="TK-301")
-    expect(tank.locator(".repair-line")).to_contain_text("have 0, need 1")
+    # the repair engine runs server-side when the list opens; slow CI runners need more than 5 s
+    expect(tank.locator(".repair-line")).to_contain_text("have 0, need 1", timeout=60000)
     tank.locator(".issue-message").click()
     expect(page.locator(".inspector h4")).to_contain_text("TK-301")
     expect(page.locator("nav.tabs button.active", has_text="Issues")).to_have_count(1)

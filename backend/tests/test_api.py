@@ -1,6 +1,5 @@
 """API smoke tests: the HTTP layer maps service errors correctly and round-trips edits."""
 
-import shutil
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -15,16 +14,12 @@ SAMPLES = Path(__file__).resolve().parents[2] / "samples" / "ro-train"
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, registry):
     monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path))
     settings = load_settings()
-    settings.cache_dir.mkdir(parents=True)
-    # reuse the shared vocabulary cache so the test doesn't rebuild the closure
-    real_cache = Path(__file__).resolve().parents[2] / "workbench-data" / "cache"
-    for f in real_cache.glob("*"):
-        if f.is_file():  # closure/catalog caches; the OntoEnv store isn't needed once they exist
-            shutil.copy(f, settings.cache_dir / f.name)
-    app = create_app(settings)
+    # The session's vocabularies: an app per test would load its own, and FastAPI's caches keep
+    # finished apps (and so their vocabularies) alive.
+    app = create_app(settings, registry)
     with TestClient(app) as c:
         deadline = time.time() + 120
         while not c.get("/api/status").json()["vocabulary"]["ready"]:

@@ -73,13 +73,13 @@ def test_exhausted_retries_count_every_reply():
     assert (caught.value.input_tokens, caught.value.output_tokens) == (30, 5)
 
 
-def test_usage_endpoint_returns_all_recorded_runs(tmp_path, monkeypatch):
+def test_usage_endpoint_returns_all_recorded_runs(tmp_path, monkeypatch, registry):
     from fastapi.testclient import TestClient
     from workbench.api import create_app
     from workbench.config import load_settings
 
     monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path))
-    app = create_app(load_settings())
+    app = create_app(load_settings(), registry)
     project = SimpleNamespace(_recovered=True, store=SimpleNamespace(list_bodies=lambda table: [
         {"id": "old", "outcome": {"input_tokens": 123, "output_tokens": 45}},
         {"id": "queued", "outcome": {}},

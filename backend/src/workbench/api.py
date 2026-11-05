@@ -7,6 +7,7 @@ import atexit
 import json
 import logging
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from dataclasses import asdict
 from typing import Any, Literal
@@ -93,18 +94,29 @@ class IssueStateRequest(BaseModel):
     state: str = Field(pattern="^(open|dismissed)$")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, registry: VocabularyRegistry | None = None) -> FastAPI:
+    """The app. ``registry`` shares already loaded vocabularies (tests); by default the app loads
+    its own."""
     settings = settings or load_settings()
     logging.getLogger("rdflib.term").setLevel(logging.ERROR)
     bus = EventBus()
-    registry = VocabularyRegistry(settings.profiles, settings.cache_dir, settings.virtual)
+    registry = registry or VocabularyRegistry(settings.profiles, settings.cache_dir, settings.virtual)
     guidance = SkillGuidance(settings.skill_dir)
     workspace = Workspace(settings.projects_dir, registry, bus)
     runs = RunManager(settings, guidance, bus)
     indexer = retrieval.Indexer(settings, workspace)
     bus.listen(indexer.on_event)  # new, replaced and removed sources are (re)indexed in the background
     atexit.register(indexer.shutdown)
-    app = FastAPI(title="Knowledge-graph modeling workbench", version=__version__)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        # Stop indexing when the app stops; the atexit hook would otherwise keep this app's
+        # workspace and loaded vocabularies alive until the process exits.
+        indexer.shutdown()
+        atexit.unregister(indexer.shutdown)
+
+    app = FastAPI(title="Knowledge-graph modeling workbench", version=__version__, lifespan=lifespan)
     app.state.settings, app.state.registry, app.state.workspace, app.state.runs = settings, registry, workspace, runs
     app.state.indexer = indexer
 

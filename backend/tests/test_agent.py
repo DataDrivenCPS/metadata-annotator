@@ -937,6 +937,32 @@ def test_operations_the_model_cannot_fix_are_left_out_and_noted(sample_project, 
     assert {c.label for c in again.proposal.changes} >= {"CT-201 conductivity", "Mystery", "P-9"}
 
 
+def test_running_out_of_replies_mid_repair_still_proposes_the_valid_operations(sample_project, guidance):
+    """qwen3-vl-8b spent its last step on a tool call, and its second repair still had mistakes:
+    the run failed with nine valid operations in hand. The last reply's valid ones are proposed."""
+    p = sample_project
+    ct, operations = _three_operations(p)
+    search = {"action": "search_terms", "args": {"query": "tank", "kind": "equipment"}}
+    llm = SchemaRecordingLLM([
+        search, search,  # the second comes on the last step, where a tool call is not run
+        {"action": "propose", "explanation": "Renamed CT-201.", "operations": operations},
+        {"action": "propose", "operations": [{**operations[1], "type": "watr:AlsoNoSuchThing"}]},
+    ])
+    events = []
+    out = run_correction(p, llm, guidance, p.head(), SelectionScope(entity_ids=[ct.id]), "rename it", None,
+                         lambda *event: events.append(event), CancelToken(),
+                         agent=AgentConfig(max_steps=2, max_repairs=2))
+    assert len(llm.seen) == 4
+    assert out.proposal is not None and [c.label for c in out.proposal.changes] == ["CT-201 conductivity"]
+    assert [e["operation"]["label"] for e in out.left_out] == ["Mystery", "P-9"]
+    assert any(stage == "salvaged" for stage, _, _ in events)
+
+    # From the last step on, the reply can only propose.
+    actions = [schema["properties"]["action"]["enum"] for schema in llm.schemas]
+    assert "search_terms" in actions[0] and actions[1:] == [["propose"]] * 3
+    assert all("args" not in schema["properties"] for schema in llm.schemas[1:])
+
+
 def test_a_left_out_operation_refers_to_what_the_proposal_creates_by_its_id():
     from workbench.agent.correction import left_out_entry
     entry = left_out_entry({"op": "create_point", "id": "new:p", "label": "P", "equipment": "new:x"},

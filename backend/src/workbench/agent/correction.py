@@ -952,6 +952,9 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     system += scope.note()
     schema = step_schema(project.vocab, token_updates=revising_build, evidence=bool(source_evidence) or search,
                          search=search, view=view, scope=scope, rows=seen.rows())
+    # From the last step on only a proposal is useful: a tool call there would be wasted.
+    propose_schema = {**schema, "properties": {**{k: v for k, v in schema["properties"].items() if k != "args"},
+                                               "action": {"type": "string", "enum": ["propose"]}}}
     window = context_window(llm)
     reply = reply_tokens(window)
     llm_options = {"max_tokens": reply} if reply < REPLY_TOKENS else {}  # else the adapter's own default
@@ -1085,7 +1088,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                             calls.pop(r["key"], None)  # so viewing it again is allowed
         progress("model", f"Asking {llm.provider} ({llm.model})", {"step": step + 1})
         try:
-            res = llm.complete_json(system, messages, schema, images=images or None, cancel=cancel, **llm_options)
+            res = llm.complete_json(system, messages, propose_schema if last_call else schema,
+                                    images=images or None, cancel=cancel, **llm_options)
         except LLMError:
             raise
         cancel.check()
@@ -1228,7 +1232,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             last_problems = set(problems)
             record = {"problems": problems + hints,
                       **({"operations": {str(n + 1): raw_ops[n] for n in bad}} if some else {})}
-            if repairs > max_repairs or stalled:
+            # Out of repairs, stuck, or out of calls: propose what is valid rather than nothing.
+            if repairs > max_repairs or stalled or step == max_steps + max_repairs - 1:
                 rescued = salvage(raw_ops, error) if some else None
                 progress("rejected", "Operations were malformed; "
                          + ("keeping the valid ones" if rescued else "giving up"), record)

@@ -1045,3 +1045,44 @@ def test_one_search_terms_call_can_search_several_things(sample_project, guidanc
     assert "'coagulation basin':\nwatr:CoagulationBasin - Coagulation Basin [equipment]" in result
     assert "'fluoridation': no match" in result
     assert any("queries" in shape["properties"] for shape in llm.schemas[0]["properties"]["args"]["anyOf"])
+
+
+def test_trace_follows_connections_up_and_downstream(sample_project, guidance):
+    """The context lists at most 100 connections; trace answers "what feeds X" on any model."""
+    from workbench.agent.tools import AgentTools
+    from workbench.agent.correction import _call_tool
+    p = sample_project
+    tools = AgentTools(p, p.head(), guidance)
+    c = next(c for c in p.view(p.head()).connections if c.directed and c.from_equipment and c.to_equipment)
+    down = "\n".join(_call_tool(tools, "trace", {"entity_id": c.from_equipment.id}))
+    assert down.startswith(f"Downstream of {c.from_equipment.label} [{c.from_equipment.id}]:")
+    assert f"-> {c.to_equipment.label} [{c.to_equipment.id}] via {c.id}" in down
+    up = "\n".join(_call_tool(tools, "trace", {"entity_id": c.to_equipment.id, "direction": "upstream", "depth": 1}))
+    assert f"<- {c.from_equipment.label} [{c.from_equipment.id}] via {c.id}" in up
+    assert not any(line.startswith("    ") for line in up.splitlines())  # one hop only
+    assert "error" in tools.trace("eq-nope")
+
+
+def test_issues_for_lists_an_entitys_open_issues(sample_project, guidance):
+    """The context carries at most 20 issues; issues_for reaches the rest, one entity at a time."""
+    from workbench.agent.tools import AgentTools
+    p = sample_project
+    tools = AgentTools(p, p.head(), guidance)
+    issue = next(i for i in p.issues(p.head()) if i.resolution_state == "open" and i.severity != "suggestion"
+                 and i.affected_ids)
+    listed = "\n".join(tools.issues_for(issue.affected_ids[0]))
+    assert listed.startswith("Open issues on ") and f"[{issue.id}]" in listed
+    affected = {a for i in p.issues(p.head()) if i.resolution_state == "open" for a in i.affected_ids}
+    clean = next(r.id for r in p.view(p.head()).equipment if r.id not in affected)
+    assert tools.issues_for(clean)[0].startswith("No open issues on ")
+    assert "error" in tools.issues_for("eq-nope")
+
+
+def test_trace_and_issues_for_are_offered(sample_project, guidance):
+    llm = SchemaRecordingLLM([{"action": "propose", "explanation": "Nothing to change.", "operations": []}])
+    run(sample_project, llm, guidance, SelectionScope(), "inspect")
+    schema = llm.schemas[0]
+    assert {"trace", "issues_for"} <= set(schema["properties"]["action"]["enum"])
+    assert any(shape["properties"].get("direction", {}).get("enum") == ["downstream", "upstream", "both"]
+               for shape in schema["properties"]["args"]["anyOf"])
+    assert "trace(entity_id, direction?, depth?)" in llm.systems[0]

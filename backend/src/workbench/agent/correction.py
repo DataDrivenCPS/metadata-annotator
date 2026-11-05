@@ -37,7 +37,7 @@ from .guidance import SkillGuidance
 from .tools import AgentTools, curie, entity_line
 
 TOOL_ACTIONS = ["search_terms", "browse_terms", "units_for", "describe_class", "find_entities", "relations_for",
-                "read_evidence", "read_guidance"]
+                "issues_for", "trace", "read_evidence", "read_guidance"]
 
 S223_DOMAIN = """\
 You help a person correct a knowledge-graph model of a {system}. The person knows the
@@ -383,7 +383,9 @@ def tool_args_schema(search: bool = False, view: bool = False) -> dict:
          "properties": {"queries": {"type": "array", "items": text, "minItems": 1, "maxItems": 8}, "kind": text}},
         shape("quantity_kind"),  # units_for
         shape("term"),  # describe_class, browse_terms
-        shape("entity_id"),  # relations_for
+        shape("entity_id"),  # relations_for, issues_for
+        shape("entity_id", direction={"type": "string", "enum": ["downstream", "upstream", "both"]},
+              depth={"type": "integer"}),  # trace
         shape("observation_id"),  # read_evidence, view_source of a passage
         shape("topic"),  # read_guidance
     ]
@@ -571,7 +573,7 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
                  view.relationships, 150)
     if not selected:
         add_rows(f"All points ({len(view.points)}):", 6, "points", "find_entities", view.points, 150)
-        add_rows("Connections:", 7, "connections", "find_entities", view.connections, 100)
+        add_rows("Connections:", 7, "connections", "trace", view.connections, 100)
         if view.connection_points:
             add_rows(f"Connection points ({len(view.connection_points)}):", 8,
                      "connection points", "find_entities", view.connection_points, 150)
@@ -581,7 +583,8 @@ def build_context(project: Project, rid: str, sel: SelectionScope, instruction: 
     if issues:
         repairs = project.repairs(rid)
         sections.append(Section("Open issues on these objects:", 1, "open issues",
-                                [issue_line(i, repairs.get(i.id)) for i in issues[:20]], total=len(issues), gap=True))
+                                [issue_line(i, repairs.get(i.id)) for i in issues[:20]], total=len(issues), gap=True,
+                                look_up="list an object's issues with issues_for"))
     hints = hint_terms(project, instruction)
     if hints:
         sections.append(Section("Vocabulary terms that may be relevant (verify with tools if unsure):", 3, "terms",
@@ -1427,6 +1430,12 @@ def _call_tool(tools: AgentTools, action: str, args: dict) -> Any:
                                      int(page) if isinstance(page, (int, float)) else None, args.get("box"))
         if action == "relations_for":
             return tools.relations_for(str(args.get("entity_id") or args.get("query") or ""))
+        if action == "issues_for":
+            return tools.issues_for(str(args.get("entity_id") or args.get("query") or ""))
+        if action == "trace":
+            depth = args.get("depth")
+            return tools.trace(str(args.get("entity_id") or args.get("query") or ""), str(args.get("direction") or ""),
+                               int(depth) if isinstance(depth, (int, float)) else 4)
         if action == "read_guidance":
             return tools.read_guidance(str(args.get("topic", "")))
     except Exception as exc:  # a tool failure is information for the model, not a crash

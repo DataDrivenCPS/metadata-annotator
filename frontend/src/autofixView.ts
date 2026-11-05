@@ -30,7 +30,7 @@ export const STATUS_INFO: Record<AutofixStatus, StatusInfo> = {
   },
   review: {
     badge: 'Review', heading: 'Review a proposed change', needsYou: true,
-    hint: 'The assistant proposed a change that did not pass every automatic check. Open it to see what it changes, then apply or discard it.',
+    hint: 'The assistant proposed a change that did not pass every automatic check. It waits in Pending edits: see what it changes, then apply or discard it.',
     explanationLabel: 'The assistant says', reasonsLabel: 'Why it wasn’t applied automatically', discussLabel: 'Discuss in chat',
   },
   input: {

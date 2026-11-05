@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
+import { pendingCount } from '../assistant'
 import { useStore, type Tab } from '../store'
 import { AssistantPanel } from './AssistantPanel'
 import { Drawer } from './Drawer'
 import { GraphView } from './GraphView'
 import { IssuesView } from './IssuesView'
+import { PendingEdits } from './PendingEdits'
 import { ConnectionPointsTable, ConnectionsTable, EquipmentTable, PointsTable, SpacesTable } from './ModelTables'
 import { SourcesPane } from './SourcesPane'
 import { ResizeHandle } from './ResizeHandle'
@@ -55,11 +57,11 @@ function FileMenu({ onImport, importDisabled, items }: { onImport: () => void; i
 }
 
 // The project's tabs come from its views (views.toml / workbench.toml, filtered per profile);
-// these show until the list arrives. Graph and Issues always follow.
+// these show until the list arrives. Graph, Issues and Pending edits always follow.
 const DEFAULT_TABS: [Tab, string][] = [
   ['points', 'Points'], ['equipment', 'Equipment'], ['connections', 'Connections'],
 ]
-const FIXED_TABS: [Tab, string][] = [['graph', 'Graph'], ['issues', 'Issues']]
+const FIXED_TABS: [Tab, string][] = [['graph', 'Graph'], ['issues', 'Issues'], ['pending', 'Pending edits']]
 
 export function Workspace() {
   const projectId = useStore((s) => s.projectId)!
@@ -79,6 +81,9 @@ export function Workspace() {
   const sourcesOpen = useStore((s) => s.sourcesOpen)
   const toggleSources = useStore((s) => s.toggleSources)
   const setDrawerTab = useStore((s) => s.setDrawerTab)
+  const pendingEdits = useStore((s) => s.pendingEdits)
+  const runs = useStore((s) => s.runs)
+  const pending = useMemo(() => pendingCount(pendingEdits, runs), [pendingEdits, runs])
   const fileInput = useRef<HTMLInputElement>(null)
   const [drawerHeight, resizeDrawer, resetDrawer] = usePaneSize('workbench.drawerHeight', 240, 120,
     () => window.innerHeight - 220)
@@ -122,7 +127,7 @@ export function Workspace() {
   const problems = model.issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion').length
   const counts = { points: model.view.points.length, equipment: model.view.equipment.length, spaces: model.view.spaces.length,
                    connections: model.view.connections.length, connection_points: model.view.connection_points.length,
-                   graph: model.view.equipment.length + model.view.spaces.length, issues: problems }
+                   graph: model.view.equipment.length + model.view.spaces.length, issues: problems, pending }
   const listed: [Tab, string][] = views.filter((v) => !v.builtin)
     .map((v) => [v.table ? v.table as Tab : `view:${v.id}`, v.label])
   const tabs = [...(views.length ? listed : DEFAULT_TABS), ...FIXED_TABS]
@@ -185,8 +190,9 @@ export function Workspace() {
             </button>
             {tabs.map(([id, label]) => (
               <button key={id} className={shown === id ? 'active' : ''} onClick={() => setTab(id)}
-                title={id === 'issues' ? 'Validation findings plus source extraction and association issues' : undefined}>
-                {label} <span className={`count ${id === 'issues' && tabCount(id) ? 'warn' : ''}`}>{tabCount(id)}</span>
+                title={id === 'issues' ? 'Validation findings plus source extraction and association issues'
+                  : id === 'pending' ? 'Proposed changes waiting for you to apply or discard' : undefined}>
+                {label} <span className={`count ${(id === 'issues' || id === 'pending') && tabCount(id) ? 'warn' : ''}`}>{tabCount(id)}</span>
               </button>
             ))}
           </nav>
@@ -198,6 +204,7 @@ export function Workspace() {
             {shown === 'connection_points' && <ConnectionPointsTable />}
             {shown === 'graph' && <GraphView />}
             {shown === 'issues' && <IssuesView />}
+            {shown === 'pending' && <PendingEdits />}
             {shown.startsWith('view:') && <ViewTable key={shown} vid={shown.slice(5)} />}
           </div>
           <ResizeHandle label="Resize inspector tray" onResize={resizeDrawer} onReset={resetDrawer} />

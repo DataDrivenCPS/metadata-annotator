@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentRun, ModelResponse, ReviewIssue } from './types'
+import type { AgentRun, ModelResponse, Proposal, ReviewIssue } from './types'
 
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} })
 
@@ -30,11 +30,24 @@ vi.mock('./api', () => ({
     proposal: vi.fn(async (_pid: string, id: string) => ({ id, status: 'pending' })),
     applyProposal: vi.fn(async () => ({ id: 'rev-4' })),
     dismissProposal: vi.fn(async () => ({})),
+    proposals: vi.fn(async () => [] as Proposal[]),
   },
 }))
 
 const { api } = await import('./api')
 const { useStore } = await import('./store')
+const { pendingItems, proposalOrigin } = await import('./assistant')
+
+const proposal = (id: string, extra: Partial<Proposal> = {}) => ({
+  id, status: 'pending', base_revision: 'rev-3', created_at: `2026-01-01T00:00:0${id.length}`, agent_run_id: 'run-af',
+  kind: 'correction', instruction: '', operations: [{ op: 'x' }], issue_dismissals: [], ...extra,
+}) as unknown as Proposal
+const unitChoice = { question: 'Which unit for CT-201?', options: [
+  { label: 'µS/cm', proposal_id: 'prop-a' }, { label: 'S/m', proposal_id: 'prop-b' }] }
+const report = () => run('succeeded', { autofix: { revisions: [], groups: [
+  { issues: ['a'], explanations: [], status: 'choice', choices: [unitChoice] },
+  { issues: ['b'], explanations: [], status: 'review', proposal_id: 'prop-r' },
+] } })
 
 describe('auto-fix', () => {
   beforeEach(() => {
@@ -79,15 +92,59 @@ describe('auto-fix', () => {
   })
 
   it('choosing an option applies it and discards the others', async () => {
-    const choice = { question: 'Which unit for CT-201?', options: [
-      { label: 'µS/cm', proposal_id: 'prop-a' }, { label: 'S/m', proposal_id: 'prop-b' }] }
-    await useStore.getState().chooseOption(choice, 'prop-a')
+    await useStore.getState().chooseOption(unitChoice, 'prop-a')
     expect(vi.mocked(api.applyProposal).mock.calls[0][1]).toBe('prop-a')
     expect(vi.mocked(api.dismissProposal).mock.calls.map((c) => c[1])).toEqual(['prop-b'])
     expect(useStore.getState().proposalStates).toMatchObject({ 'prop-a': 'applied', 'prop-b': 'dismissed' })
   })
 })
 
+describe('pending edits', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    head = 'rev-3'
+    useStore.setState({ projectId: 'p', model: model(), rows: new Map(), runs: { 'run-af': report() }, proposal: null,
+      autofix: { runId: 'run-af' }, viewing: null, pendingEdits: [], proposalStates: {} })
+  })
+
+  it('lists single edits, and each choice once with its options', () => {
+    const chat = proposal('prop-chat', { agent_run_id: 'run-chat' })
+    const items = pendingItems([proposal('prop-r'), proposal('prop-a'), chat, proposal('prop-b')], useStore.getState().runs)
+    expect(items.map((i) => i.kind === 'edit' ? i.proposal.id : i.options.map((o) => o.id))).toEqual(
+      ['prop-r', ['prop-a', 'prop-b'], 'prop-chat'])
+    expect(proposalOrigin(proposal('prop-r'), useStore.getState().runs)).toBe('Auto-fix')
+    expect(proposalOrigin(chat, useStore.getState().runs)).toBe('Assistant')
+  })
+
+  it('loads what is still waiting, newest first', async () => {
+    vi.mocked(api.proposals).mockResolvedValueOnce([proposal('p1'), proposal('p333', { status: 'applied' }),
+      proposal('p22', { status: 'stale' })])
+    await useStore.getState().loadPending()
+    expect(useStore.getState().pendingEdits.map((p) => p.id)).toEqual(['p22', 'p1'])
+  })
+
+  it('applies the card it was asked to, not the one open in the chat, and closes its other options', async () => {
+    useStore.setState({ proposal: proposal('prop-chat'), pendingEdits: [proposal('prop-a'), proposal('prop-b'), proposal('prop-chat')] })
+    await useStore.getState().applyProposal(proposal('prop-a'))
+    expect(vi.mocked(api.applyProposal).mock.calls[0][1]).toBe('prop-a')
+    expect(vi.mocked(api.dismissProposal).mock.calls.map((c) => c[1])).toEqual(['prop-b'])
+    expect(useStore.getState().proposal?.id).toBe('prop-chat')
+    expect(api.proposals).toHaveBeenCalled()  // the rest are refetched: they now predate the model
+  })
+
+  it('discarding a card removes it from the tab', async () => {
+    useStore.setState({ pendingEdits: [proposal('prop-r')] })
+    await useStore.getState().dismissProposal(proposal('prop-r'))
+    expect(vi.mocked(api.dismissProposal).mock.calls[0][1]).toBe('prop-r')
+    expect(useStore.getState().pendingEdits).toEqual([])
+  })
+
+  it('closing the report leaves its edits and options waiting', async () => {
+    await useStore.getState().stopAutofix()
+    expect(useStore.getState().autofix).toBeNull()
+    expect(api.dismissProposal).not.toHaveBeenCalled()
+  })
+})
 
 describe('auto-fix start responses', () => {
   beforeEach(() => {

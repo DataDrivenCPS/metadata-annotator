@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { autofixProgress, autofixReport, isActive, issueSelection, type AutofixGroup, type AutofixStatus } from '../assistant'
+import { autofixProgress, autofixReport, isActive, issueSelection, pendingCount, type AutofixGroup, type AutofixStatus } from '../assistant'
 import { affectedRows, groupIssues, headline, isHandled, labelList, reportSections, STATUS_INFO, tally,
   type ReportSection } from '../autofixView'
 import { useStore } from '../store'
@@ -53,8 +53,9 @@ function AutofixReport({ run }: { run: AgentRun }) {
   // Which groups the person has dealt with, worked out once for the summary, the sections and the items.
   const handled = useMemo(() => new Set(groups.flatMap((g, key) => isHandled(g, states) ? [key] : [])), [groups, states])
   const counts = tally(groups, states)
-  // Open when something needs the person; an all-fixed report stays a one-line summary.
-  const [open, setOpen] = useState(counts.forYou > 0)
+  // Open only when something needs the person outside Pending edits (questions, failures): edits
+  // and choices wait in that tab, so the report stays a one-line summary with a link to it.
+  const [open, setOpen] = useState(groups.some((g) => g.status === 'input' || g.status === 'failed'))
   const [filter, setFilter] = useState<AutofixStatus | null>(null)
   // The first item to act on starts expanded, so its options and buttons are in view.
   const [expanded, setExpanded] = useState<Set<number>>(() => {
@@ -75,6 +76,7 @@ function AutofixReport({ run }: { run: AgentRun }) {
       <span className="autofix-tray-summary">
         <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
         <span className="muted">{summaryText(run, groups.length, counts)}</span>
+        <PendingLink run={run} />
       </span>
       <span className="autofix-tray-hint">
         <span className="autofix-expand">Show results</span>
@@ -157,15 +159,25 @@ function ReportItemView({ group, handled, open, onToggle, onContinue }: {
   </li>
 }
 
-/** The review action: open the proposal, or say where it went. */
+/** The review action: the change waits in the Pending edits tab, with Apply and Discard on it. */
 function ReviewAction({ proposalId, onContinue }: { proposalId: string; onContinue: () => void }) {
-  const reviewProposal = useStore((s) => s.reviewProposal)
-  const isOpen = useStore((s) => s.proposal?.id === proposalId)
+  const setTab = useStore((s) => s.setTab)
   const state = useStore((s) => s.proposalStates[proposalId])
-  if (isOpen) return <span className="muted small">The proposed change is open below in the assistant panel.</span>
   if (state === 'applied') return <span className="small ok-text">✓ Applied</span>
   if (state === 'dismissed') return <span className="muted small">Discarded</span>
-  return <button className="primary" onClick={() => void reviewProposal(proposalId).then(onContinue)}>Review the proposed change</button>
+  return <button className="primary" onClick={() => { setTab('pending'); onContinue() }}
+    title="The change waits in Pending edits: see what it changes, then apply or discard it">Open in Pending edits</button>
+}
+
+/** The edits from this run still waiting, with a way to them. */
+function PendingLink({ run }: { run: AgentRun }) {
+  const setTab = useStore((s) => s.setTab)
+  const edits = useStore((s) => s.pendingEdits)
+  const runs = useStore((s) => s.runs)
+  const waiting = useMemo(() => pendingCount(edits, runs, run.id), [edits, runs, run.id])
+  if (!waiting) return null
+  return <button className="link" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setTab('pending') }}>
+    {waiting} pending edit{waiting === 1 ? '' : 's'} →</button>
 }
 
 function ItemDetail({ group, mine, affected, onContinue }: {

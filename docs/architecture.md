@@ -494,8 +494,16 @@ Auto-fix works through issues without asking about each one. It is one backgroun
 
 The run's outcome lists the groups and the automatic revisions; the interface shows progress,
 then the report: choices as buttons (with "Something else…" to discuss in chat), what to
-review (opens the proposal), what needs input (discuss in chat), what was fixed, and "Undo
-automatic fixes" while those revisions are still the newest.
+review, what needs input (discuss in chat), what was fixed, and "Undo automatic fixes" while
+those revisions are still the newest. Its edits and choices wait in the **Pending edits** tab,
+so the report folds to one line unless questions or failures need the person; closing it
+discards nothing.
+
+**Pending edits** lists every pending or stale proposal (chat, auto-fix, builds), newest first,
+each as a card with what it changes, the issues it fixes or adds, and Apply / Discard on the
+card; a choice is one card whose options each apply with "Choose this" (and close the others).
+Auto-fix cards name the issue they fix. Applying one moves the model, so the rest refetch as
+stale; applying a stale card rebases it as above.
 
 Runs execute in a thread pool with cooperative cancellation (checked between steps and
 between streamed tokens; closing the stream aborts generation in llama-server). Progress is

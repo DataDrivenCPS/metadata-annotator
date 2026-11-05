@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
-  autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, proposalStates, restorableProposal,
-  siblingOptions, threadRuns, unchosenOptions, type AutofixChoice, type AutofixState, type ProposalState,
+  autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, openEdits, proposalStates, restorableProposal,
+  siblingOptions, threadRuns, type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import { providerOf } from './providers'
@@ -10,7 +10,7 @@ import {
   emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
 } from './types'
 
-export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues' | `view:${string}`
+export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues' | 'pending' | `view:${string}`
 export type DrawerTab = 'inspector' | 'rdf' | 'history'
 
 interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
@@ -29,6 +29,8 @@ interface State {
   activeRunId: string | null
   proposal: Proposal | null
   proposalStates: Record<string, ProposalState>
+  /** Every proposal still waiting for the person (chat, auto-fix, builds), newest first: the Pending edits tab. */
+  pendingEdits: Proposal[]
   /** Repair-engine detail per issue id, for the revision named (loaded in the background). */
   repairs: { revision: string; byIssue: Record<string, IssueRepair> } | null
   assistantDraft: string
@@ -93,9 +95,12 @@ interface State {
   replyToProposal: (instruction: string, parentRunId?: string, retryLeftOut?: boolean) => Promise<boolean>
   startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>) => Promise<boolean>
   cancelRun: () => Promise<void>
-  applyProposal: () => Promise<void>
-  dismissProposal: () => Promise<void>
-  regenerate: () => Promise<void>
+  /** Apply, discard or redo a proposal: the one given (from the Pending edits tab), else the one open in the panel. */
+  applyProposal: (proposal?: Proposal) => Promise<void>
+  dismissProposal: (proposal?: Proposal) => Promise<void>
+  regenerate: (proposal?: Proposal) => Promise<void>
+  /** Refetch the proposals still waiting (after the model or a run changed). */
+  loadPending: () => Promise<void>
   setProvider: (p: string) => void
   setProviderModels: (name: string, models: string[]) => void
   setModelVision: (choice: string, readsImages: boolean) => void
@@ -137,6 +142,7 @@ let modelGeneration = 0
 let reconciliationGeneration = 0
 let assistantGeneration = 0
 let autofixGeneration = 0
+let pendingGeneration = 0
 
 function latestStartedRun(run: AgentRun, runs: Record<string, AgentRun>) {
   const existing = runs[run.id]
@@ -188,6 +194,7 @@ export const useStore = create<State>((set, get) => ({
   activeRunId: null,
   proposal: null,
   proposalStates: {},
+  pendingEdits: [],
   repairs: null,
   assistantDraft: '',
   assistantSending: null,
@@ -230,7 +237,7 @@ export const useStore = create<State>((set, get) => ({
   openProject: async (id) => {
     const generation = ++projectGeneration
     ++modelGeneration
-    set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
+    set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, pendingEdits: [], repairs: null,
           runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantSending: null, assistantIssueContext: null, assistantNewRequest: false, assistantFresh: false,
           assistantCleared: clearedChat(id),
           autofix: null, viewing: null, views: [], busy: false })
@@ -253,7 +260,7 @@ export const useStore = create<State>((set, get) => ({
       const cleared = get().assistantCleared
       const thread = threadRuns(merged, cleared.runs)
       const autofixing = Object.values(merged).find((r) => r.kind === 'autofix' && isActive(r))
-      set({ runs: merged, proposalStates: proposalStates(proposals),
+      set({ runs: merged, proposalStates: proposalStates(proposals), pendingEdits: openEdits(proposals),
             activeRunId: get().activeRunId ?? thread[thread.length - 1]?.id ?? null,
             autofix: get().autofix ?? (autofixing ? { runId: autofixing.id } : null) })
       const pending = restorableProposal(proposals, thread, cleared.proposals, get().proposal?.id)
@@ -308,7 +315,7 @@ export const useStore = create<State>((set, get) => ({
       proposal = { ...proposal, status: 'stale' }
     }
     const autofixing = Object.values(merged).find((r) => r.kind === 'autofix' && isActive(r))
-    set({ runs: merged, activeRunId, proposal, proposalStates: proposalStates(proposals),
+    set({ runs: merged, activeRunId, proposal, proposalStates: proposalStates(proposals), pendingEdits: openEdits(proposals),
           sourcesVersion: get().sourcesVersion + 1,
           autofix: get().autofix ?? (autofixing ? { runId: autofixing.id } : null) })
   },
@@ -516,9 +523,10 @@ export const useStore = create<State>((set, get) => ({
     set({ runs: { ...get().runs, [run.id]: latestStartedRun(run, get().runs) } })
   },
 
-  applyProposal: async () => {
+  applyProposal: async (given) => {
     if (readOnly()) return
-    const { projectId, proposal } = get()
+    const { projectId } = get()
+    const proposal = given ?? get().proposal
     if (!projectId || !proposal) return
     const project = projectGeneration
     set({ busy: true })
@@ -534,6 +542,7 @@ export const useStore = create<State>((set, get) => ({
                               ...Object.fromEntries(siblings.map((id) => [id, 'dismissed' as const])) } })
       await get().reload()
       if (project !== projectGeneration || get().projectId !== projectId) return
+      void get().loadPending()
       if (get().proposal?.id === proposal.id) {
         void api.proposal(projectId, proposal.id).then((updated) => {
           if (project === projectGeneration && get().projectId === projectId && get().proposal?.id === proposal.id) {
@@ -556,6 +565,7 @@ export const useStore = create<State>((set, get) => ({
       if (e instanceof ApiError && e.isStale) {
         if (get().proposal?.id === proposal.id) set({ proposal: { ...proposal, status: 'stale' } })
         await get().reload()
+        void get().loadPending()
         get().notify({ kind: 'error', text: 'The model changed since this proposal was made. Regenerate it against the current model.' })
       } else get().notify({ kind: 'error', text: `Could not apply: ${errorText(e)}` })
     } finally {
@@ -563,8 +573,9 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  dismissProposal: async () => {
-    const { projectId, proposal } = get()
+  dismissProposal: async (given) => {
+    const { projectId } = get()
+    const proposal = given ?? get().proposal
     if (!projectId || !proposal) return
     const project = projectGeneration
     try {
@@ -574,12 +585,14 @@ export const useStore = create<State>((set, get) => ({
       return
     }
     if (project !== projectGeneration || get().projectId !== projectId) return
-    set({ ...(get().proposal?.id === proposal.id ? { proposal: null } : {}), proposalStates: { ...get().proposalStates, [proposal.id]: 'dismissed' } })
+    set({ ...(get().proposal?.id === proposal.id ? { proposal: null } : {}), proposalStates: { ...get().proposalStates, [proposal.id]: 'dismissed' },
+          pendingEdits: get().pendingEdits.filter((p) => p.id !== proposal.id) })
   },
 
-  regenerate: async () => {
+  regenerate: async (given) => {
     if (readOnly()) return
-    const { projectId, proposal, provider } = get()
+    const { projectId, provider } = get()
+    const proposal = given ?? get().proposal
     if (!projectId || !proposal) return
     const project = projectGeneration
     const request = ++assistantGeneration
@@ -591,6 +604,18 @@ export const useStore = create<State>((set, get) => ({
         get().notify({ kind: 'error', text: errorText(e) })
       }
     }
+  },
+
+  loadPending: async () => {
+    const pid = get().projectId
+    if (!pid) return
+    const project = projectGeneration
+    const generation = ++pendingGeneration
+    try {
+      const proposals = await api.proposals(pid)
+      if (project !== projectGeneration || generation !== pendingGeneration || get().projectId !== pid) return
+      set({ pendingEdits: openEdits(proposals), proposalStates: { ...get().proposalStates, ...proposalStates(proposals) } })
+    } catch { /* the next event or reconnect refetches */ }
   },
 
   setModelVision: (choice, readsImages) => {
@@ -611,12 +636,17 @@ export const useStore = create<State>((set, get) => ({
     const s = get()
     if (ev.type === 'revision' || ev.type === 'issues') {
       if (!s.model || ev.head !== s.model.head || ev.type === 'issues') void s.reload()
-      if (ev.type === 'revision') set({ sourcesVersion: get().sourcesVersion + 1 })  // record status follows the model
+      if (ev.type === 'revision') {
+        set({ sourcesVersion: get().sourcesVersion + 1 })  // record status follows the model
+        void s.loadPending()  // waiting proposals were made against the earlier model
+      }
     } else if (ev.type === 'sources' || ev.type === 'source_index') {
       set({ sourcesVersion: s.sourcesVersion + 1 })
     } else if (ev.type === 'run' && ev.run) {
       const run = ev.run
       set({ runs: { ...s.runs, [run.id]: run } })
+      // A finished run may have proposed something (auto-fix adds its edits as it goes).
+      if (run.status === 'succeeded' || run.progress?.at(-1)?.stage === 'group_done') void s.loadPending()
       const dismissed = run.status === 'succeeded' ? run.outcome.dismissed_proposal_id : null
       if (dismissed) {
         set({ proposalStates: { ...get().proposalStates, [dismissed]: 'dismissed' } })
@@ -668,12 +698,7 @@ export const useStore = create<State>((set, get) => ({
       if (project !== projectGeneration || get().projectId !== projectId) return
       set({ runs: { ...get().runs, [run.id]: latestStartedRun(cancelled, get().runs) } })
     } else {
-      // Closing the report settles its unanswered choices, so their options do not linger as open proposals.
-      const open = unchosenOptions(run, get().proposalStates).filter((id) => id !== get().proposal?.id)
-      if (projectId && open.length) {
-        void Promise.all(open.map((id) => api.dismissProposal(projectId, id).catch(() => {})))
-        set({ proposalStates: { ...get().proposalStates, ...Object.fromEntries(open.map((id) => [id, 'dismissed' as const])) } })
-      }
+      // Closing the report leaves its unanswered edits and choices waiting in the Pending edits tab.
       set({ autofix: null })
     }
   },
@@ -724,6 +749,7 @@ export const useStore = create<State>((set, get) => ({
       set({ proposalStates: { ...get().proposalStates, [proposalId]: 'applied',
                               ...Object.fromEntries(others.map((id) => [id, 'dismissed' as const])) } })
       await get().reload()
+      void get().loadPending()
       if (project !== projectGeneration || get().projectId !== projectId) return
       const label = choice.options.find((o) => o.proposal_id === proposalId)?.label ?? 'the option'
       get().notify({ kind: 'success', text: `Applied ${label} as ${rev.id}`, action: { label: 'Undo', run: () => void get().undo() } })

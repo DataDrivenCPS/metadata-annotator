@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import { autofixCandidates, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
   issuesOnSelection, leftOutSummary, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
@@ -489,8 +489,10 @@ function fmt(v: unknown) {
 }
 
 const FACE_LINES = 8
-function ProposalPreview({ proposal, running: runningProp }: {
-  proposal: Proposal; running: boolean
+/** A proposed change with everything needed to decide on it, and Apply / Discard: in the chat, and
+ * as a card in the Pending edits tab (``title`` names it there; ``applyLabel`` for a choice's option). */
+export function ProposalPreview({ proposal, running: runningProp, title, applyLabel }: {
+  proposal: Proposal; running: boolean; title?: ReactNode; applyLabel?: string
 }) {
   const projectId = useStore((s) => s.projectId)
   const autofixRunning = useStore((s) => Object.values(s.runs).some((r) => r.kind === 'autofix' && isActive(r)))
@@ -547,7 +549,7 @@ function ProposalPreview({ proposal, running: runningProp }: {
   return (
     <div className={`proposal status-${proposal.status}`}>
       <div className="proposal-head">
-        <h3>Proposed change</h3>
+        <h3>{title ?? 'Proposed change'}</h3>
         {headline && <span className="muted">{headline}</span>}
         {outside > 0 && <span className="warn-text">{outside} outside your selection</span>}
         <span className="spacer" />
@@ -649,11 +651,11 @@ function ProposalPreview({ proposal, running: runningProp }: {
           </span>}
           <ActionButton className="primary" disabled={!!viewing || busy || running || (proposal.operations.length === 0 && !dismissals.length)}
             title={viewing ? 'Go back to the current model to apply it' : waitTitle}
-            onClick={applyProposal}>{proposal.operations.length ? 'Apply change'
-              : `Dismiss ${dismissals.length} issue(s)`}</ActionButton>
+            onClick={() => applyProposal(proposal)}>{applyLabel ?? (proposal.operations.length ? 'Apply change'
+              : `Dismiss ${dismissals.length} issue(s)`)}</ActionButton>
           {proposal.status === 'stale' && <ActionButton disabled={!!viewing || busy || running} title={waitTitle}
-            onClick={regenerate}>Refresh on latest</ActionButton>}
-          <ActionButton disabled={busy || running} title={waitTitle} onClick={dismissProposal}>Discard</ActionButton>
+            onClick={() => regenerate(proposal)}>Refresh on latest</ActionButton>}
+          <ActionButton disabled={busy || running} title={waitTitle} onClick={() => dismissProposal(proposal)}>Discard</ActionButton>
         </>}
         {proposal.status === 'applied' && <span className="ok-text">{proposal.operations.length
           ? `Applied as ${proposal.applied_revision}.` : `Dismissed ${dismissals.length} issue(s).`}</span>}

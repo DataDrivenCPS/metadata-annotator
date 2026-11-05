@@ -9,7 +9,7 @@ import { summarize } from '../selection'
 import { useStore } from '../store'
 import { attachmentSummary } from '../documents'
 import { providerOf, providerOptions, settingsSummary, shortModel, shownChoice } from '../providers'
-import { citationSummary } from '../citations'
+import { citationSummary, sourceCitation } from '../citations'
 import { CitationItem } from './Citation'
 import type { AgentRun, Proposal, ProposalCitations, ProviderHealth, RunChanges } from '../types'
 
@@ -546,7 +546,6 @@ function evidenceSummary({ cited, total, read }: { cited: number; total: number;
 export function ProposalPreview({ proposal, running: runningProp, title, applyLabel }: {
   proposal: Proposal; running: boolean; title?: ReactNode; applyLabel?: string
 }) {
-  const projectId = useStore((s) => s.projectId)
   const autofixRunning = useStore((s) => Object.values(s.runs).some((r) => r.kind === 'autofix' && isActive(r)))
   const otherRunning = useStore((s) => Object.values(s.runs).some((r) => r.kind !== 'autofix' && isActive(r)))
   const running = runningProp || autofixRunning || otherRunning
@@ -557,6 +556,7 @@ export function ProposalPreview({ proposal, running: runningProp, title, applyLa
   const regenerate = useStore((s) => s.regenerate)
   const click = useStore((s) => s.click)
   const inspect = useStore((s) => s.inspect)
+  const openCitation = useStore((s) => s.openCitation)
   const busy = useStore((s) => s.busy)
   const head = useStore((s) => s.model?.head)
   const viewing = useStore((s) => s.viewing)
@@ -664,8 +664,8 @@ export function ProposalPreview({ proposal, running: runningProp, title, applyLa
           {sources.length > 0 && <section>
             <h4>Sources</h4>
             <ul>{sources.map((source) => <li key={source.id}>
-              <a href={`${api.sourceFileUrl(projectId!, source.id)}${source.pages?.length ? `#page=${source.pages[0]}` : ''}`}
-                target="_blank" rel="noreferrer">{source.filename}</a>
+              <button className="link citation-link"
+                onClick={() => openCitation(sourceCitation(source.id, source.filename, source.pages?.[0]))}>{source.filename}</button>
               <span className="muted"> · {source.role === 'reference' ? 'Supporting evidence' : 'Build input'}
                 {source.pages?.length ? ` · pages ${source.pages.join(', ')}` : ''}</span>
             </li>)}</ul>

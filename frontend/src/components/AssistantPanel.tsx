@@ -9,7 +9,7 @@ import { summarize } from '../selection'
 import { useStore } from '../store'
 import { attachmentSummary } from '../documents'
 import { providerOf, providerOptions, settingsSummary, shortModel, shownChoice } from '../providers'
-import type { AgentRun, Proposal, ProviderHealth } from '../types'
+import type { AgentRun, Proposal, ProviderHealth, RunChanges } from '../types'
 
 const FIELD_LABELS: Record<string, string> = {
   label: 'Name', equipment: 'Equipment', point_kind: 'Kind', point_type: 'Point type', quantity_kind: 'Measurement', unit: 'Unit',
@@ -91,6 +91,33 @@ const Exchange = memo(function Exchange({ run, divider, isLast }: { run: AgentRu
   </div>
 })
 
+/** When the model changed since the reply a message continues (edits, undo, other changes; not
+ *  applying that reply's own proposal), the person chooses: continue its conversation, told what
+ *  changed, or start a fresh one with the current model. */
+function ModelChangedChoice({ runId }: { runId: string }) {
+  const projectId = useStore((s) => s.projectId)
+  const head = useStore((s) => s.model?.head)
+  const fresh = useStore((s) => s.assistantFresh)
+  const setFresh = useStore((s) => s.setAssistantFresh)
+  const [changes, setChanges] = useState<RunChanges | null>(null)
+  useEffect(() => {
+    if (!projectId) return
+    let live = true
+    api.runChanges(projectId, runId).then((c) => { if (live) setChanges(c) }).catch(() => { if (live) setChanges(null) })
+    return () => { live = false }
+  }, [projectId, runId, head])
+  if (!changes?.changed || !changes.continuable) return null
+  return <div className="composer-changed">
+    <span>{changes.summary}</span>
+    <span className="choice-pair" role="radiogroup" aria-label="How to continue">
+      <button role="radio" aria-checked={!fresh} className={fresh ? '' : 'active'} onClick={() => setFresh(false)}
+        title="Continue the conversation; the assistant is told what changed">Keep going</button>
+      <button role="radio" aria-checked={fresh} className={fresh ? 'active' : ''} onClick={() => setFresh(true)}
+        title="A new conversation with the current model; the earlier chat goes along as text">Start fresh</button>
+    </span>
+  </div>
+}
+
 function Composer() {
   const selection = useStore((s) => s.selection)
   const rows = useStore((s) => s.rows)
@@ -166,6 +193,7 @@ function Composer() {
           Attached to this message: {attachmentSummary(selection.source_regions)}</span>
         <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>Clear</button>
       </div>}
+      {next?.runId && <ModelChangedChoice runId={next.runId} />}
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
         {next ? <>
           <span>↩ {CONTINUE_LABEL[next.kind]}</span>
@@ -433,6 +461,8 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
         summary={`Run details · ${run.progress.length} step${run.progress.length === 1 ? '' : 's'} · ${formatDuration(elapsed)}`}>
         {() => <>
           {proposalId && run.outcome.explanation && <LongText text={run.outcome.explanation} />}
+          {run.parent_run_id && <div className="muted">{run.continued ? 'Continued the earlier conversation.'
+            : 'Started a fresh conversation with the current model.'}</div>}
           <RunSteps run={run} live={false} />
         </>}
       </Disclosure>}

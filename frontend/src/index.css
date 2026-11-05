@@ -302,6 +302,12 @@ pre.code { background: var(--subtle); border: 1px solid var(--border); border-ra
 .composer-mode.mode-questions { background: var(--proposed-strong); color: white; }
 .composer-mode.mode-questions button.link { color: white; text-decoration: underline; }
 .composer-mode.mode-new { background: var(--hover); color: var(--muted); }
+.composer-changed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; font-size: var(--fs-sm); padding: 4px 8px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn-strong); }
+.choice-pair { display: inline-flex; }
+.choice-pair button { padding: 2px 8px; font-size: var(--fs-sm); border-radius: 0; }
+.choice-pair button:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.choice-pair button:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; margin-left: -1px; }
+.choice-pair button.active { background: var(--warn-strong); border-color: var(--warn-strong); color: white; }
 .assist-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .resize-handle { position: relative; z-index: 2; cursor: row-resize; touch-action: none; user-select: none; display: flex; align-items: center; justify-content: center; }
 .resize-handle span { width: 34px; height: 3px; border-radius: var(--radius-sm); background: var(--border-strong); }

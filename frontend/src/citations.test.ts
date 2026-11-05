@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boxPercent, citationBox, citationLabel, citationSummary, excerpt, isGenerated, locatePassage, recordsToShow, zoomToBox } from './citations'
+import { boxPercent, sourceCitation, citationBox, citationLabel, citationSummary, excerpt, isGenerated, locatePassage, recordsToShow, zoomToBox } from './citations'
 import type { Citation, Proposal } from './types'
 
 const cite = (content: Citation['content'], location: Partial<Citation['location']> = {}): Citation =>
@@ -14,6 +14,16 @@ describe('citation label', () => {
   it('counts rows and columns from one', () => {
     expect(citationLabel(cite({ filename: 'points.csv' }, { kind: 'csv_row', row: 0 }))).toBe('points.csv · row 1')
     expect(citationLabel(cite({ filename: 'points.csv' }, { kind: 'csv_column', column: 4 }))).toBe('points.csv · column 5')
+  })
+})
+
+describe('whole-source citation', () => {
+  it('opens at the given page and names no passage or record', () => {
+    const source = sourceCitation('src-1', 'plant.pdf', 3)
+    expect(citationLabel(source)).toBe('plant.pdf · page 3')
+    expect(source.id).toBe('')
+    expect(citationBox(source)).toBeNull()
+    expect(locatePassage('any text at all here', source)).toBeNull()
   })
 })
 

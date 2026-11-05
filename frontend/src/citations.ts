@@ -18,6 +18,12 @@ export function citationLabel(citation: Citation): string {
   return parts.join(' · ')
 }
 
+/** A whole source (at a page, for a PDF) to open like a citation: a proposal's list of the files it read. */
+export function sourceCitation(sourceId: string, filename: string, page?: number | null): Citation {
+  return { id: '', source_id: sourceId, kind: 'source', status: 'unresolved', entity_ids: [],
+    content: { filename }, location: { kind: 'document', page: page ?? null } }
+}
+
 /** A vision model's description of a page: useful, but not the source's own words. */
 export const isGenerated = (citation: Citation) => citation.content.generated === true
 

@@ -545,6 +545,15 @@ def create_app(settings: Settings | None = None, registry: VocabularyRegistry | 
         except SourceError as exc:
             raise HTTPException(400, str(exc)) from None
 
+    @app.get("/api/projects/{pid}/sources/{sid}/labels")
+    def source_labels(pid: str, sid: str, name: str, page: int | None = None):
+        """Where an indexed drawing labels ``name`` (boxes in the source's units), to point at it
+        when a citation names the whole drawing rather than a region of it."""
+        from .retrieval.evidence import named_labels
+        p = project(pid)
+        source_or_404(p, sid)
+        return named_labels(p, sid, name, page)
+
     @app.get("/api/projects/{pid}/sources/{sid}/grid")
     def source_grid(pid: str, sid: str, limit: int = 60, delimiter: str | None = None):
         p = project(pid)

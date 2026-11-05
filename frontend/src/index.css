@@ -410,6 +410,7 @@ table.raw-grid td.excluded { color: var(--faint); text-decoration: line-through;
 .image-canvas img { display: block; pointer-events: none; }
 .region { position: absolute; border: 2px solid var(--proposed-strong); background: rgba(130, 80, 223, .12); }
 .region.draft { border-style: dashed; }
+.region.found { border-style: dashed; border-color: #bf8700; background: rgba(255, 196, 0, .12); pointer-events: none; }
 .region.cited { border-color: #bf8700; background: rgba(255, 196, 0, .25); pointer-events: none; }
 .document-canvas { position: relative; }
 .citation-banner { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 8px; margin-bottom: 6px; font-size: var(--fs-sm); background: var(--warn-soft); border-radius: 4px; }

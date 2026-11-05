@@ -3,10 +3,10 @@ import { Disclosure } from './Disclosure'
 import { api } from '../api'
 import { useStore } from '../store'
 import { choiceReadsImages } from '../providers'
-import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
+import type { SourceLabels, CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
 import { SourceIndexStatus } from './SourceIndexStatus'
-import { boxPercent, citationBox, citationLabel, isGenerated, locatePassage, recordsToShow, zoomToBox } from '../citations'
+import { boxPercent, unionBox, citationBox, citationLabel, isGenerated, locatePassage, recordsToShow, zoomToBox } from '../citations'
 import { GeneratedBadge } from './Citation'
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
@@ -489,6 +489,24 @@ function ImageView({ source }: { source: Source }) {
     if (el && box) setView(zoomToBox(box, el.clientWidth, el.clientHeight, W, H))
   }, [citation, source.id, W, H])
 
+  // A citation of the whole drawing has no region: show where the drawing labels the object it
+  // was opened for, if the index read its labels. Found by name, so drawn apart from a citation.
+  const about = citation?.source_id === source.id && !cited ? citation.about ?? null : null
+  const [found, setFound] = useState<{ about: string; labels: SourceLabels } | null>(null)
+  useEffect(() => {
+    if (!about) return
+    let active = true
+    api.sourceLabels(projectId, source.id, about).then((labels) => { if (active) setFound({ about, labels }) })
+      .catch(() => { if (active) setFound(null) })
+    return () => { active = false }
+  }, [projectId, source.id, about, citation])
+  const labels = about && found?.about === about ? found.labels : null
+  useEffect(() => {
+    const el = frame.current
+    const box = unionBox(labels?.matches.map((m) => m.bbox) ?? [])
+    if (el && box) setView(zoomToBox(box, el.clientWidth, el.clientHeight, W, H))
+  }, [labels, W, H])
+
   const region = selection.source_regions.find((r) => r.source_id === source.id && r.bbox)?.bbox as Box | undefined
   const toImage = (e: React.MouseEvent) => {
     const rect = frame.current!.getBoundingClientRect()
@@ -544,8 +562,14 @@ function ImageView({ source }: { source: Source }) {
           ))}
           {cited && <div className="region cited" style={{ left: cited[0], top: cited[1], width: cited[2], height: cited[3],
             borderWidth: 2 / view.scale }} />}
+          {labels?.matches.map((m, i) => <div key={i} className="region found" title={m.text}
+            style={{ left: m.bbox[0], top: m.bbox[1], width: m.bbox[2], height: m.bbox[3], borderWidth: 2 / view.scale }} />)}
         </div>
       </div>
+      {about && labels && <p className="small citation-found">{labels.matches.length
+        ? `Dashed: where the drawing labels “${about}”. Found by name, not cited.`
+        : labels.labelled ? `“${about}” isn’t among this drawing’s labels.`
+        : `This drawing’s labels haven’t been read, so “${about}” can’t be pointed out. The Docling parser reads them.`}</p>}
       <p className="muted small">
         {region ? `Region ${region[2]}×${region[3]} px attached as evidence for your next message.` : 'Scroll to zoom; “Select region” marks part of the drawing as evidence.'}
       </p>

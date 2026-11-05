@@ -171,7 +171,7 @@ function Inspector() {
       <PropertiesPanel eid={detail.id} properties={detail.properties ?? []} />
       <RelationsPanel eid={detail.id} />
       <h5>Evidence</h5>
-      {detail.evidence.length ? detail.evidence.map((e) => <CitationItem key={e.id} citation={e} />)
+      {detail.evidence.length ? detail.evidence.map((e) => <CitationItem key={e.id} citation={e} about={detail.row?.label} />)
         : <p className="muted">No linked source observations.</p>}
       <h5>Correction history</h5>
       {detail.history.length ? (

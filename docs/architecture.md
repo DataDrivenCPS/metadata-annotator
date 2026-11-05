@@ -364,6 +364,11 @@ The proposal summarises this from its own operations and fetches the rest when o
 in the inspector, `Citation.tsx` opens a citation through the store's `citation`, which the
 sources tray follows to the cited place: a PDF page (with `box_pt` drawn over it, placed using the
 page's size from `document-preview`), an image region, a CSV record, or a text passage.
+A citation of a whole drawing has no region to draw; opened for an object (a change on a
+proposal, the inspected row), the tray asks `GET /sources/{id}/labels?name=` where the drawing
+labels that object (`retrieval.evidence.named_labels`: the figure labels the Docling parser
+read, matched by name like `agent/citing.py`) and outlines those dashed, saying they were found
+by name, not cited. Without Docling the drawing has no labels to look in, and the tray says so.
 `citations.locatePassage` highlights text only where it finds the passage itself, so a highlight
 never lands on words the citation did not quote. A vision model's description of a page
 (`generated`) is labelled as such and never highlighted as if it were source text. A link is not

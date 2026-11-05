@@ -363,6 +363,8 @@ def test_checking_citations_opens_the_source_at_the_cited_place(live, page, tmp_
              "content": {"filename": "plant.pdf", "text": "A description of the page.", "generated": True,
                          "box_pt": [72, 72, 144, 72]}},
             {**record, "id": "obs-region", "source_id": image, "location": {"kind": "image_region", "bbox": [400, 150, 300, 150]},
+             "content": {"filename": "diagram.png", "section": ["Region"]}},
+            {**record, "id": "obs-whole", "source_id": image, "location": {"kind": "image_region"},
              "content": {"filename": "diagram.png"}},
             {**record, "id": "obs-passage", "source_id": notes, "location": {"kind": "document", "text_range": [17, 42]},
              "content": {"filename": "notes.txt", "text": "Pump P-1 feeds tank TK-2."}}]
@@ -391,18 +393,36 @@ def test_checking_citations_opens_the_source_at_the_cited_place(live, page, tmp_
     assert abs((drawn["y"] - canvas["y"]) / canvas["height"] - 72 / size[1]) < 0.01
     shot("citation-pdf-box")
 
-    inspector.get_by_role("button", name=re.compile(r"diagram\.png")).click()
+    inspector.get_by_role("button", name=re.compile(r"diagram\.png · Region")).click()
     expect(tray.locator(".image-canvas .region.cited")).to_be_visible()
     picture = tray.locator(".image-canvas img")
     page.wait_for_function("(img) => img.complete && img.naturalWidth > 0", arg=picture.element_handle())
     assert tray.locator(".citation-banner").bounding_box()["height"] < 60  # a line, not stretched by the tray
     shot("citation-image")
 
+    # A citation of the whole drawing points out where the drawing labels the object, when the
+    # index has read its labels; the offline index here has not, and says so.
+    inspector.get_by_role("button", name="diagram.png", exact=True).click()
+    expect(tray.locator(".citation-found")).to_contain_text("labels haven")
+    expect(tray.locator(".region.found")).to_have_count(0)
+    asked = []
+
+    def labelled(route):
+        asked.append(route.request.url)
+        route.fulfill(json={"labelled": True, "matches": [{"text": "FROM-CSV PUMP", "bbox": [200, 200, 120, 60], "page": None}]})
+
+    page.route(f"**/api/projects/{pid}/sources/{image}/labels*", labelled)
+    inspector.get_by_role("button", name="diagram.png", exact=True).click()
+    expect(tray.locator(".image-canvas .region.found")).to_have_count(1)
+    expect(tray.locator(".citation-found")).to_contain_text("Found by name, not cited")
+    assert asked and "name=FROM-CSV" in asked[-1]  # the object the citation was opened for
+    shot("citation-image-found")
+
     inspector.get_by_role("button", name=re.compile(r"notes\.txt")).click()
     expect(tray.locator(".document-text mark")).to_have_text("Pump P-1 feeds tank TK-2.")
 
     tray.locator(".citation-banner").get_by_role("button", name="clear", exact=True).click()
     expect(tray.locator(".document-text mark")).to_have_count(0)
-    inspector.get_by_role("button", name=re.compile(r"diagram\.png")).click()
+    inspector.get_by_role("button", name=re.compile(r"diagram\.png · Region")).click()
     tray.locator(".citation-banner").get_by_role("button", name="clear", exact=True).click()
     expect(tray.locator(".region.cited")).to_have_count(0)

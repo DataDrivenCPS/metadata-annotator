@@ -218,6 +218,18 @@ class RunManager:
                  {"role": "assistant", "text": run_reply_text(parent)}]
         return [{"role": t["role"], "text": t["text"][:MAX_TURN_CHARS]} for t in turns if t["text"]][-MAX_HISTORY_TURNS:]
 
+    def continuation(self, project: Project, parent_run_id: str | None) -> dict | None:
+        """The saved model conversation of ``parent_run_id`` with a note on what changed since, for a
+        follow-up to continue; None when there is none to continue."""
+        from .agent.continuation import changes_since, load_state
+
+        if not parent_run_id:
+            return None
+        state = load_state(project, parent_run_id)
+        if state is None:
+            return None
+        return {**state, "note": changes_since(project, self.get(project, parent_run_id))["note"]}
+
     def continued_selection(self, project: Project, parent_run_id: str | None,
                             selection: SelectionScope) -> SelectionScope:
         """A follow-up with nothing selected keeps talking about what the earlier run was about."""
@@ -263,19 +275,23 @@ class RunManager:
     def start_correction(self, project: Project, base: str, selection: SelectionScope,
                          instruction: str, provider: str | None = None,
                          parent_run_id: str | None = None, inherit_selection: bool = True,
-                         supersedes_proposal_id: str | None = None) -> AgentRun:
+                         supersedes_proposal_id: str | None = None, fresh: bool = False) -> AgentRun:
+        """``fresh``: start a new model conversation with the current model instead of continuing
+        the parent run's (the person's choice when the model changed since it answered)."""
         if base != project.head():
             raise StaleRevision(base, project.head())
         history = self.history(project, parent_run_id)
+        continues = None if fresh else self.continuation(project, parent_run_id)
         if inherit_selection:
             selection = self.continued_selection(project, parent_run_id, selection)
         return self._launch(
             project, self.choose(self.settings.provider(provider)),
             lambda llm, rid, progress, token: run_with_evidence(
                 project, llm, self.guidance, base, selection, instruction, rid, progress, token,
-                history=history, agent=self.settings.agent),
+                history=history, agent=self.settings.agent, continues=continues),
             supersedes_proposal_id, kind="correction", input_revision=base, selection=selection,
-            instruction=instruction, parent_run_id=parent_run_id, conversation=history)
+            instruction=instruction, parent_run_id=parent_run_id, conversation=history,
+            continued=continues is not None)
 
     def start_autofix(self, project: Project, base: str, issue_ids: list[str],
                       provider: str | None = None) -> AgentRun:
@@ -340,7 +356,7 @@ class RunManager:
                        provider: str | None = None, reconsider: bool = False,
                        parent_run_id: str | None = None,
                        source_regions: list[SourceRegion] | None = None,
-                       retry_left_out: bool = False) -> AgentRun:
+                       retry_left_out: bool = False, fresh: bool = False) -> AgentRun:
         """Continue a pending proposal or reconsider it against the latest revision.
         ``retry_left_out``: the reply asks for the operations the proposal left out again."""
         if proposal.status != "pending" and not (reconsider and proposal.status == "stale"):
@@ -348,6 +364,8 @@ class RunManager:
         if retry_left_out and (reconsider or not proposal.left_out):
             raise ValueError("the proposal left out no operations to try again")
         history = self.history(project, parent_run_id or proposal.agent_run_id) if not reconsider else []
+        continues = (None if fresh or reconsider else
+                     self.continuation(project, parent_run_id or proposal.agent_run_id))
         base = project.head()
         if not reconsider and proposal.base_revision != base:
             raise StaleRevision(proposal.base_revision, project.head())
@@ -365,10 +383,11 @@ class RunManager:
             lambda llm, rid, progress, token: run_with_evidence(
                 project, llm, self.guidance, base, selection, instruction, rid, progress, token,
                 prior_proposal=proposal, reconsider=reconsider, history=history,
-                agent=self.settings.agent, retry_left_out=retry_left_out),
+                agent=self.settings.agent, retry_left_out=retry_left_out, continues=continues),
             kind="correction", input_revision=base, mode="reconsider" if reconsider else "reply",
             parent_run_id=None if reconsider else (parent_run_id or proposal.agent_run_id),
-            selection=selection, instruction=instruction, conversation=history)
+            selection=selection, instruction=instruction, conversation=history,
+            continued=continues is not None)
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:
         with self._lock:
@@ -414,6 +433,9 @@ class RunManager:
                 **{key: run.outcome[key] for key in ("cached_tokens", "estimated", "calls") if key in run.outcome},
                 **({"autofix": outcome.autofix} if hasattr(outcome, "autofix") else {}),
             }
+            if (state := getattr(outcome, "state", None)) is not None:
+                from .agent.continuation import save_state
+                save_state(project, run.id, state)
             run.status = "succeeded"
         except Cancelled:
             run.status = "cancelled"

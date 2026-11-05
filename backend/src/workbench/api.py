@@ -57,6 +57,7 @@ class AssistRequest(BaseModel):
     parent_run_id: str | None = None  # continue this run's conversation, e.g. answer its questions
     inherit_selection: bool = True  # with nothing selected, keep the continued run's scope
     supersedes_proposal_id: str | None = None  # the open proposal this new request replaces (closed when it starts)
+    fresh: bool = False  # start a new model conversation instead of continuing the parent run's
 
 
 class AutofixRequest(BaseModel):
@@ -81,6 +82,7 @@ class ProposalReplyRequest(BaseModel):
     parent_run_id: str | None = None
     source_regions: list[SourceRegion] | None = None
     retry_left_out: bool = False  # try again the operations the proposal left out
+    fresh: bool = False  # start a new model conversation instead of continuing the parent run's
 
 
 class LayoutRequest(BaseModel):
@@ -599,7 +601,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p = project(pid)
         try:
             run = runs.start_correction(p, body.base_revision, body.selection, body.instruction, body.provider,
-                                        body.parent_run_id, body.inherit_selection, body.supersedes_proposal_id)
+                                        body.parent_run_id, body.inherit_selection, body.supersedes_proposal_id,
+                                        fresh=body.fresh)
         except (KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except ProviderUnavailable as exc:
@@ -655,6 +658,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except KeyError:
             raise HTTPException(404, f"No run {run_id}") from None
 
+    @app.get("/api/projects/{pid}/runs/{run_id}/changes")
+    def run_changes(pid: str, run_id: str):
+        """Whether the model changed since the run answered, in ways its conversation does not know,
+        so the person can choose to continue it or start fresh; ``continuable``: it has one to continue."""
+        from .agent.continuation import changes_since, load_state
+        p = project(pid)
+        try:
+            run = runs.get(p, run_id)
+        except KeyError:
+            raise HTTPException(404, f"No run {run_id}") from None
+        found = changes_since(p, run)
+        return {"changed": found["changed"], "summary": found["summary"],
+                "continuable": load_state(p, run_id) is not None}
+
     @app.post("/api/projects/{pid}/runs/{run_id}/cancel")
     def cancel_run(pid: str, run_id: str):
         try:
@@ -682,7 +699,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             prop = p.proposal(prop_id)
             run = runs.start_revision(p, prop, instruction, body.provider, parent_run_id=body.parent_run_id,
-                                      source_regions=body.source_regions, retry_left_out=body.retry_left_out)
+                                      source_regions=body.source_regions, retry_left_out=body.retry_left_out,
+                                      fresh=body.fresh)
         except KeyError:
             raise HTTPException(404, f"No proposal {prop_id}") from None
         except ValueError as exc:

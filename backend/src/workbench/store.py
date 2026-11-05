@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS issue_dismissals (
 );
 CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS layout (entity_id TEXT PRIMARY KEY, x REAL NOT NULL, y REAL NOT NULL);
+-- A finished run's model conversation, which a follow-up continues (agent/continuation.py).
+CREATE TABLE IF NOT EXISTS run_conversations (id TEXT PRIMARY KEY, body TEXT NOT NULL);
 """
 
 

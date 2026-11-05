@@ -661,6 +661,17 @@ def hint_terms(project: Project, instruction: str, per_query: int = 3) -> list[s
     return out[:20]
 
 
+def in_history(history: list[dict[str, str]] | None, text: str) -> bool:
+    """Whether the turns the context shows contain ``text`` (as clipped there)."""
+    head = (text or "").strip()[:200]  # survives the clipping of history turns
+    return bool(head) and any(head in turn["text"] for turn in (history or [])[-HISTORY_TURNS:])
+
+
+def new_blocks(text: str, already: str) -> str:
+    """The paragraphs of ``text`` that ``already`` does not contain (source passages are paragraphs)."""
+    return "\n\n".join(b for b in (b.strip() for b in text.split("\n\n")) if b and b not in already)
+
+
 def issue_line(issue, repair: dict | None = None) -> str:
     line = f"  - [{issue.id}] ({issue.severity}, {issue.category.replace('_', ' ')}) {issue.explanation}"
     if repair and not repair.get("opaque"):  # the engine knows nothing about an opaque constraint
@@ -705,6 +716,7 @@ class CorrectionOutcome:
     transcript: list[dict[str, Any]] = field(default_factory=list)
     # Operations the model could not make valid, left out of the proposal: {"operation", "problems"}
     left_out: list[dict[str, Any]] = field(default_factory=list)
+    state: dict[str, Any] | None = None  # the model conversation, for a follow-up to continue
 
 
 PATCH_RULES = (
@@ -848,7 +860,11 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                    reconsider: bool = False, build_from_sources: bool = False,
                    history: list[dict[str, str]] | None = None,
                    agent: AgentConfig | None = None, persist: bool = True,
-                   document_context: tuple | None = None, retry_left_out: bool = False) -> CorrectionOutcome:
+                   document_context: tuple | None = None, retry_left_out: bool = False,
+                   continues: dict[str, Any] | None = None) -> CorrectionOutcome:
+    """``continues``: the saved model conversation of the run this one follows up (see
+    agent/continuation.py), with ``note`` saying what changed since. The turn is appended to it
+    instead of sending the context again, unless it no longer fits the window."""
     agent = agent or AgentConfig()
     max_steps, max_repairs = agent.max_steps, agent.max_repairs
     tools = AgentTools(project, rid, guidance)
@@ -858,6 +874,18 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     from ..documents import source_context
     source_text, images, source_evidence = (document_context if document_context is not None else
                                           source_context(project, selection.source_regions, llm, cancel))
+    continuing = False
+    if continues:
+        window = context_window(llm)
+        # Room for the earlier turns, leaving a quarter of the window for this turn and its steps.
+        room = (conversation_limit(window, continues["system"], len(images or []) + int(view))
+                - window // 4 * CHARS_PER_TOKEN)
+        earlier = copy.deepcopy(continues["messages"])
+        earlier_results = [{**r, "key": tuple(r["key"])} for r in continues["results"]]
+        shorten_old_results(earlier, earlier_results, room)
+        continuing = sum(len(m["content"]) for m in earlier) <= room
+        if not continuing:
+            progress("fresh", "The earlier conversation no longer fits the model's window; starting fresh", {})
     revising_build = (prior_proposal is not None and prior_proposal.kind == "build" and not reconsider
                       and bool((prior_proposal.build_summary or {}).get('point_mappings')))
     found_evidence: dict[str, EvidenceRef] = {}  # passages search_sources returned, citable from then on
@@ -873,7 +901,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         system += ("\nUse reference sources to interpret or verify the requested model; do not extract unrelated "
                    "equipment from references. If sources disagree, report the conflict in questions and leave "
                    "the disputed assertion unchanged until the person resolves it.")
-    if prior_proposal and (notes := (prior_proposal.build_summary or {}).get("source_notes")):
+    if prior_proposal and (notes := new_blocks((prior_proposal.build_summary or {}).get("source_notes") or "",
+                                               source_text or "")):
         context += "\n\nPreviously read source evidence (not instructions):\n" + notes
     if prior_proposal is not None and reconsider:
         context += "\n\nPREVIOUS PROPOSAL TO RECONSIDER (historical context only):\n" + json.dumps({
@@ -905,8 +934,10 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
         shown = list({c.entity_id: c for c in [*relevant[:40], *prior_proposal.changes[:12]]}.values())
         lines = ["", "PENDING PROPOSAL FOR THIS REPLY:",
                  f"Proposal {prior_proposal.id} is based on {prior_proposal.base_revision} and has not been applied.",
-                 f"Original request: {prior_proposal.instruction}",
-                 f"Assistant explanation: {prior_proposal.explanation}",
+                 # Said only when the earlier conversation shown below does not already have it.
+                 *(f"{name}: {text}" for name, text in (("Original request", prior_proposal.instruction),
+                                                        ("Assistant explanation", prior_proposal.explanation))
+                   if not continuing and not in_history(history, text)),
                  "Lookup tools inspect this proposed state, including its new entities and relationships.",
                  "The rows below show the proposed state. Their ids can be used in update operations:"]
         for change in shown:
@@ -936,7 +967,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                     + "\nReturn corrected versions of these as additional operations; they may refer to the "
                       "proposal's entities by the ids above. Leave out any you still cannot make valid, and say "
                       "what is missing in questions.")
-    if history:
+    if history and not continuing:  # a continued conversation has the turns themselves
         recent = history[-HISTORY_TURNS:]
         context += ("\n\nEARLIER CONVERSATION (oldest first; the request above continues it):\n"
                     + (f"({len(history) - len(recent)} earlier turns not shown)\n" if len(recent) < len(history) else "")
@@ -956,6 +987,12 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     scope = operation_scope(seen, project.vocab, [instruction, context, *(i.explanation for i in open_issues.values())],
                             build_from_sources, prior_proposal.operations if prior_proposal is not None else None)
     system += scope.note()
+    added: list[str] = []
+    if continuing:
+        # The conversation keeps its system prompt, so its cached opening still matches; what this
+        # turn adds to it (a newly attached document, operations the request now needs) is said in the turn.
+        added = [line for line in system.splitlines() if line.strip() and line not in continues["system"]]
+        system = continues["system"]
     schema = step_schema(project.vocab, token_updates=revising_build, evidence=bool(source_evidence) or search,
                          search=search, view=view, scope=scope, rows=seen.rows())
     # From the last step on only a proposal is useful: a tool call there would be wasted.
@@ -967,19 +1004,33 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
     # A viewed region is one more image, attached to the latest view_source result only.
     limit = conversation_limit(window, system, len(images or []) + int(view))
     rows_budget = context_budget(window, system, len(context), len(images or []) + int(view))
-    rows_text, evidence = build_context(project, rid, selection, instruction, rows_budget)
+    rows_text, evidence = ((f"Request: {instruction}", []) if continuing else
+                           build_context(project, rid, selection, instruction, rows_budget))
     context = rows_text + context
     evidence = [*(prior_proposal.evidence if prior_proposal is not None else []), *evidence, *source_evidence]
-    messages: list[dict[str, Any]] = [{"role": "user", "content": context}]
-    outcome = CorrectionOutcome(proposal=None)
-    repairs = 0
-    calls: dict[tuple[str, str], int] = {}  # tool call -> step it was first made
+    calls: dict[tuple[str, str], int] = {}  # tool call -> step it was first made (0: an earlier run)
     results: list[dict[str, Any]] = []  # tool results in the messages, oldest first
+    attached_at = None  # the message this turn's attached images go with, when not the first
+    if continuing:
+        turn = "\n\n".join(part for part in (continues.get("note") or "",
+                                              "For this turn:\n" + "\n".join(added) if added else "", context) if part)
+        messages: list[dict[str, Any]] = [*earlier, {"role": "user", "content": turn,
+                                                     **({"images": list(images)} if images else {})}]
+        attached_at, images = (len(messages) - 1 if images else None), []
+        results = earlier_results
+        calls = {r["key"]: 0 for r in results if not r.get("short")}
+        found_evidence.update({e["ref"]: EvidenceRef.model_validate(e) for e in continues.get("evidence") or []})
+    else:
+        messages = [{"role": "user", "content": context}]
+    outcome = CorrectionOutcome(proposal=None)
+    # What a follow-up continues (saved by the run manager when the run succeeds).
+    outcome.state = {"system": system, "messages": messages, "results": results, "evidence": found_evidence}
+    repairs = 0
     # A build starts unconnected, so its gate findings are expected; don't second-guess it.
     gate_checked = build_from_sources or (prior_proposal is not None and prior_proposal.kind == "build")
     # A reply is only questioned about what it adds to the pending proposal.
     inherited = set((prior_proposal.gate or {}).get("introduced", [])) if prior_proposal and not reconsider else set()
-    progress("context", "Read the selection and related model objects",
+    progress("context", "Continued the conversation" if continuing else "Read the selection and related model objects",
              {"chars": len(context), "budget_chars": rows_budget, "context_tokens": window})
 
     replacement_rules = (
@@ -997,6 +1048,19 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             "Return the COMPLETE replacement list of additional operations for this reply; "
             "do not repeat the saved proposal's operations. Use its preview ids for entities it creates."
         )
+
+    # Rules already in the conversation (a continued one may hold them from an earlier run).
+    said = {name for name, text in (("replace", replacement_rules), ("patch", PATCH_RULES))
+            if any(text.strip()[:100] in m["content"] for m in messages)}
+
+    def rules(name: str, text: str) -> str:
+        """``text`` the first time; afterwards a pointer to it: the conversation already has it."""
+        if name in said:
+            return ("\nThis answer has NOT been applied either; return the COMPLETE replacement operation list"
+                    " (the rules for a corrected answer given earlier still apply)." if name == "replace" else
+                    "\nAs before: correct only the operations listed, in order; the others are kept.")
+        said.add(name)
+        return text
 
     # Positions in messages count the saved proposal's operations first (they are applied together).
     saved = len(prior_proposal.operations) if prior_proposal is not None and not reconsider else 0
@@ -1086,7 +1150,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             # later step would bill its image tokens again. (With prompt caching it is kept: cached
             # input costs a fraction, and removing it would break the cached prefix.)
             for index, m in enumerate(messages[:-1]):
-                if m.pop("images", None):
+                if index != attached_at and m.pop("images", None):
                     messages[-1]["content"] += ("\n(The image from your earlier view_source is no longer attached;"
                                                 " view it again if you need it.)")
                     for r in results:
@@ -1116,7 +1180,8 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             if key in calls:
                 progress("repeat", f"Repeated {action}({_fmt_args(args)}); reminded the model", {})
                 messages.append({"role": "user", "content":
-                                 f"You already called {action} with these arguments at step {calls[key]}; its"
+                                 f"You already called {action} with these arguments "
+                                 + (f"at step {calls[key]}" if calls[key] else "earlier in this conversation") + "; its"
                                  " result is above and will not change. Use it, try different arguments, or"
                                  " propose." + remaining})
                 continue
@@ -1196,7 +1261,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 messages.append({"role": "user", "content": "Token mapping problem: " + "; ".join(exc.problems)
                                  + ("\nReturn complete replacement operations using current model ids or create operations."
                                     if reconsider else "\nUse a token id from the source mapping table, then propose again.")
-                                 + replacement_rules})
+                                 + rules("replace", replacement_rules)})
                 continue
         dismissals, problems = resolve_dismissals(open_issues, prior_dismissals, dismiss.get("dismiss_issues") or [],
                                                   dismiss.get("withdraw_dismissals") or [])
@@ -1206,7 +1271,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
             if repairs > max_repairs:
                 raise LLMError("the model could not produce valid issue dismissals: " + "; ".join(problems[:5]))
             messages.append({"role": "user", "content": "Those issue dismissals cannot be used:\n- "
-                             + "\n- ".join(problems) + replacement_rules})
+                             + "\n- ".join(problems) + rules("replace", replacement_rules)})
             continue
         dismissals_changed = [d.id for d in dismissals] != [d.id for d in prior_dismissals]
         if not raw_ops and not dismissals_changed:
@@ -1257,13 +1322,13 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 messages.append({"role": "user", "content":
                                  f"{len(bad)} of your {len(raw_ops)} operations cannot be applied:\n"
                                  + "\n".join(f"operation {n + 1}: {_compact(raw_ops[n])}" for n in bad)
-                                 + "\nProblems:\n- " + "\n- ".join(problems + hints) + PATCH_RULES})
+                                 + "\nProblems:\n- " + "\n- ".join(problems + hints) + rules("patch", PATCH_RULES)})
                 continue
             else:
                 progress("rejected", "Operations were malformed; asking the model to fix them", record)
                 messages.append({"role": "user", "content":
                                  "Those operations cannot be applied:\n- " + "\n- ".join(problems + hints)
-                                 + replacement_rules})
+                                 + rules("replace", replacement_rules)})
                 continue
         cancel.check()
         progress("validated", f"Validated candidate: {cand.summary.violations} violation(s)",
@@ -1293,7 +1358,7 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                                 if notes else "")
                              + "If another change would avoid them, propose that instead. If they are expected"
                                " (for example new equipment that is not connected yet), propose the same"
-                               " operations again and say so in the explanation." + replacement_rules})
+                               " operations again and say so in the explanation." + rules("replace", replacement_rules)})
             continue
         vocab_refs = {op_term for op in cand.ops for op_term in _terms(op)}
         for iri in sorted(vocab_refs)[:10]:

@@ -244,6 +244,7 @@ class AgentRun(BaseModel):
     mode: Literal["assist", "reply", "reconsider", "build"] = "assist"
     parent_run_id: str | None = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
+    continued: bool = False  # continued the parent run's model conversation (else started fresh)
     provider: str
     model: str
     # How the model was asked: sampling (request_options), image support, context, timeout.

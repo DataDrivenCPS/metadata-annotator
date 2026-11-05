@@ -128,6 +128,17 @@ def request_query(project, rid, selection, instruction, prior_proposal=None) -> 
     return "\n".join(p for p in parts if p)
 
 
+def build_request(vocab) -> str:
+    """What a build from documents is asked to do. Drawings show flow as lines and arrows; without
+    being asked, models extracted only the equipment."""
+    return ("Build from the input sources in this batch: the equipment and unit processes, and the "
+            "connections between them. Each line or arrow joining two pieces of equipment in a drawing is "
+            "evidence of a connection: create_connection from the upstream equipment to the downstream one"
+            + (", with the medium it carries (browse_terms s223:Mix-Fluid lists them)" if vocab.family == "s223" else "")
+            + ". If a line's ends or direction are unclear, ask instead of guessing. Reconcile identifiers with "
+            "the pending draft and current model; avoid duplicates. Use reference facts to interpret inputs. ")
+
+
 def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, progress, cancel, agent):
     csv_ids = [r.source_id for r in regions if r.role == 'input' and project.source(r.source_id).kind == 'csv']
     # Indexed references are retrieved per input batch instead of being read in full.
@@ -188,8 +199,7 @@ def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, 
             text += "\n\n" + picture_text
         result = run_correction(
             project, llm, guidance, rid, SelectionScope(source_regions=batch),
-            "Build from the input sources in this batch. Reconcile identifiers with the pending draft and "
-            "current model; avoid duplicates. Use reference facts to interpret inputs. " + instruction,
+            build_request(project.vocab) + instruction,
             run_id, progress, cancel, prior_proposal=draft, build_from_sources=True, agent=agent,
             persist=False, document_context=(text + '\n\nCited facts from selected sources:\n' + notes,
                                               images, [*evidence, *batch_evidence]))

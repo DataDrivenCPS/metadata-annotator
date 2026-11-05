@@ -179,13 +179,59 @@ class AgentTools:
         """Modeling guidance from the BuildingMOTIF skill for one topic."""
         return self.guidance.topic(topic)
 
+    def search_sources(self, query: str, source: str | None = None) -> list[dict[str, Any]]:
+        """Passages of the uploaded documents (manuals, datasheets, drawings) matching ``query``."""
+        from ..retrieval import active
+        from ..retrieval.evidence import search_passages
+        indexer = active(self.project)
+        results, _ = search_passages(self.project, query, indexer.embedder if indexer else None, source or None)
+        return results
+
+    def view_source(self, observation_id: str | None = None, source: str | None = None, page: int | None = None,
+                    box: list[float] | None = None) -> tuple[dict[str, Any], bytes | None]:
+        """An image of a drawing or page region: the region behind a passage, or a page (and box) of
+        an uploaded PDF or image. Returns what was shown, and the PNG (None with an error)."""
+        from ..documents import region_png
+        from ..sources import SourceError
+        viewable = [s for s in self.project.sources() if s.kind in ("pdf", "image")]
+        if observation_id:
+            body = self.project.store.get_body("observations", observation_id)
+            if body is None:
+                return {"error": f"no observation {observation_id}"}, None
+            found = next((s for s in viewable if s.id == body["source_id"]), None)
+            if found is None:
+                return {"error": "that evidence is not from a PDF or image; use read_evidence"}, None
+            location, content = body.get("location") or {}, body.get("content") or {}
+            page = location.get("page") or page
+            box = (content.get("box_pt") if found.kind == "pdf" else location.get("bbox")) or box
+        else:
+            if not source:
+                return {"error": "give an observation_id, or a source (id or file name) and page"}, None
+            found = next((s for s in viewable if source in (s.id, s.filename)), None) or next(
+                (s for s in viewable if source.lower() in s.filename.lower()), None)
+            if found is None:
+                return {"error": f"no PDF or image {source!r}; viewable: "
+                                 + (", ".join(s.filename for s in viewable) or "none")}, None
+        if box is not None and (not isinstance(box, list) or len(box) != 4
+                                or not all(isinstance(v, (int, float)) for v in box)):
+            return {"error": "box must be [x, y, width, height]"}, None
+        try:
+            png, shown = region_png(self.project.source_file(found.id).read_bytes(), found.kind,
+                                    page if found.kind == "pdf" else None, box)
+        except SourceError as exc:
+            return {"error": str(exc)}, None
+        units = "PDF points" if found.kind == "pdf" else "pixels"
+        where = found.filename + (f", page {page or 1}" if found.kind == "pdf" else "")
+        return {"shown": where + (f", region {shown} ({units} from the top left)" if box else ", whole page"),
+                "note": "The image is attached to this message. Read labels exactly; say so if unreadable."}, png
+
     def read_evidence(self, observation_id: str) -> dict[str, Any]:
         """The source observation (point-list row, diagram label...) behind an entity."""
         body = self.project.store.get_body("observations", observation_id)
         return body or {"error": f"no observation {observation_id}"}
 
     @staticmethod
-    def catalog(family: str = "s223") -> str:
+    def catalog(family: str = "s223", search: bool = False, view: bool = False) -> str:
         kinds = (["equipment", "point_class", "location", "class", "relation", "unit", "quantity_kind"] if family == "brick"
                  else [k for k in AgentTools.KINDS if k != "point_class"])
         return (
@@ -198,5 +244,12 @@ class AgentTools:
                     " (an equipment's name lists its connection points too)")
             + "\nrelations_for(entity_id) - relations the vocabulary allows for an entity, and its current ones"
             + "\nread_evidence(observation_id) - the source record behind an entity"
+            + ("\nsearch_sources(query, source?) - passages of the uploaded documents (manuals, datasheets,"
+               " drawings) matching the query; source narrows to one file. Each passage has an observation_id"
+               " to cite in the evidence of operations it supports" if search else "")
+            + ("\nview_source(observation_id | source, page?, box?) - look at a drawing or page: the region"
+               " behind a source passage or label, or a page of an uploaded PDF or image, with box"
+               " [x, y, width, height] to zoom in (PDF points or image pixels from the top left)."
+               " Use it when the text of a drawing is not enough, e.g. to follow lines and arrows" if view else "")
             + "\nread_guidance(topic) - modeling guidance; topics: " + ", ".join(FAMILY_TOPICS[family])
         )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -21,10 +21,14 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 class ProviderConfig:
     name: str
     kind: Literal["openai", "anthropic", "litellm"]
-    model: str
+    # Empty for an OpenAI-compatible server (llama-server): use the model(s) it lists, chosen in
+    # the assistant panel as "<provider>/<model>".
+    model: str = ""
     base_url: str | None = None
     api_key_env: str | None = None
-    supports_images: bool = False
+    # Unset: asked per model (llama-server router and OpenRouter list input modalities, a
+    # single-model llama-server reports its projector, LiteLLM's catalog knows native routes).
+    supports_images: bool | None = None
     timeout_s: float = 300.0
     # Provider request fields for legacy kinds; LiteLLM SDK options for kind="litellm".
     request_options: dict = field(default_factory=dict)
@@ -37,10 +41,44 @@ class ProviderConfig:
     # False permits optional keys with providers that enforce OpenAI's strict schema subset.
     # Keep omission distinct from explicit null (graph updates use null to clear a field).
     strict_schema: bool = True
+    # Mark the system prompt and latest message for prompt caching (cached input is billed at a
+    # fraction). Unset: on for Claude (native, LiteLLM or OpenRouter) and Gemini on OpenRouter,
+    # which need explicit markers; OpenAI and llama.cpp cache repeated prefixes on their own.
+    prompt_cache: bool | None = None
+    # Settings for particular models of this provider ([llm.providers.<name>.models."<model>"]),
+    # applied when that model answers: request_options merge (the model's win), others replace.
+    models: dict[str, dict] = field(default_factory=dict)
+    # The provider's own settings, when this config is one of its models (see for_model).
+    provider_level: ProviderConfig | None = field(default=None, repr=False, compare=False)
 
     @property
     def api_key(self) -> str | None:
         return os.environ.get(self.api_key_env) if self.api_key_env else None
+
+    def for_model(self, model: str) -> ProviderConfig:
+        """This provider running ``model``, with that model's settings (and no other model's)."""
+        base = self.provider_level or self
+        own = base.models.get(model) or {}
+        options = _merged(base.request_options, own.get("request_options") or {})
+        return replace(base, **{**own, "request_options": options}, model=model, provider_level=base)
+
+    def run_settings(self) -> dict:
+        """What shapes this provider's answers, as recorded on each run."""
+        return {"request_options": self.request_options, "supports_images": self.supports_images,
+                "context_tokens": self.context_tokens, "timeout_s": self.timeout_s,
+                "prompt_cache": self.prompt_cache, "strict_schema": self.strict_schema}
+
+
+# Per-model settings may change how a model is asked, not which endpoint or credentials are used.
+MODEL_SETTINGS = {"supports_images", "timeout_s", "request_options", "concurrency", "context_tokens",
+                  "strict_schema", "prompt_cache"}
+
+
+def _merged(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for key, value in over.items():
+        out[key] = _merged(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict) else value
+    return out
 
 
 @dataclass
@@ -97,6 +135,66 @@ class AgentConfig:
 
 
 @dataclass
+class EmbeddingConfig:
+    """How source passages become vectors. ``fastembed`` runs a small ONNX model on the CPU in this
+    process (downloaded once into the data directory); ``openai`` calls any OpenAI-compatible
+    ``/embeddings`` endpoint, e.g. llama-server started with ``--embeddings``; ``none`` keeps
+    keyword search only."""
+
+    kind: Literal["fastembed", "openai", "none"] = "fastembed"
+    model: str = "BAAI/bge-small-en-v1.5"
+    base_url: str | None = None
+    api_key_env: str | None = None
+    batch_size: int = 32
+    timeout_s: float = 120.0
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("fastembed", "openai", "none"):
+            raise ValueError("retrieval.embedding.kind must be fastembed, openai or none")
+        if self.kind == "openai" and not self.base_url:
+            raise ValueError("retrieval.embedding.base_url is required for kind = \"openai\"")
+
+    @property
+    def api_key(self) -> str | None:
+        return os.environ.get(self.api_key_env) if self.api_key_env else None
+
+
+@dataclass
+class RetrievalConfig:
+    """Uploaded documents are parsed into passages and indexed when they are uploaded.
+
+    ``parser = "docling"`` uses Docling (layout, tables, OCR for scans and drawings) through a
+    docling-serve process the workbench installs into the data directory on first use and runs
+    on demand, or the one at ``docling_url``. ``basic`` reads only embedded text (no OCR, no
+    images). When Docling cannot be installed or started, text documents fall back to basic."""
+
+    enabled: bool = True
+    parser: Literal["docling", "basic"] = "docling"
+    docling_url: str | None = None
+    docling_api_key_env: str | None = None
+    docling_version: str = "1.38.2"
+    docling_idle_minutes: float = 10.0
+    # Pages sent to the parser per request: progress is reported, and kept, page batch by page batch.
+    pages_per_batch: int = 10
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    # Drawings and scans (images, PDF pages with little text or with a drawing) get one written
+    # description from a vision model when indexed, so search finds what they show. "auto": when
+    # the describing provider accepts images. The provider defaults to [llm] default.
+    describe: Literal["auto", "off"] = "auto"
+    describe_provider: str | None = None
+    describe_max_pages: int = 30  # per source: bounds the one-time cost of a large drawing set
+    describe_min_text: int = 200  # a PDF page with less embedded text than this counts as a scan
+
+    def __post_init__(self) -> None:
+        if isinstance(self.embedding, dict):
+            self.embedding = EmbeddingConfig(**self.embedding)
+        if self.parser not in ("docling", "basic"):
+            raise ValueError("retrieval.parser must be docling or basic")
+        if self.pages_per_batch < 1:
+            raise ValueError("retrieval.pages_per_batch must be at least 1")
+
+
+@dataclass
 class Settings:
     data_dir: Path
     profiles: dict[str, ProfileConfig]
@@ -113,6 +211,7 @@ class Settings:
     # [virtual.<id>] tables: extra or overriding virtual relations (see relations.py)
     virtual: dict[str, dict] = field(default_factory=dict)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
 
     @property
     def cache_dir(self) -> Path:
@@ -123,10 +222,16 @@ class Settings:
         return self.data_dir / "projects"
 
     def provider(self, name: str | None = None) -> ProviderConfig:
+        """A configured provider, or ``"<provider>/<model>"``: that provider with another of its
+        server's models (model ids may contain slashes too)."""
         key = name or self.default_provider
-        if key not in self.providers:
-            raise KeyError(f"unknown model provider {key!r}; configured: {sorted(self.providers)}")
-        return self.providers[key]
+        if key in self.providers:
+            cfg = self.providers[key]
+            return cfg.for_model(cfg.model) if cfg.model else cfg
+        base, _, model = key.partition("/")
+        if model and base in self.providers:
+            return self.providers[base].for_model(model)
+        raise KeyError(f"unknown model provider {key!r}; configured: {sorted(self.providers)}")
 
 
 DEFAULT_PROVIDERS = {
@@ -135,8 +240,6 @@ DEFAULT_PROVIDERS = {
     "local": {
         "kind": "openai",
         "base_url": "http://127.0.0.1:8081/v1",
-        "model": "local",
-        "supports_images": False,
     },
 }
 
@@ -169,7 +272,23 @@ def load_settings(path: str | Path | None = None) -> Settings:
     providers = {
         name: ProviderConfig(name=name, **table) for name, table in provider_tables.items()
     }
+    for name, cfg in providers.items():
+        if "/" in name:
+            raise ValueError(f"model provider name {name!r} cannot contain '/' (it separates a provider from its model)")
+        if not cfg.model and cfg.kind != "openai":
+            raise ValueError(f"model provider {name!r} needs a model; only OpenAI-compatible servers list their own")
+        for model, table in cfg.models.items():
+            if not isinstance(table, dict):
+                raise ValueError(f"[llm.providers.{name}.models.\"{model}\"] must be a table of settings")
+            if bad := sorted(set(table) - MODEL_SETTINGS):
+                raise ValueError(f"[llm.providers.{name}.models.\"{model}\"]: {', '.join(bad)} cannot be set per model "
+                                 f"(per-model settings: {', '.join(sorted(MODEL_SETTINGS))})")
     dist = resolve(wb.get("frontend_dist"), BACKEND_DIR.parent / "frontend" / "dist")
+    retrieval_table = dict(raw.get("retrieval", {}))
+    if os.environ.get("WORKBENCH_OFFLINE", "").lower() in ("1", "true", "yes"):
+        # Tests and CI: indexing installs, downloads and calls nothing (embedded text, keyword search).
+        retrieval_table |= {"parser": "basic", "describe": "off",
+                            "embedding": {**retrieval_table.get("embedding", {}), "kind": "none"}}
 
     return Settings(
         data_dir=resolve(os.environ.get("WORKBENCH_DATA_DIR") or wb.get("data_dir"),
@@ -186,4 +305,5 @@ def load_settings(path: str | Path | None = None) -> Settings:
         views={k: dict(v) for k, v in raw.get("views", {}).items()},
         virtual={k: dict(v) for k, v in raw.get("virtual", {}).items()},
         agent=AgentConfig(**raw.get("agent", {})),
+        retrieval=RetrievalConfig(**retrieval_table),
     )

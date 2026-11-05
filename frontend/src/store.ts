@@ -5,6 +5,7 @@ import {
   siblingOptions, threadRuns, unchosenOptions, type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
+import { providerOf } from './providers'
 import {
   emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
 } from './types'
@@ -46,6 +47,10 @@ interface State {
   /** Conversation items cleared locally, retained on the server for project history. */
   assistantCleared: { runs: string[]; proposals: string[] }
   provider: string | null
+  /** Models each provider's server listed at its last health check (providers without a configured model). */
+  providerModels: Record<string, string[]>
+  /** Whether each checked model choice reads images, as its server said (providers that do not configure it). */
+  modelVision: Record<string, boolean>
   toast: Toast | null
   busy: boolean
   sourcesVersion: number
@@ -81,13 +86,15 @@ interface State {
   redo: () => Promise<void>
   sendMessage: (text: string) => Promise<boolean>
   assist: (instruction: string, parentRunId?: string) => Promise<boolean>
-  replyToProposal: (instruction: string, parentRunId?: string) => Promise<boolean>
+  replyToProposal: (instruction: string, parentRunId?: string, retryLeftOut?: boolean) => Promise<boolean>
   startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>) => Promise<boolean>
   cancelRun: () => Promise<void>
   applyProposal: () => Promise<void>
   dismissProposal: () => Promise<void>
   regenerate: () => Promise<void>
   setProvider: (p: string) => void
+  setProviderModels: (name: string, models: string[]) => void
+  setModelVision: (choice: string, readsImages: boolean) => void
   handleEvent: (ev: { type: string; head?: string; summary?: string; run?: AgentRun }) => void
   notify: (t: Toast | null) => void
   startAutofix: (issues: ReviewIssue[]) => Promise<void>
@@ -134,9 +141,23 @@ function latestStartedRun(run: AgentRun, runs: Record<string, AgentRun>) {
 }
 
 /** The event stream can advance a run before its HTTP start response arrives. */
+/**
+ * Attached evidence belongs to the message it was sent with: once a message starts a run, the
+ * sources it carried leave the composer, so the next message does not read them again unless the
+ * person attaches them again. Not a selection change (it must not count as picking something).
+ */
+function detachSentEvidence(run: AgentRun) {
+  if (run.kind !== 'correction') return
+  const sent = new Set((run.selection?.source_regions ?? []).map((r) => r.source_id))
+  const { selection } = useStore.getState()
+  if (!sent.size || !selection.source_regions.some((r) => sent.has(r.source_id))) return
+  useStore.setState({ selection: { ...selection, source_regions: selection.source_regions.filter((r) => !sent.has(r.source_id)) } })
+}
+
 function acceptStartedRun(run: AgentRun, pid: string, project: number, request: number, clearProposal = false) {
   const state = useStore.getState()
   if (project !== projectGeneration || state.projectId !== pid) return false
+  detachSentEvidence(run)
   const latest = latestStartedRun(run, state.runs)
   if (request !== assistantGeneration) {
     useStore.setState({ runs: { ...state.runs, [run.id]: latest } })
@@ -174,6 +195,8 @@ export const useStore = create<State>((set, get) => ({
   assistantNoScope: false,
   assistantCleared: { runs: [], proposals: [] },
   provider: null,
+  providerModels: {},
+  modelVision: {},
   toast: null,
   busy: false,
   sourcesVersion: 0,
@@ -193,7 +216,10 @@ export const useStore = create<State>((set, get) => ({
   loadStatus: async () => {
     const status = await api.status()
     const def = status.providers.find((p) => p.default)
-    set({ status, provider: get().provider ?? def?.name ?? null })
+    // The choice made in the dropdown survives reloads while that provider is still configured.
+    const saved = localStorage.getItem('workbench.provider')
+    const remembered = saved && providerOf(saved, status.providers) ? saved : null
+    set({ status, provider: get().provider ?? remembered ?? def?.name ?? null })
   },
 
   openProject: async (id) => {
@@ -437,14 +463,15 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  replyToProposal: async (instruction, parentRunId) => {
+  replyToProposal: async (instruction, parentRunId, retryLeftOut = false) => {
     if (readOnly()) return false
     const { projectId, proposal, provider, selection } = get()
     if (!projectId || !proposal || proposal.status !== 'pending') return false
     const project = projectGeneration
     const request = ++assistantGeneration
     try {
-      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId, selection.source_regions)
+      const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId,
+        selection.source_regions, retryLeftOut)
       return acceptStartedRun(run, projectId, project, request)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false
@@ -559,14 +586,26 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  setProvider: (provider) => set({ provider }),
+  setModelVision: (choice, readsImages) => {
+    if (get().modelVision[choice] !== readsImages) set({ modelVision: { ...get().modelVision, [choice]: readsImages } })
+  },
+  setProviderModels: (name, models) => {
+    const known = get().providerModels[name]
+    if (known && known.length === models.length && known.every((m, i) => m === models[i])) return
+    set({ providerModels: { ...get().providerModels, [name]: models } })
+  },
+  setProvider: (provider) => {
+    if (provider) localStorage.setItem('workbench.provider', provider)
+    else localStorage.removeItem('workbench.provider')
+    set({ provider })
+  },
 
   handleEvent: (ev) => {
     const s = get()
     if (ev.type === 'revision' || ev.type === 'issues') {
       if (!s.model || ev.head !== s.model.head || ev.type === 'issues') void s.reload()
       if (ev.type === 'revision') set({ sourcesVersion: get().sourcesVersion + 1 })  // record status follows the model
-    } else if (ev.type === 'sources') {
+    } else if (ev.type === 'sources' || ev.type === 'source_index') {
       set({ sourcesVersion: s.sourcesVersion + 1 })
     } else if (ev.type === 'run' && ev.run) {
       const run = ev.run

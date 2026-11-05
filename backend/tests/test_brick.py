@@ -127,6 +127,18 @@ def test_updating_a_feed_removed_with_its_equipment_is_an_error_not_a_crash(bric
     p.build_candidate(p.head(), ops({"op": "delete_equipment", "id": eq.id}, {"op": "delete_connection", "id": cx.id}))
 
 
+def test_space_talk_is_read_from_the_vocabularys_space_classes(brick_project, vocab):
+    """A request names a space by its class's name (Brick's REC spaces), or by a general word
+    for where things are when the vocabulary has few space classes (WaTr); single words of
+    space labels ("electricity", "water") are not talk of spaces."""
+    brick = brick_project.vocab
+    assert brick.mentions_location("Put the AHU on the mezzanine level")
+    assert brick.mentions_location("Add the two server rooms") and brick.mentions_location("DataServerRoom")
+    assert not brick.mentions_location("Meter the electricity and water use of the chiller")
+    assert not brick.mentions_location("Add a level sensor to the tank")  # rec:Level, but also a sensor's word
+    assert vocab.mentions_location("The pumps are in the basement") and not vocab.mentions_location("Add a pump")
+
+
 def test_realestatecore_spaces_and_assets_are_indexed(brick_project):
     vocab = brick_project.vocab
     assert vocab.search("room", ["location"], 1)[0].iri == "https://w3id.org/rec#Room"

@@ -1,8 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
 import { continuation, threadRuns } from './assistant'
+import { api } from './api'
 
-vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn() })
+const stored = new Map<string, string>()
+vi.stubGlobal('localStorage', {
+  getItem: (key: string) => stored.get(key) ?? null,
+  setItem: vi.fn((key: string, value: string) => { stored.set(key, value) }),
+  removeItem: (key: string) => { stored.delete(key) },
+})
 const { useStore } = await import('./store')
 
 const completed = (dismissedId: string): AgentRun => ({
@@ -109,5 +115,47 @@ describe('refresh completion', () => {
     useStore.setState({ proposal: { id: 'new' } as Proposal })
     useStore.getState().handleEvent({ type: 'run', run: completed('old') })
     expect(useStore.getState().proposal?.id).toBe('new')
+  })
+})
+
+describe('provider choice', () => {
+  const status = (names: string[]) => ({ version: '', skill_version: '', data_dir: '',
+    providers: names.map((name, i) => ({ name, default: i === 0 })) }) as never
+
+  beforeEach(() => { stored.clear(); useStore.setState({ provider: null, status: null }) })
+
+  it('is remembered across reloads', async () => {
+    vi.spyOn(api, 'status').mockResolvedValue(status(['local', 'openrouter']))
+    useStore.getState().setProvider('openrouter')
+    useStore.setState({ provider: null })  // a fresh page
+    await useStore.getState().loadStatus()
+    expect(useStore.getState().provider).toBe('openrouter')
+  })
+
+  it('falls back to the default when the remembered provider is gone', async () => {
+    vi.spyOn(api, 'status').mockResolvedValue(status(['local']))
+    stored.set('workbench.provider', 'openrouter')
+    await useStore.getState().loadStatus()
+    expect(useStore.getState().provider).toBe('local')
+  })
+})
+
+describe('server model lists', () => {
+  it('remembers a model of a provider that lists its own', async () => {
+    stored.clear()
+    useStore.setState({ provider: null, status: null })
+    vi.spyOn(api, 'status').mockResolvedValue({ version: '', skill_version: '', data_dir: '',
+      providers: [{ name: 'local', default: true, lists_models: true }] } as never)
+    stored.set('workbench.provider', 'local/qwen3-vl-8b')
+    await useStore.getState().loadStatus()
+    expect(useStore.getState().provider).toBe('local/qwen3-vl-8b')
+  })
+
+  it('only updates the list when it changed', () => {
+    useStore.setState({ providerModels: {} })
+    useStore.getState().setProviderModels('local', ['a', 'b'])
+    const first = useStore.getState().providerModels
+    useStore.getState().setProviderModels('local', ['a', 'b'])
+    expect(useStore.getState().providerModels).toBe(first)
   })
 })

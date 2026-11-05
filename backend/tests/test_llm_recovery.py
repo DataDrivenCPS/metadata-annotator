@@ -66,8 +66,10 @@ def test_extra_json_retries_with_feedback_and_counts_usage(monkeypatch, kind):
     result = client(kind).complete_json("system", MESSAGES, SCHEMA)
     assert result.data == {"ok": True}
     assert (result.input_tokens, result.output_tokens) == (30, 13)
-    assert "Extra data" in requests[1]["messages"][-1]["content"]
-    assert "exactly one complete JSON object" in requests[1]["messages"][-1]["content"]
+    retry = requests[1]["messages"][-1]["content"]
+    retry = retry if isinstance(retry, str) else retry[-1]["text"]  # Claude's is marked for caching
+    assert "Extra data" in retry
+    assert "exactly one complete JSON object" in retry
     assert len(requests[0]["messages"]) == 2
     assert requests[0]["max_tokens"] == 32768
     assert MESSAGES == [{"role": "user", "content": "add sensors"}]
@@ -393,3 +395,43 @@ def test_real_litellm_native_gemini_route_translates_schema(monkeypatch):
     body = json.loads(requests[0].content)
     assert body["generationConfig"]["response_mime_type"] == "application/json"
     assert body["generationConfig"]["response_json_schema"] == SCHEMA
+
+
+# ------------------------------------------------------------- usage and caching
+
+def test_cached_input_is_recorded_and_missing_usage_is_estimated(monkeypatch):
+    from litellm.types.utils import Usage
+    usage = Usage(prompt_tokens=5000, completion_tokens=40, prompt_tokens_details={"cached_tokens": 4600})
+    fake_completion(monkeypatch, [[chunk('{"ok": true}', finish="stop", usage=usage)], [chunk('{"ok": true}', finish="stop")]])
+    llm = client()
+    reported = llm.complete_json("system", MESSAGES, SCHEMA)
+    assert (reported.input_tokens, reported.cached_tokens, reported.estimated) == (5000, 4600, False)
+    silent = llm.complete_json("system " * 300, MESSAGES, SCHEMA)  # an endpoint that omits usage
+    assert silent.estimated and silent.input_tokens > 500 and silent.output_tokens >= 1
+
+
+@pytest.mark.parametrize("kind,model,base_url,marked", [
+    ("anthropic", "claude-opus-5-5", None, True),
+    ("litellm", "anthropic/claude-sonnet-5-5", None, True),
+    ("openai", "anthropic/claude-sonnet-5-5", "https://openrouter.ai/api/v1", True),
+    ("openai", "google/gemma-4-26b-a4b-it", "https://openrouter.ai/api/v1", False),
+    ("openai", "local", "http://127.0.0.1:8081/v1", False),
+])
+def test_cache_markers_only_where_the_provider_needs_them(kind, model, base_url, marked):
+    llm = make_client(ProviderConfig(name="p", kind=kind, model=model, base_url=base_url))
+    messages = [{"role": "user", "content": "context"}, {"role": "assistant", "content": "{}"},
+                {"role": "user", "content": "result", "images": [ImageInput(data=b"png")]}]
+    llm.supports_images = True
+    sent = llm._params("system prompt", messages, SCHEMA, None, 100)["messages"]
+    markers = [part for m in sent if isinstance(m["content"], list) for part in m["content"] if "cache_control" in part]
+    if not marked:
+        assert markers == [] and sent[0]["content"] == "system prompt"
+        return
+    assert sent[0]["content"] == [{"type": "text", "text": "system prompt", "cache_control": {"type": "ephemeral"}}]
+    assert sent[-1]["content"][-1] == {"type": "text", "text": "result", "cache_control": {"type": "ephemeral"}}
+    assert len(markers) == 2 and isinstance(sent[1]["content"], str)  # earlier turns untouched
+
+
+def test_cache_markers_can_be_turned_off():
+    llm = make_client(ProviderConfig(name="p", kind="anthropic", model="claude-opus-5-5", prompt_cache=False))
+    assert llm._params("system", MESSAGES, SCHEMA, None, 100)["messages"][0]["content"] == "system"

@@ -6,6 +6,7 @@ from rdflib import URIRef
 
 from conftest import by_label
 from workbench.operations import OperationError, OperationList
+from workbench.projection import project as project_view
 from workbench.vocabulary import BRICK, REC, S223
 
 
@@ -95,3 +96,107 @@ def test_located_brick_equipment_adds_no_violations(workspace):
     ))
     after = {i.explanation for i in p.issues(rev.id) if i.severity == "violation"}
     assert after <= before, after - before
+
+
+def test_rejections_name_new_entities_as_written_and_say_when_one_is_the_wrong_kind(workspace):
+    """A build failed three times on 'contained_in refers to unknown equipment sp-…': the id was
+    minted for the model's own placeholder (new on every attempt) and the entity did exist, as a space."""
+    p = workspace.create("Sections", "watr")
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(p.head(), ops(
+            {"op": "create_space", "id": "new:pretreatment", "label": "Pretreatment", "type": "s223:PhysicalSpace"},
+            {"op": "create_equipment", "label": "Pump", "type": "s223:Pump", "contained_in": "new:pretreatment"},
+            {"op": "update_equipment", "id": "new:pretreatment", "label": "Pretreatment area"},
+            {"op": "create_equipment", "label": "Filter", "type": "s223:Pump", "contained_in": "new:missing"},
+        ))
+    assert caught.value.problems == [
+        "operation 2 (create_equipment): contained_in refers to equipment, but 'new:pretreatment' "
+        "(created by operation 1) is a space, not an equipment; to refer to a space, use location",
+        "operation 3 (update_equipment): 'new:pretreatment' (created by operation 1) is a space, "
+        "not an equipment; use update_space",
+        "operation 4 (create_equipment): contained_in refers to 'new:missing', but no operation creates "
+        "'new:missing'; give the create_equipment for it \"id\": \"new:missing\", before this operation, "
+        "or leave contained_in out",
+    ]
+
+
+def test_what_a_name_names_exactly_is_read_and_the_rest_says_what_to_do(workspace):
+    """Models (gemma-3-4b, qwen3-vl-8b, and larger ones) wrote labels where ids belong, bare or
+    wrongly prefixed term names, and references before the operation creating their target. Where
+    the name names exactly one thing, that is what it means; otherwise the problem says what to do."""
+    p = workspace.create("Labels", "watr")
+    p.edit(p.head(), ops({"op": "create_equipment", "id": "new:p", "label": "P-101 Feed Pump", "type": "s223:Pump"},
+                         {"op": "create_equipment", "label": "Tank A", "type": "watr:Tank"},
+                         {"op": "create_equipment", "label": "tank a", "type": "watr:Tank"}))
+    pump = next(e.id for e in p.view(p.head()).equipment if e.label == "P-101 Feed Pump")
+    cand = p.build_candidate(p.head(), ops(
+        {"op": "create_point", "label": "AIT-101", "equipment": "Sand Filter", "point_kind": "measurement",
+         "quantity_kind": "Concentration", "unit": "http://qudt.org/vocab/unit/mg/L"},
+        {"op": "create_equipment", "label": "Sand Filter", "type": "http://data.ashrae.org/standard223#Tank"},
+        {"op": "create_connection", "from_equipment": "p-101 feed pump", "to_equipment": "Sand Filter",
+         "medium": "s223:Fluid-Water"},
+    ))
+    view = project_view(cand.after, p.vocab)
+    sand = next(e for e in view.equipment if e.label == "Sand Filter")
+    assert sand.type.iri == "https://watermetadata.org/ontology/watr#Tank"
+    assert next(pt for pt in view.points if pt.label == "AIT-101").equipment.id == sand.id  # created after it, by label
+    assert {(c.from_equipment.id, c.to_equipment.id) for c in view.connections} == {(pump, sand.id)}  # type: ignore[union-attr]
+    assert cand.ops.readings == [  # type: ignore[attr-defined]  (in the order applied: the filter first)
+        "Sand Filter: type 'http://data.ashrae.org/standard223#Tank' was read as watr:Tank (Tank)",
+        "AIT-101: quantity_kind 'Concentration' was read as quantitykind:Concentration (Concentration)",
+        "AIT-101: unit 'http://qudt.org/vocab/unit/mg/L' was read as unit:MilliGM-PER-L (Milligram per Litre, mg/L)",
+    ]
+
+    tanks = sorted(e.id for e in p.view(p.head()).equipment if e.label.casefold() == "tank a")
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(p.head(), ops(
+            {"op": "create_equipment", "label": "Filter", "type": "Pump", "location": "Mechanical room 101"},
+            {"op": "create_point", "label": "LT-1", "equipment": "Tank A", "point_kind": "measurement"},
+            {"op": "update_equipment", "id": "eq-zzzzzz", "label": "Typo"},
+        ))
+    assert caught.value.problems == [
+        "operation 1 (create_equipment): location refers to 'Mechanical room 101', but nothing has the id or label "
+        "'Mechanical room 101'; to add a new space, create it first (create_space with \"id\": \"new:…\") and use "
+        "that id, or refer to one another operation creates by the \"new:…\" id it gives it, or leave location out",
+        "operation 1 (create_equipment): type 'Pump' is not a term in the loaded vocabulary",  # s223:Pump or watr:Pump
+        f"operation 2 (create_point): equipment refers to 'Tank A', but 'Tank A' is the label of 2 equipment "
+        f"entities ({tanks[0]!r}, {tanks[1]!r}); use the id of the one you mean",
+        "operation 3 (update_equipment): no equipment with id 'eq-zzzzzz'",  # an id: nearby ids are suggested
+    ]
+    assert caught.value.unknown_entities == [("eq-zzzzzz", "equipment")]
+
+
+def test_a_renamed_entity_goes_by_its_new_label_in_later_operations(workspace):
+    """An operation that renames something changes what later operations' labels name: the new
+    label names it, and the old one no longer does."""
+    p = workspace.create("Renames", "watr")
+    p.edit(p.head(), ops({"op": "create_equipment", "label": "Tank A", "type": "watr:Tank"}))
+    tank = p.view(p.head()).equipment[0].id
+    cand = p.build_candidate(p.head(), ops(
+        {"op": "update_equipment", "id": tank, "label": "Feed Tank"},
+        {"op": "create_point", "label": "LT-1", "equipment": "feed tank", "point_kind": "measurement"},
+    ))
+    assert next(pt for pt in project_view(cand.after, p.vocab).points if pt.label == "LT-1").equipment.id == tank
+    with pytest.raises(OperationError) as err:
+        p.build_candidate(p.head(), ops(
+            {"op": "update_equipment", "id": tank, "label": "Feed Tank"},
+            {"op": "create_point", "label": "LT-1", "equipment": "Tank A", "point_kind": "measurement"},
+        ))
+    assert err.value.failed == {1} and "'Tank A'" in err.value.problems[0]
+
+
+def test_checks_after_applying_also_name_new_entities_as_written(workspace, monkeypatch):
+    from workbench import operations
+
+    p = workspace.create("Loop", "watr")
+    real = operations.containment_cycles
+    monkeypatch.setattr(operations, "containment_cycles",  # report ids, as other post-apply checks do
+                        lambda pg, vocab, ids: [f"{i} would end up inside itself" for i in ids] if real(pg, vocab, ids) else [])
+    with pytest.raises(OperationError) as caught:
+        p.build_candidate(p.head(), ops(
+            {"op": "create_equipment", "id": "new:a", "label": "A", "type": "s223:Pump"},
+            {"op": "create_equipment", "id": "new:b", "label": "B", "type": "s223:Pump", "contained_in": "new:a"},
+            {"op": "update_equipment", "id": "new:a", "contained_in": "new:b"},
+        ))
+    assert sorted(caught.value.problems) == ["'new:a' (created by operation 1) would end up inside itself",
+                                             "'new:b' (created by operation 2) would end up inside itself"]

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  autofixCandidates, autofixProgress, autofixReport, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
-  owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
+  autofixCandidates, autofixProgress, autofixReport, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
+  leftOutSummary, owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
   startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
@@ -316,5 +316,39 @@ describe('chat choices and proposal ownership', () => {
         { label: 'a', proposal_id: 'q1' }, { label: 'b', proposal_id: 'q2' }] }] },
     ] } } })
     expect(unchosenOptions(af, { q1: 'applied', q2: 'dismissed' })).toEqual(['p1', 'p2'])
+  })
+})
+
+describe('callBreakdown', () => {
+  it('lists each model call with its step, cache reads, estimates, failures and cancellations', () => {
+    expect(callBreakdown(undefined)).toBeUndefined()
+    expect(callBreakdown([
+      { at: 'Asking anthropic (claude)', input_tokens: 5200, output_tokens: 310, cached_tokens: 4800 },
+      { at: '', input_tokens: 900, output_tokens: 40, estimated: true },
+      { at: 'Asking local', input_tokens: 0, output_tokens: 0, error: 'timed out' },
+      { at: 'Asking local', input_tokens: 0, output_tokens: 0, cancelled: true, unreported_input_tokens: 3000 },
+    ])!.split('\n')).toEqual([
+      '1. Asking anthropic (claude): 5,200 in (4,800 cached) + 310 out',
+      '2. model call: ~900 in + 40 out',
+      '3. Asking local: 0 in + 0 out (failed: timed out)',
+      '4. Asking local: cancelled, about 3,000 input tokens not reported',
+    ])
+  })
+})
+
+describe('document tool steps', () => {
+  it('names searches and views in plain words', () => {
+    const step = (message: string) => describeStep({ at: '', stage: 'tool', message, data: {} })
+    expect(step("search_sources(query='FIT-101 range')")).toBe('Searched the uploaded documents for “FIT-101 range”')
+    expect(step("view_source(source='OARO.png')")).toBe('Looked at “OARO.png”')
+  })
+})
+
+describe('leftOutSummary', () => {
+  it('names a left-out operation by what it would have made', () => {
+    expect(leftOutSummary({ op: 'create_point', id: 'new:p', label: 'FIT-101' })).toBe("create point 'FIT-101'")
+    expect(leftOutSummary({ op: 'update_equipment', id: 'eq-1a2b3c' })).toBe("update equipment 'eq-1a2b3c'")
+    expect(leftOutSummary({ op: 'relate', subject: 'eq-1', relation: 'x' })).toBe("relate 'eq-1'")
+    expect(leftOutSummary({})).toBe('operation')
   })
 })

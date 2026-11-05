@@ -1,4 +1,4 @@
-import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection, type TokenUsage } from './types'
+import { emptySelection, type AgentRun, type EntityChange, type ProgressEvent, type Proposal, type ReviewIssue, type Row, type Selection, type TokenUsage, type ModelCall } from './types'
 
 export type ProposalState = Proposal['status'] | 'superseded'
 
@@ -6,6 +6,19 @@ export type ProposalState = Proposal['status'] | 'superseded'
 export type Continuation = { kind: 'proposal' | 'questions' | 'conversation'; runId: string | null }
 
 export const isActive = (run: AgentRun) => run.status === 'queued' || run.status === 'running'
+
+/** One line per model call: what it was for and the tokens it used (shown on hover). */
+export function callBreakdown(calls: ModelCall[] | undefined): string | undefined {
+  if (!calls?.length) return undefined
+  return calls.map((call, i) => {
+    const tokens = call.cancelled
+      ? `cancelled, about ${(call.unreported_input_tokens ?? 0).toLocaleString()} input tokens not reported`
+      : `${call.estimated ? '~' : ''}${call.input_tokens.toLocaleString()} in`
+        + (call.cached_tokens ? ` (${call.cached_tokens.toLocaleString()} cached)` : '')
+        + ` + ${call.output_tokens.toLocaleString()} out`
+    return `${i + 1}. ${call.at || 'model call'}: ${tokens}${call.error ? ` (failed: ${call.error})` : ''}`
+  }).join('\n')
+}
 
 /** Merge persisted history with live run updates without counting a run twice. */
 export function tokenTotals(recorded: Record<string, TokenUsage>, runs: Record<string, AgentRun>): TokenUsage {
@@ -209,6 +222,8 @@ const TOOL_STEPS: Record<string, (arg: string) => string> = {
   relations_for: (a) => `Looked up the relations allowed for ${a}`,
   read_evidence: (a) => `Read source evidence ${a}`,
   read_guidance: (a) => `Read the modeling guidance on ${a}`,
+  search_sources: (a) => `Searched the uploaded documents for ${a}`,
+  view_source: (a) => `Looked at ${a}`,
 }
 
 /** A progress event in plain words: tool calls arrive as ``name(arg='value', ...)``. */
@@ -317,4 +332,10 @@ export function summarizeChanges(changes: EntityChange[], fieldLabel: (field: st
     return { id: c.entity_id, mark: MARKS[c.change], change: c.change, label: c.label, kind, detail,
              outside: !c.in_selection, overridesEdit: c.overrides_locked.length > 0 }
   })
+}
+
+/** "create_point 'FIT-101'": what a left-out operation would have done, by the name it gives. */
+export function leftOutSummary(op: Record<string, unknown>): string {
+  const name = ['label', 'id', 'subject'].map((k) => op[k]).find((v) => typeof v === 'string' && v)
+  return `${String(op.op ?? 'operation').replace(/_/g, ' ')}${name ? ` '${name}'` : ''}`
 }

@@ -33,6 +33,13 @@ ID_PREFIX = {"equipment": "eq", "point": "pt", "connection": "cx", "connection_p
              "entity": "en", "relationship": "rl"}
 
 
+def id_pattern(*kinds: str) -> str:
+    """A regular expression (without anchors) for the stable ids of these kinds of entity, as
+    ``new_id`` mints them and as imported or IRI-derived ones look."""
+    prefixes = sorted({ID_PREFIX[k] for k in kinds})
+    return (prefixes[0] if len(prefixes) == 1 else "(" + "|".join(prefixes) + ")") + "-[0-9a-z]+"
+
+
 def new_id(kind: str) -> str:
     return f"{ID_PREFIX[kind]}-{secrets.token_hex(3)}"
 

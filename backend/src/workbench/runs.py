@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from dataclasses import replace
 import threading
 import time
 import traceback
@@ -17,6 +18,8 @@ from .choices import chat_choices
 from .config import Settings
 from .events import EventBus
 from .llm import Cancelled, CancelToken, LLMError, make_client
+from .llm.endpoint import EndpointInfo, resolved_model
+from .llm.litellm_client import estimate_tokens
 from .project import Project, StaleRevision
 from .questions import readable_questions
 from .schemas import AgentRun, ChangeProposal, ProgressEvent, SelectionScope, SourceRegion, now
@@ -32,6 +35,7 @@ class ProviderUnavailable(Exception):
 MAX_HISTORY_TURNS = 12
 MAX_TURN_CHARS = 2000
 HEALTH_TTL_S = 60.0
+MAX_RECORDED_CALLS = 200  # per-call usage kept on a run's outcome
 
 
 def run_reply_text(run: AgentRun) -> str:
@@ -49,6 +53,26 @@ def run_reply_text(run: AgentRun) -> str:
     return "\n\n".join(p for p in parts if p).strip()
 
 
+def attachment_note(project: Project, run: AgentRun) -> str:
+    """What the person attached to a message, so later turns know it was read then (not now)."""
+    names = []
+    for region in (run.selection.source_regions if run.selection else []):
+        try:
+            source = project.source(region.source_id)
+        except KeyError:
+            continue
+        pages = region.pages
+        if pages and source.kind == "pdf" and len(pages) < (source.page_count or 0):
+            span = f"page {pages[0]}" if len(pages) == 1 else f"pages {min(pages)}–{max(pages)}" if (
+                max(pages) - min(pages) + 1 == len(pages)) else f"{len(pages)} pages"
+            names.append(f"{source.filename}, {span}")
+        else:
+            names.append(source.filename)
+    if not names or run.mode == "build":
+        return ""
+    return f"\n(Attached to this message and read then: {'; '.join(dict.fromkeys(names))}.)"
+
+
 class RunManager:
     def __init__(self, settings: Settings, guidance: SkillGuidance, bus: EventBus):
         self.settings = settings
@@ -63,25 +87,39 @@ class RunManager:
 
     def provider_health(self, cfg, fresh: bool = False) -> dict:
         """The endpoint's health; a recent good result is reused so starting a run is not a round trip."""
+        key = f"{cfg.name}/{cfg.model}"  # a server may offer several models; each is checked on its own
         with self._lock:
-            hit = self._health.get(cfg.name)
+            hit = self._health.get(key)
         if not fresh and hit and hit[1].get("ok") and time.monotonic() - hit[0] < HEALTH_TTL_S:
             return hit[1]
         health = make_client(cfg).health()  # type: ignore[attr-defined]
         with self._lock:
-            self._health[cfg.name] = (time.monotonic(), health)
+            self._health[key] = (time.monotonic(), health)
         return health
 
-    def ensure_reachable(self, cfg) -> None:
-        """Fail fast instead of starting a run that cannot reach its model."""
-        if cfg.kind == "openai":
-            health = self.provider_health(cfg)
-            if not health["ok"]:
-                raise ProviderUnavailable(health["detail"])
+    def choose(self, cfg):
+        """``cfg`` with the model that will actually answer, checking the endpoint is reachable.
+
+        A server that lists its own models (``model`` unset, or a single loaded model whatever
+        name is asked for) reports which one runs, so the run records what produced it.
+        """
+        if cfg.kind != "openai":
+            return replace(cfg, supports_images=EndpointInfo(cfg).supports_images())  # known without asking
+        health = self.provider_health(cfg)
+        if not health["ok"]:
+            raise ProviderUnavailable(health["detail"])
+        cfg = resolved_model(cfg, health.get("models") or [])
+        if cfg.supports_images is None:  # what the server says about the model that will answer
+            cfg = replace(cfg, supports_images=bool(health.get("supports_images")))
+        if cfg.context_tokens is None and health.get("context_tokens"):  # recorded with the run
+            cfg = replace(cfg, context_tokens=health["context_tokens"])
+        return cfg
 
     def _forget_health(self, provider: str) -> None:
+        """Drop the provider's cached checks, for every model of it."""
         with self._lock:
-            self._health.pop(provider, None)
+            for key in [k for k in self._health if k == provider or k.startswith(f"{provider}/")]:
+                self._health.pop(key)
 
     def supersede(self, project: Project, proposal_id: str | None) -> None:
         """A new request replaces the proposal the person had open: it is closed, not left pending."""
@@ -126,18 +164,44 @@ class RunManager:
                 return getattr(client, name)
 
             def complete_json(self, *args, **kwargs):
+                at = run.progress[-1].message[:120] if run.progress else ""  # what the call was for
                 try:
                     result = client.complete_json(*args, **kwargs)
                 except LLMError as exc:
-                    record(exc)
+                    record(exc, at, error=str(exc)[:120])
                     raise
-                record(result)
+                except Cancelled:
+                    # Usage arrives at the end of a reply, so a cancelled call reports none; the
+                    # provider still bills the prompt. Its estimate is noted, not counted.
+                    system = args[0] if args else kwargs.get("system", "")
+                    messages = args[1] if len(args) > 1 else kwargs.get("messages", [])
+                    record(None, at, cancelled=estimate_tokens(system, messages, kwargs.get("images")))
+                    raise
+                record(result, at)
                 return result
 
-        def record(result):
+        def record(result, at: str, *, error: str | None = None, cancelled: int | None = None):
+            call: dict = {"at": at, "input_tokens": getattr(result, "input_tokens", 0),
+                          "output_tokens": getattr(result, "output_tokens", 0)}
+            if getattr(result, "cached_tokens", 0):
+                call["cached_tokens"] = result.cached_tokens
+            if getattr(result, "estimated", False):
+                call["estimated"] = True
+            if error:
+                call["error"] = error
+            if cancelled is not None:
+                call["cancelled"] = True
+                call["unreported_input_tokens"] = cancelled
             with usage_lock:
                 for key in ("input_tokens", "output_tokens"):
-                    run.outcome[key] = run.outcome.get(key, 0) + getattr(result, key, 0)
+                    run.outcome[key] = run.outcome.get(key, 0) + call[key]
+                if call.get("cached_tokens"):
+                    run.outcome["cached_tokens"] = run.outcome.get("cached_tokens", 0) + call["cached_tokens"]
+                if call.get("estimated"):
+                    run.outcome["estimated"] = True
+                calls = run.outcome.setdefault("calls", [])
+                if len(calls) < MAX_RECORDED_CALLS:
+                    calls.append(call)
                 manager.save(project, run)
 
         return TrackedClient()
@@ -149,7 +213,8 @@ class RunManager:
         parent = self.get(project, parent_run_id)
         if parent.status in ("queued", "running"):
             raise ValueError(f"run {parent_run_id} has not finished")
-        turns = [*parent.conversation, {"role": "user", "text": parent.instruction},
+        note = attachment_note(project, parent)
+        turns = [*parent.conversation, {"role": "user", "text": parent.instruction[:MAX_TURN_CHARS - len(note)] + note},
                  {"role": "assistant", "text": run_reply_text(parent)}]
         return [{"role": t["role"], "text": t["text"][:MAX_TURN_CHARS]} for t in turns if t["text"]][-MAX_HISTORY_TURNS:]
 
@@ -164,7 +229,8 @@ class RunManager:
         return inherited.model_copy(update={
             "entity_ids": [i for i in inherited.entity_ids if i in live],
             "relationship_ids": [i for i in inherited.relationship_ids if i in live],
-            "source_regions": selection.source_regions or inherited.source_regions,
+            # Attached sources belong to the message they came with; a follow-up reads only its own.
+            "source_regions": selection.source_regions,
         })
 
     def recover(self, project: Project) -> None:
@@ -179,6 +245,21 @@ class RunManager:
 
     # ------------------------------------------------------------------ runs
 
+    def _launch(self, project: Project, cfg, work: Callable, supersedes: str | None = None,
+                **fields) -> AgentRun:
+        """Record a run on ``cfg``'s model and start it: ``work(llm, run_id, progress, token)``
+        does the task with a client that records its calls on the run."""
+        run = AgentRun(id=f"run-{secrets.token_hex(4)}", provider=cfg.name, model=cfg.model,
+                       model_settings=cfg.run_settings(), skill_version=self.guidance.version, **fields)
+        token = CancelToken()
+        with self._lock:
+            self.tokens[run.id] = token
+        self.supersede(project, supersedes)
+        self.save(project, run)
+        self.pool.submit(self._execute, project, run, token,
+                         lambda progress: work(self.tracked_client(cfg, project, run), run.id, progress, token))
+        return run
+
     def start_correction(self, project: Project, base: str, selection: SelectionScope,
                          instruction: str, provider: str | None = None,
                          parent_run_id: str | None = None, inherit_selection: bool = True,
@@ -188,24 +269,13 @@ class RunManager:
         history = self.history(project, parent_run_id)
         if inherit_selection:
             selection = self.continued_selection(project, parent_run_id, selection)
-        cfg = self.settings.provider(provider)
-        self.ensure_reachable(cfg)
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
-            selection=selection, instruction=instruction, parent_run_id=parent_run_id,
-            conversation=history, provider=cfg.name, model=cfg.model,
-            skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.supersede(project, supersedes_proposal_id)
-        self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_with_evidence(
-                             project, self.tracked_client(cfg, project, run), self.guidance, base, selection,
-                             instruction, run.id, progress, token, history=history, agent=self.settings.agent))
-        return run
+        return self._launch(
+            project, self.choose(self.settings.provider(provider)),
+            lambda llm, rid, progress, token: run_with_evidence(
+                project, llm, self.guidance, base, selection, instruction, rid, progress, token,
+                history=history, agent=self.settings.agent),
+            supersedes_proposal_id, kind="correction", input_revision=base, selection=selection,
+            instruction=instruction, parent_run_id=parent_run_id, conversation=history)
 
     def start_autofix(self, project: Project, base: str, issue_ids: list[str],
                       provider: str | None = None) -> AgentRun:
@@ -214,21 +284,11 @@ class RunManager:
 
         if base != project.head():
             raise StaleRevision(base, project.head())
-        cfg = self.settings.provider(provider)
-        self.ensure_reachable(cfg)
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="autofix", input_revision=base,
-            instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)", provider=cfg.name, model=cfg.model,
-            skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_autofix(project, self.tracked_client(cfg, project, run), self.guidance, issue_ids or None,
-                                                      run.id, progress, token, agent=self.settings.agent))
-        return run
+        return self._launch(
+            project, self.choose(self.settings.provider(provider)),
+            lambda llm, rid, progress, token: run_autofix(project, llm, self.guidance, issue_ids or None, rid,
+                                                          progress, token, agent=self.settings.agent),
+            kind="autofix", input_revision=base, instruction=f"Auto-fix {len(issue_ids) or 'all open'} issue(s)")
 
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
                     provider: str | None = None, source_pages: dict[str, list[int]] | None = None,
@@ -262,39 +322,31 @@ class RunManager:
         if selection:
             from .documents import validate_regions
             validate_regions(project, selection.source_regions, batched=True)
-        cfg = self.settings.provider(provider)
-        if documents and any(source.kind == "image" for source in sources) and not (
-            cfg.supports_images or cfg.kind == "anthropic"
-        ):
-            raise SourceError("Choose a vision-capable model in the assistant panel to read images.")
-        self.ensure_reachable(cfg)
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="build", mode="build", input_revision=base, source_ids=source_ids,
-            selection=selection, instruction=instruction, provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.supersede(project, supersedes_proposal_id)
-        self.save(project, run)
+        cfg = self.choose(self.settings.provider(provider))
+        if documents and any(source.kind == "image" for source in sources) and not cfg.supports_images:
+            raise SourceError(f"{cfg.model or cfg.name} does not read images; choose a vision-capable model "
+                              "in the assistant panel.")
         if documents:
-            self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_source_build(
-                                 project, self.tracked_client(cfg, project, run), self.guidance, base,
-                                 selection.source_regions, instruction, run.id, progress, token, self.settings.agent))
+            def work(llm, rid, progress, token):
+                return run_source_build(project, llm, self.guidance, base, selection.source_regions, instruction,
+                                        rid, progress, token, self.settings.agent)
         else:
-            self.pool.submit(self._execute, project, run, token,
-                             lambda progress: run_build(project, self.tracked_client(cfg, project, run), self.guidance, base, source_ids,
-                                                        instruction, run.id, progress, token))
-        return run
+            def work(llm, rid, progress, token):
+                return run_build(project, llm, self.guidance, base, source_ids, instruction, rid, progress, token)
+        return self._launch(project, cfg, work, supersedes_proposal_id, kind="build", mode="build",
+                            input_revision=base, source_ids=source_ids, selection=selection, instruction=instruction)
 
     def start_revision(self, project: Project, proposal: ChangeProposal, instruction: str,
                        provider: str | None = None, reconsider: bool = False,
                        parent_run_id: str | None = None,
-                       source_regions: list[SourceRegion] | None = None) -> AgentRun:
-        """Continue a pending proposal or reconsider it against the latest revision."""
+                       source_regions: list[SourceRegion] | None = None,
+                       retry_left_out: bool = False) -> AgentRun:
+        """Continue a pending proposal or reconsider it against the latest revision.
+        ``retry_left_out``: the reply asks for the operations the proposal left out again."""
         if proposal.status != "pending" and not (reconsider and proposal.status == "stale"):
             raise ValueError(f"proposal is {proposal.status}")
+        if retry_left_out and (reconsider or not proposal.left_out):
+            raise ValueError("the proposal left out no operations to try again")
         history = self.history(project, parent_run_id or proposal.agent_run_id) if not reconsider else []
         base = project.head()
         if not reconsider and proposal.base_revision != base:
@@ -308,26 +360,15 @@ class RunManager:
                 "entity_ids": [i for i in selection.entity_ids if i in live],
                 "relationship_ids": [i for i in selection.relationship_ids if i in live],
             })
-        cfg = self.settings.provider(provider)
-        self.ensure_reachable(cfg)
-        run = AgentRun(
-            id=f"run-{secrets.token_hex(4)}", kind="correction", input_revision=base,
-            mode="reconsider" if reconsider else "reply",
+        return self._launch(
+            project, self.choose(self.settings.provider(provider)),
+            lambda llm, rid, progress, token: run_with_evidence(
+                project, llm, self.guidance, base, selection, instruction, rid, progress, token,
+                prior_proposal=proposal, reconsider=reconsider, history=history,
+                agent=self.settings.agent, retry_left_out=retry_left_out),
+            kind="correction", input_revision=base, mode="reconsider" if reconsider else "reply",
             parent_run_id=None if reconsider else (parent_run_id or proposal.agent_run_id),
-            selection=selection, instruction=instruction, conversation=history,
-            provider=cfg.name, model=cfg.model, skill_version=self.guidance.version,
-        )
-        token = CancelToken()
-        with self._lock:
-            self.tokens[run.id] = token
-        self.save(project, run)
-        self.pool.submit(self._execute, project, run, token,
-                         lambda progress: run_with_evidence(
-                             project, self.tracked_client(cfg, project, run), self.guidance, base,
-                             selection, instruction, run.id, progress, token,
-                             prior_proposal=proposal, reconsider=reconsider, history=history,
-                             agent=self.settings.agent))
-        return run
+            selection=selection, instruction=instruction, conversation=history)
 
     def cancel(self, project: Project, run_id: str) -> AgentRun:
         with self._lock:
@@ -370,6 +411,7 @@ class RunManager:
                 "steps": getattr(outcome, "steps", 0),
                 "input_tokens": run.outcome.get("input_tokens", getattr(outcome, "input_tokens", 0)),
                 "output_tokens": run.outcome.get("output_tokens", getattr(outcome, "output_tokens", 0)),
+                **{key: run.outcome[key] for key in ("cached_tokens", "estimated", "calls") if key in run.outcome},
                 **({"autofix": outcome.autofix} if hasattr(outcome, "autofix") else {}),
             }
             run.status = "succeeded"

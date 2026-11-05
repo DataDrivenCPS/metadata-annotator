@@ -86,9 +86,13 @@ describe('auto-fix', () => {
     expect(api.undo).not.toHaveBeenCalled()
   })
 
-  it('links from the chat open the Pending edits tab on that card', () => {
-    useStore.getState().showPending('prop-7')
-    expect(useStore.getState()).toMatchObject({ tab: 'pending', pendingFocus: 'prop-7' })
+  it('links from the chat open the Pending edits tab on that card, unfolded', () => {
+    useStore.setState({ runs: { 'run-af': report() }, pendingCollapsed: [] })
+    useStore.getState().togglePending('prop-a')
+    useStore.getState().togglePending('prop-r')
+    expect(useStore.getState().pendingCollapsed).toEqual(['prop-a', 'prop-r'])
+    useStore.getState().showPending('prop-b')  // another option of prop-a's choice: the same card
+    expect(useStore.getState()).toMatchObject({ tab: 'pending', pendingFocus: 'prop-b', pendingCollapsed: ['prop-r'] })
   })
 })
 

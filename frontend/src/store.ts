@@ -33,6 +33,9 @@ interface State {
   pendingEdits: Proposal[]
   /** The card the Pending edits tab scrolls to and highlights (set by links from the chat). */
   pendingFocus: string | null
+  /** Pending edits cards folded to their header (by the card's first proposal id). */
+  pendingCollapsed: string[]
+  togglePending: (cardId: string) => void
   /** Repair-engine detail per issue id, for the revision named (loaded in the background). */
   repairs: { revision: string; byIssue: Record<string, IssueRepair> } | null
   assistantDraft: string
@@ -196,6 +199,7 @@ export const useStore = create<State>((set, get) => ({
   proposalStates: {},
   pendingEdits: [],
   pendingFocus: null,
+  pendingCollapsed: [],
   repairs: null,
   assistantDraft: '',
   assistantSending: null,
@@ -722,7 +726,11 @@ export const useStore = create<State>((set, get) => ({
       : { kind: 'info', text: 'Nothing to undo: the model has changed since the automatic fixes' })
   },
 
-  showPending: (proposalId) => set({ tab: 'pending', pendingFocus: proposalId ?? null }),
+  showPending: (proposalId) => set((s) => ({ tab: 'pending', pendingFocus: proposalId ?? null,
+    // the card a link points at unfolds (a choice's card is keyed by its first option)
+    pendingCollapsed: proposalId ? s.pendingCollapsed.filter((id) => !sameCard(s, id, proposalId)) : s.pendingCollapsed })),
+  togglePending: (cardId) => set((s) => ({ pendingCollapsed: s.pendingCollapsed.includes(cardId)
+    ? s.pendingCollapsed.filter((id) => id !== cardId) : [...s.pendingCollapsed, cardId] })),
 
   viewRevision: async (viewing) => {
     if (viewing && get().autofix) set({ autofix: null })
@@ -730,6 +738,11 @@ export const useStore = create<State>((set, get) => ({
     await get().reload()
   },
 }))
+
+/** Whether two proposals share a Pending edits card (the same proposal, or options of one choice). */
+function sameCard(s: State, a: string, b: string) {
+  return a === b || siblingOptions(s.runs, a).includes(b)
+}
 
 /** True (with a notice) while an earlier revision is being browsed: nothing may change then. */
 function readOnly() {

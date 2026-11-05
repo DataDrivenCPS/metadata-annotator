@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .build import BuildOutcome, run_build
-from .correction import run_correction
+from .correction import new_blocks, run_correction
 from .. import retrieval
 from ..documents import source_batches, source_context
 from ..llm import ImageInput, LLMError, context_window, reply_tokens
@@ -265,6 +265,7 @@ def run_with_evidence(project, llm, guidance, rid, selection, instruction, run_i
             result.proposal.selection.source_regions = list(regions.values())
         if context and result.proposal.build_summary is not None:
             previous = result.proposal.build_summary.get('source_notes', '')
-            result.proposal.build_summary['source_notes'] = previous + '\n' + context
+            added = new_blocks(context, previous)  # a passage read again is kept once
+            result.proposal.build_summary['source_notes'] = '\n\n'.join(t for t in (previous, added) if t)
         project._put_proposal(result.proposal)
     return result

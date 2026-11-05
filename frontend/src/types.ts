@@ -143,6 +143,9 @@ export interface ModelCall {
   estimated?: boolean; error?: string; cancelled?: boolean; unreported_input_tokens?: number
 }
 
+/** Whether the model changed since a run answered, in ways its conversation does not know (backend continuation.py). */
+export interface RunChanges { changed: boolean; summary: string; continuable: boolean }
+
 export interface AgentRun {
   id: string; kind: string; input_revision: string; selection: Selection | null
   instruction: string; provider: string; model: string; skill_version: string
@@ -152,6 +155,8 @@ export interface AgentRun {
   mode?: 'assist' | 'reply' | 'reconsider' | 'build'
   parent_run_id?: string | null
   conversation?: { role: 'user' | 'assistant'; text: string }[]
+  /** Continued the parent run's model conversation (else a fresh one with the current model). */
+  continued?: boolean
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   progress: ProgressEvent[]
   outcome: { proposal_id?: string | null; dismissed_proposal_id?: string | null; questions?: string[]; explanation?: string; steps?: number; input_tokens?: number; output_tokens?: number

@@ -112,7 +112,7 @@ def test_runs_record_the_model_that_answers(tmp_path, monkeypatch):
         manager.pool.shutdown()
 
 
-def test_the_panel_is_offered_the_list_only_for_providers_without_a_model(tmp_path, monkeypatch):
+def test_the_panel_is_offered_the_list_only_for_providers_without_a_model(tmp_path, monkeypatch, registry):
     from fastapi.testclient import TestClient
 
     from workbench.api import create_app
@@ -122,7 +122,7 @@ def test_the_panel_is_offered_the_list_only_for_providers_without_a_model(tmp_pa
                                        'base_url = "https://router.example/v1"\n')
     monkeypatch.setattr("workbench.runs.make_client", lambda cfg: SimpleNamespace(
         health=lambda: {"ok": True, "model": cfg.model or "gemma", "models": ["gemma", "a/b"]}))
-    app = create_app(settings)
+    app = create_app(settings, registry)
     try:
         api = TestClient(app)
         providers = {p["name"]: p for p in api.get("/api/status").json()["providers"]}

@@ -618,9 +618,9 @@ def test_source_build_retry_repeats_equipment_and_ports_after_rejection(workspac
 
     def full_retry(messages):
         feedback = messages[-1]["content"]
-        assert "has NOT been applied" in feedback
-        assert "COMPLETE replacement operation list" in feedback
-        assert "every required create operation" in feedback
+        # The second repair: the rules were given with the first, but not what this answer came to.
+        assert "has NOT been applied" in feedback and "COMPLETE replacement operation list" in feedback
+        assert "rules for a corrected answer given earlier still apply" in feedback
         assert p.head() == base and not p.view(base).equipment
         return {"action": "propose", "operations": [*create, connect]}
 
@@ -1086,3 +1086,79 @@ def test_trace_and_issues_for_are_offered(sample_project, guidance):
     assert any(shape["properties"].get("direction", {}).get("enum") == ["downstream", "upstream", "both"]
                for shape in schema["properties"]["args"]["anyOf"])
     assert "trace(entity_id, direction?, depth?)" in llm.systems[0]
+
+
+def test_the_rules_for_a_correction_are_given_once_per_conversation(sample_project, guidance):
+    """Each repair re-sent the same paragraph of rules; the conversation already holds them."""
+    p = sample_project
+
+    def bad(n):  # wrong differently each time, so the repairs go on
+        return {"action": "propose", "operations": [{"op": "update_point", "id": f"pt-nope{n}", "label": "x"}]}
+    llm = ScriptedLLM([bad(1), bad(2), {"action": "propose", "operations": []}])
+    run_correction(p, llm, guidance, p.head(), SelectionScope(), "rename", None, lambda *_: None, CancelToken(),
+                   agent=AgentConfig(max_steps=1, max_repairs=3))
+    first, second = llm.seen[1][-1]["content"], llm.seen[2][-1]["content"]
+    assert "every required create operation" in first and "every required create operation" not in second
+    assert "rules for a corrected answer given earlier still apply" in second
+
+
+def test_a_reply_to_a_proposal_does_not_repeat_what_the_conversation_says(sample_project, guidance):
+    p = sample_project
+    ct = by_label(p.view(p.head()).points, "CT-201")
+    sel = SelectionScope(entity_ids=[ct.id])
+    first = ScriptedLLM([{"action": "propose", "explanation": "Renamed CT-201 for clarity.",
+                          "operations": [{"op": "update_point", "id": ct.id, "label": "CT-201 conductivity"}]}])
+    prop = run(p, first, guidance, sel, "Rename CT-201")[0].proposal
+    nothing = {"action": "propose", "explanation": "ok", "operations": []}
+
+    def reply(history):
+        llm = ScriptedLLM([nothing])
+        run_correction(p, llm, guidance, p.head(), sel, "also fix its unit", None, lambda *_: None, CancelToken(),
+                       prior_proposal=prop, history=history)
+        return llm.seen[0][0]["content"]
+    told = reply([{"role": "user", "text": "Rename CT-201"},
+                  {"role": "assistant", "text": "Renamed CT-201 for clarity.\n\n(Proposed change.)"}])
+    assert "Original request:" not in told and "Assistant explanation:" not in told
+    assert told.count("Renamed CT-201 for clarity.") == 1
+    alone = reply(None)  # no conversation to carry them: the proposal block says them
+    assert "Original request: Rename CT-201" in alone and "Assistant explanation: Renamed CT-201" in alone
+
+
+def test_new_blocks_keeps_only_passages_not_already_sent():
+    from workbench.agent.correction import new_blocks
+    a = "Source evidence obs-1: manual p.2\nThe pump is P-101."
+    b = "Source evidence obs-2: manual p.3\nThe tank is TK-101."
+    assert new_blocks(f"{a}\n\n{b}", f"Request...\n\n{a}\n") == b
+    assert new_blocks(a, "") == a and new_blocks("", "x") == ""
+
+
+def test_a_conversation_that_no_longer_fits_starts_fresh(sample_project, guidance):
+    p = sample_project
+    llm = ScriptedLLM([{"action": "propose", "explanation": "ok", "operations": []}])
+    huge = {"system": "old system", "messages": [{"role": "user", "content": "x" * 400_000}],
+            "results": [], "evidence": [], "note": ""}
+    events = []
+    out = run_correction(p, llm, guidance, p.head(), SelectionScope(), "inspect", None,
+                         lambda *e: events.append(e), CancelToken(), continues=huge)
+    assert any(stage == "fresh" for stage, _, _ in events)
+    assert len(llm.seen[0]) == 1 and llm.systems[0] != "old system" and "Request: inspect" in llm.seen[0][0]["content"]
+    assert out.state["messages"] is not None
+
+
+def test_a_continued_turn_carries_its_own_attachments_and_new_rules(sample_project, guidance):
+    from workbench.llm import ImageInput
+    p = sample_project
+    llm = ScriptedLLM([{"action": "propose", "explanation": "ok", "operations": []}])
+    llm.supports_images = True
+    earlier = {"system": "old system", "messages": [{"role": "user", "content": "Request: first"},
+                                                    {"role": "assistant", "content": "{}"}],
+               "results": [], "evidence": [], "note": "Since your last reply:\n- nothing"}
+    run_correction(p, llm, guidance, p.head(), SelectionScope(), "look at this", None, lambda *_: None,
+                   CancelToken(), continues=earlier,
+                   document_context=("Source evidence obs-1: a drawing", [ImageInput(data=b"png")], []))
+    sent = llm.seen[0]
+    assert llm.systems[0] == "old system" and sent[:2] == earlier["messages"]
+    turn = sent[-1]
+    assert turn["content"].startswith("Since your last reply:") and "Request: look at this" in turn["content"]
+    assert "For this turn:" in turn["content"] and "evidence only" in turn["content"]  # the source rule, said here
+    assert turn.get("images") and "Source evidence obs-1" in turn["content"]

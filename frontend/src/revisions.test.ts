@@ -201,6 +201,23 @@ describe('starting assistant runs', () => {
     await vi.waitFor(() => expect(useStore.getState().proposal?.id).toBe('new'))
   })
 
+  it('sends the choice to start fresh with the next message only', async () => {
+    const parent = { id: 'parent', kind: 'correction', status: 'succeeded', outcome: {}, created_at: '1' } as AgentRun
+    useStore.setState({ runs: { parent }, assistantFresh: true })
+    vi.mocked(api.assist).mockResolvedValue({ id: 'next', kind: 'correction', status: 'queued', outcome: {}, created_at: '2' } as AgentRun)
+    await useStore.getState().assist('Go on', 'parent')
+    expect(vi.mocked(api.assist).mock.calls[0][8]).toBe(true)
+    expect(useStore.getState().assistantFresh).toBe(false)
+    await useStore.getState().assist('A new request')  // no parent: nothing to continue or start fresh from
+    expect(vi.mocked(api.assist).mock.calls[1][8]).toBe(false)
+
+    useStore.setState({ assistantFresh: true, proposal: { id: 'old', status: 'pending', base_revision: 'rev-3' } as Proposal })
+    vi.mocked(api.replyToProposal).mockResolvedValue({ id: 'r', kind: 'correction', status: 'queued', outcome: {}, created_at: '3' } as AgentRun)
+    await useStore.getState().replyToProposal('Change it', 'parent')
+    expect(vi.mocked(api.replyToProposal).mock.calls[0][7]).toBe(true)
+    expect(useStore.getState().assistantFresh).toBe(false)
+  })
+
   it('keeps the latest requested run active when start responses arrive out of order', async () => {
     const pending = deferred<AgentRun>()
     vi.mocked(api.assist).mockReturnValueOnce(pending.promise)

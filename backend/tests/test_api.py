@@ -1,6 +1,5 @@
 """API smoke tests: the HTTP layer maps service errors correctly and round-trips edits."""
 
-import shutil
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -15,16 +14,12 @@ SAMPLES = Path(__file__).resolve().parents[2] / "samples" / "ro-train"
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def client(tmp_path, monkeypatch, registry):
     monkeypatch.setenv("WORKBENCH_DATA_DIR", str(tmp_path))
     settings = load_settings()
-    settings.cache_dir.mkdir(parents=True)
-    # reuse the shared vocabulary cache so the test doesn't rebuild the closure
-    real_cache = Path(__file__).resolve().parents[2] / "workbench-data" / "cache"
-    for f in real_cache.glob("*"):
-        if f.is_file():  # closure/catalog caches; the OntoEnv store isn't needed once they exist
-            shutil.copy(f, settings.cache_dir / f.name)
-    app = create_app(settings)
+    # The session's vocabularies: an app per test would load its own, and FastAPI's caches keep
+    # finished apps (and so their vocabularies) alive.
+    app = create_app(settings, registry)
     with TestClient(app) as c:
         deadline = time.time() + 120
         while not c.get("/api/status").json()["vocabulary"]["ready"]:
@@ -176,8 +171,11 @@ def test_answering_questions_continues_the_conversation(client, monkeypatch):
     assert second["status"] == "succeeded", second["error"]
     assert second["parent_run_id"] == first["id"]
     assert [t["role"] for t in second["conversation"]] == ["user", "assistant"]
-    context = llm.seen[1][0]["content"]
-    assert "EARLIER CONVERSATION" in context and "Which stream does CT-201 measure?" in context
+    # The follow-up continues the model conversation: the same opening, the reply, then the new turn.
+    assert second["continued"] and llm.seen[1][0] == llm.seen[0][0] and len(llm.seen[1]) == 3
+    assert "Which stream does CT-201 measure?" in llm.seen[1][1]["content"]
+    assert llm.seen[1][2]["content"].startswith("Request: It is permeate.")
+    assert "EARLIER CONVERSATION" not in llm.seen[1][2]["content"]
     proposal = client.get(f"/api/projects/{pid}/proposals/{second['outcome']['proposal_id']}").json()
     assert [t["text"] for t in proposal["conversation"]][0] == "Fix the CT-201 unit"
     assert proposal["conversation"][-2]["text"] == "It is permeate."
@@ -268,3 +266,82 @@ def test_follow_up_without_selection_keeps_the_conversation_selection(client, mo
         "base_revision": head, "instruction": "In general?", "parent_run_id": third["id"],
         "inherit_selection": False}).json()
     assert fourth["selection"]["entity_ids"] == []
+
+
+def _project_with_ct(client):
+    pid = client.post("/api/projects", json={"name": "Continue"}).json()["id"]
+    with open(SAMPLES / "model.ttl", "rb") as f:
+        client.post(f"/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")})
+    model = client.get(f"/api/projects/{pid}/model").json()
+    ct = next(p for p in model["view"]["points"] if p["label"].startswith("CT-201"))
+    return pid, model["head"], ct
+
+
+def _scripted(client, monkeypatch, steps):
+    from test_agent import ScriptedLLM
+    llm = ScriptedLLM(steps)
+    llm.health = lambda: {"ok": True}
+    monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    monkeypatch.setattr(client.app.state.runs.pool, "submit", lambda fn, *args: fn(*args))
+    return llm
+
+
+ASK = {"action": "propose", "explanation": "Which stream?", "operations": [], "questions": ["Which stream?"]}
+
+
+def test_a_follow_up_keeps_what_the_model_looked_up(client, monkeypatch):
+    pid, head, ct = _project_with_ct(client)
+    search = {"action": "search_terms", "args": {"query": "conductivity", "kind": "quantity_kind"}}
+    llm = _scripted(client, monkeypatch, [search, ASK, ASK])
+    first = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ct["id"]]}, "instruction": "Check CT-201"}).json()
+    client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "instruction": "It is permeate.", "parent_run_id": first["id"]})
+    sent = [m["content"] for m in llm.seen[2]]
+    assert any(c.startswith("Result of search_terms") for c in sent)  # the earlier lookup is still there
+    changes = client.get(f"/api/projects/{pid}/runs/{first['id']}/changes").json()
+    assert changes == {"changed": False, "summary": "", "continuable": True}
+
+
+def test_after_the_model_changes_the_person_chooses_to_continue_or_start_fresh(client, monkeypatch):
+    pid, head, ct = _project_with_ct(client)
+    llm = _scripted(client, monkeypatch, [ASK, ASK, ASK])
+    first = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ct["id"]]}, "instruction": "Check CT-201"}).json()
+    edited = client.post(f"/api/projects/{pid}/edits", json={
+        "base_revision": head, "operations": [{"op": "update_point", "id": ct["id"], "label": "CT-201 permeate"}]})
+    assert edited.status_code == 200, edited.text
+    now = client.get(f"/api/projects/{pid}/model").json()["head"]
+    changes = client.get(f"/api/projects/{pid}/runs/{first['id']}/changes").json()
+    assert changes["changed"] and changes["continuable"]
+    assert changes["summary"] == f"The model changed since the last reply ({head} → {now}: 1 edit)."
+
+    kept = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": now, "instruction": "Go on.", "parent_run_id": first["id"]}).json()
+    turn = llm.seen[1][-1]["content"]
+    assert kept["continued"] and turn.startswith("Since your last reply:")
+    assert "The model changed since: " in turn and "now " in turn and "CT-201 permeate" in turn
+    assert "check the current model with tools" in turn
+
+    fresh = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": now, "instruction": "Go on.", "parent_run_id": first["id"], "fresh": True}).json()
+    assert not fresh["continued"] and len(llm.seen[2]) == 1  # a new conversation
+    assert "EARLIER CONVERSATION" in llm.seen[2][0]["content"] and "Since your last reply" not in llm.seen[2][0]["content"]
+
+
+def test_applying_the_runs_own_proposal_is_not_a_change_it_does_not_know(client, monkeypatch):
+    pid, head, ct = _project_with_ct(client)
+    rename = {"action": "propose", "explanation": "Renamed.",
+              "operations": [{"op": "update_point", "id": ct["id"], "label": "CT-201 permeate"}]}
+    llm = _scripted(client, monkeypatch, [rename, ASK])
+    first = client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": head, "selection": {"entity_ids": [ct["id"]]}, "instruction": "Rename CT-201"}).json()
+    prop = client.get(f"/api/projects/{pid}/runs/{first['id']}").json()["outcome"]["proposal_id"]
+    assert client.post(f"/api/projects/{pid}/proposals/{prop}/apply").status_code == 200
+    changes = client.get(f"/api/projects/{pid}/runs/{first['id']}/changes").json()
+    assert changes["changed"] is False
+    now = client.get(f"/api/projects/{pid}/model").json()["head"]
+    client.post(f"/api/projects/{pid}/assist", json={
+        "base_revision": now, "instruction": "Thanks, now its unit.", "parent_run_id": first["id"]})
+    turn = llm.seen[1][-1]["content"]
+    assert f"Your proposed change {prop} was applied as {now}." in turn and "Objects that differ" not in turn

@@ -637,7 +637,20 @@ and 4096 from an 8k window. This reservation also reduces the input context budg
 since providers count prompt +
 `max_tokens` against the window. When the messages outgrow the window, the oldest tool results
 (all but the latest two) are shortened to their first lines and their calls may be made again.
-Follow-ups carry the last eight conversation turns, each clipped. Tool results are compact
+A follow-up continues the model conversation of the run it replies to (`agent/continuation.py`):
+a succeeded correction run saves its system prompt, messages and tool results
+(`run_conversations`; images are not kept, an attachment belongs to its own message), and the
+follow-up appends one message: what changed since that run (its proposal applied, pending or
+discarded; other revisions, undo, and the entity lines that differ), any new attachments and rules
+("For this turn"), and the request. The system prompt stays the saved one so the cached opening
+still matches. Nothing said earlier in the conversation is sent again: the rules for a corrected
+answer are given in full once, a reply to a pending proposal leaves out the request and
+explanation the conversation already has, and source passages are not repeated. When the model
+changed in ways the run does not know (anything but applying its own proposal), the composer
+offers Keep going or Start fresh (`fresh` on the request; `GET /runs/{id}/changes`). A fresh
+start, a reconsideration, or a conversation that no longer fits a quarter of the window from the
+end rebuilds the context and carries the last eight conversation turns as text, each clipped.
+Tool results are compact
 (terms one per line, JSON without indentation), entity lines leave out empty optional fields
 and labels that only respell a term's name, and issue lines leave out the repair engine's note
 when only opaque (SPARQL) constraints failed.

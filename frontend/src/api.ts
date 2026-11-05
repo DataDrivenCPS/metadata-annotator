@@ -1,5 +1,5 @@
 import type {
-  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
+  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage, RunChanges,
 } from './types'
 import type { SourceIndex } from './types'
 
@@ -70,20 +70,21 @@ export const api = {
   describeSelection: (pid: string, sel: Selection) =>
     req<{ summary: string }>('POST', `${P(pid)}/selection/describe`, sel),
   assist: (pid: string, base_revision: string, selection: Selection, instruction: string, provider?: string,
-    parent_run_id?: string, inherit_selection = true, supersedes_proposal_id?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id, inherit_selection, supersedes_proposal_id }),
+    parent_run_id?: string, inherit_selection = true, supersedes_proposal_id?: string, fresh = false) =>
+    req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id, inherit_selection, supersedes_proposal_id, fresh }),
   autofix: (pid: string, base_revision: string, issue_ids: string[], provider?: string) =>
     req<AgentRun>('POST', `${P(pid)}/autofix`, { base_revision, issue_ids, provider }),
   build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>, source_roles?: Record<string, SourceRole>, supersedes_proposal_id?: string) =>
     req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages, source_roles, supersedes_proposal_id }),
   run: (pid: string, id: string) => req<AgentRun>('GET', `${P(pid)}/runs/${id}`),
+  runChanges: (pid: string, id: string) => req<RunChanges>('GET', `${P(pid)}/runs/${id}/changes`),
   runs: (pid: string) => req<AgentRun[]>('GET', `${P(pid)}/runs`),
   tokenUsage: (pid: string) => req<Record<string, TokenUsage>>('GET', `${P(pid)}/usage`),
   cancelRun: (pid: string, id: string) => req<AgentRun>('POST', `${P(pid)}/runs/${id}/cancel`),
   proposal: (pid: string, id: string) => req<Proposal>('GET', `${P(pid)}/proposals/${id}`),
   proposals: (pid: string) => req<Proposal[]>('GET', `${P(pid)}/proposals`),
-  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[], retry_left_out = false) =>
-    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions, retry_left_out }),
+  replyToProposal: (pid: string, id: string, instruction: string, provider?: string, parent_run_id?: string, source_regions?: SourceRegion[], retry_left_out = false, fresh = false) =>
+    req<AgentRun>('POST', `${P(pid)}/proposals/${id}/reply`, { instruction, provider, parent_run_id, source_regions, retry_left_out, fresh }),
   applyProposal: (pid: string, id: string) => req<Revision>('POST', `${P(pid)}/proposals/${id}/apply`),
   dismissProposal: (pid: string, id: string) => req<Proposal>('POST', `${P(pid)}/proposals/${id}/dismiss`),
   regenerate: (pid: string, id: string, provider?: string) =>

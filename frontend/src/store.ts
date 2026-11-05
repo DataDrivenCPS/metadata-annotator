@@ -38,6 +38,10 @@ interface State {
   assistantDraftVersion: number
   /** The next message starts a new request instead of continuing the conversation. */
   assistantNewRequest: boolean
+  /** The model changed since the reply being continued, and the person chose to start a fresh model
+   *  conversation with the current model instead of continuing it (reset after each message). */
+  assistantFresh: boolean
+  setAssistantFresh: (fresh: boolean) => void
   /** Counts the person's selection changes; with runSelectionVersion it tells a selection made since a request from a leftover one. */
   selectionVersion: number
   runSelectionVersion: Record<string, number>
@@ -190,6 +194,7 @@ export const useStore = create<State>((set, get) => ({
   assistantIssueContext: null,
   assistantDraftVersion: 0,
   assistantNewRequest: false,
+  assistantFresh: false,
   selectionVersion: 0,
   runSelectionVersion: {},
   assistantNoScope: false,
@@ -226,7 +231,7 @@ export const useStore = create<State>((set, get) => ({
     const generation = ++projectGeneration
     ++modelGeneration
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
-          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantSending: null, assistantIssueContext: null, assistantNewRequest: false,
+          runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantSending: null, assistantIssueContext: null, assistantNewRequest: false, assistantFresh: false,
           assistantCleared: clearedChat(id),
           autofix: null, viewing: null, views: [], busy: false })
     if (id) {
@@ -321,6 +326,7 @@ export const useStore = create<State>((set, get) => ({
     assistantIssueContext: s.assistantIssueContext && assistantDraft.includes(s.assistantIssueContext.text)
       ? s.assistantIssueContext : null })),
   setAssistantNewRequest: (assistantNewRequest) => set({ assistantNewRequest }),
+  setAssistantFresh: (assistantFresh) => set({ assistantFresh }),
   clearChat: () => {
     const s = get()
     const thread = threadRuns(s.runs)
@@ -434,7 +440,7 @@ export const useStore = create<State>((set, get) => ({
 
   assist: async (instruction, parentRunId) => {
     if (readOnly()) return false
-    const { projectId, model, selection, provider, runs, assistantCleared, proposal, selectionVersion, runSelectionVersion, assistantNoScope } = get()
+    const { projectId, model, selection, provider, runs, assistantCleared, proposal, selectionVersion, runSelectionVersion, assistantNoScope, assistantFresh } = get()
     if (!projectId || !model) return false
     const project = projectGeneration
     const request = ++assistantGeneration
@@ -451,8 +457,8 @@ export const useStore = create<State>((set, get) => ({
     const replaced = proposal && (proposal.status === 'pending' || proposal.status === 'stale') ? proposal.id : undefined
     try {
       const run = await api.assist(projectId, model.head, sent, instruction, provider ?? undefined, parentRunId,
-        !(parent && assistantNoScope), replaced)
-      set((s) => ({ runSelectionVersion: { ...s.runSelectionVersion, [run.id]: selectionVersion },
+        !(parent && assistantNoScope), replaced, !!parent && assistantFresh)
+      set((s) => ({ runSelectionVersion: { ...s.runSelectionVersion, [run.id]: selectionVersion }, assistantFresh: false,
         ...(replaced ? { proposalStates: { ...s.proposalStates, [replaced]: 'dismissed' as const } } : {}) }))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {
@@ -465,13 +471,14 @@ export const useStore = create<State>((set, get) => ({
 
   replyToProposal: async (instruction, parentRunId, retryLeftOut = false) => {
     if (readOnly()) return false
-    const { projectId, proposal, provider, selection } = get()
+    const { projectId, proposal, provider, selection, assistantFresh } = get()
     if (!projectId || !proposal || proposal.status !== 'pending') return false
     const project = projectGeneration
     const request = ++assistantGeneration
     try {
       const run = await api.replyToProposal(projectId, proposal.id, instruction, provider ?? undefined, parentRunId,
-        selection.source_regions, retryLeftOut)
+        selection.source_regions, retryLeftOut, assistantFresh)
+      set({ assistantFresh: false })
       return acceptStartedRun(run, projectId, project, request)
     } catch (e) {
       if (project !== projectGeneration || get().projectId !== projectId) return false

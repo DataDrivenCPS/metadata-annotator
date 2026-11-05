@@ -164,9 +164,9 @@ def test_assistant_and_review_flow(live, page):
     expect(details).not_to_have_attribute("open", "")
     details.locator("summary").first.click()
     expect(details.locator("pre")).to_be_visible()
-    second_context = llm.seen[1][0]["content"]
-    assert "EARLIER CONVERSATION" in second_context and question in second_context
-    assert "(nothing selected" not in second_context
+    # The answer continues the model conversation: its opening, the question, then the answer.
+    assert llm.seen[1][0] == llm.seen[0][0] and question in llm.seen[1][1]["content"]
+    assert "(nothing selected" not in llm.seen[1][0]["content"]
 
     # Apply the dismissal, then reopen it from the toast
     card.locator("button.primary", has_text="Dismiss 1 issue(s)").click()

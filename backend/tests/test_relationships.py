@@ -121,7 +121,7 @@ def test_brick_entities_and_imported_relations(workspace):
     assert len(rel(v, "isPartOf", "Wall W2")) == 1
 
 
-def test_relations_endpoint_lists_allowed_and_current(zones, tmp_path):
+def test_relations_endpoint_lists_allowed_and_current(zones, registry):
     from fastapi.testclient import TestClient
 
     from workbench.api import create_app
@@ -129,13 +129,8 @@ def test_relations_endpoint_lists_allowed_and_current(zones, tmp_path):
 
     p = zones
     settings = load_settings()
-    data_dir = p.root.parent.parent  # the workspace's data dir (projects/<id>)
-    try:  # reuse the already loaded vocabularies
-        (data_dir / "cache").symlink_to(settings.cache_dir, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks unavailable (Windows without developer mode)")
-    settings.data_dir = data_dir
-    client = TestClient(create_app(settings))
+    settings.data_dir = p.root.parent.parent  # the workspace's data dir (projects/<id>)
+    client = TestClient(create_app(settings, registry))  # the already loaded vocabularies
     zone = by_label(p.view(p.head()).entities, "Zone A")
     body = client.get(f"/api/projects/{p.id}/entities/{zone.id}/relations").json()
     allowed = {a["curie"]: a for a in body["allowed"]}

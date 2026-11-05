@@ -556,15 +556,18 @@ class Vocabulary:
         """Terms of these kinds that ``value`` names exactly: by local name (whatever namespace it
         was written in, so ``s223:Tank`` finds ``watr:Tank`` when only that exists), by label, or for
         units by symbol (``mg/L``). The first of those ways that finds anything decides; more than one
-        term means the name is ambiguous and the caller must not choose."""
-        iri = expand_term(self, value)
+        term means the name is ambiguous and the caller must not choose. A name written with the
+        label the lookup tools print beside it (``Fluid-Water (Water)``) is read without that label,
+        but only if the name as written names nothing (Brick has labels like "Laboratory (dry)")."""
         spaces = [*self.namespaces.values(), *_EXTRA_NAMESPACES.values()]
-        ns = max((n for n in spaces if n and iri.startswith(n) and len(iri) > len(n)), key=len, default="")
-        local = iri[len(ns):] if ns else _term_name(iri)
-        for index, key in ((self._by_local, local), (self._by_name, local.casefold()), (self._by_symbol, local)):
-            found = [iri for iri in index.get(key, ()) if self.terms[iri].kind in kinds]
-            if found:
-                return sorted(set(found))
+        for written in dict.fromkeys((value, _without_label(value))):
+            iri = _expand_bare(self, written)
+            ns = max((n for n in spaces if n and iri.startswith(n) and len(iri) > len(n)), key=len, default="")
+            local = iri[len(ns):] if ns else _term_name(iri)
+            for index, key in ((self._by_local, local), (self._by_name, local.casefold()), (self._by_symbol, local)):
+                found = [iri for iri in index.get(key, ()) if self.terms[iri].kind in kinds]
+                if found:
+                    return sorted(set(found))
         return []
 
     def search(self, query: str, kinds: list[str] | None = None, limit: int = 12,
@@ -874,8 +877,22 @@ def _term_name(iri: str) -> str:
     return iri.split(":", 1)[1] if ":" in iri else iri
 
 
-_TERM_WITH_LABEL = (re.compile(r"^(\S+)\s+\([^()]*\)$"),      # s223:Fluid-Water (Water)
-                    re.compile(r"^[^\[\]]*\[(\S+)\]$"))        # Water [s223:Fluid-Water]
+# The ways the agent's tools print a term beside its label, which models copy whole: keep in step
+# with agent/tools.py term_ref and agent/correction.py (suggest_terms, the term list in the prompt).
+_TERM_WITH_LABEL = (re.compile(r"^(\S+)\s+-\s.*$"),             # s223:Fluid-Water - Water [medium]
+                    re.compile(r"^(\S+)\s+\([^()]*\)$"),         # s223:Fluid-Water (Water)
+                    re.compile(r"^[^\[\]]*\[(\S+)\]$"))           # Water [s223:Fluid-Water]
+
+
+def _without_label(value: str) -> str:
+    """The term part of ``s223:Fluid-Water (Water)``, ``Water [s223:Fluid-Water]`` or
+    ``s223:Fluid-Water - Water``; else ``value``. Ids have no spaces, so most values skip this."""
+    if " " not in value.strip():
+        return value
+    for pattern in _TERM_WITH_LABEL:
+        if m := pattern.match(value.strip()):
+            return m.group(1)
+    return value
 
 
 def expand_term(vocab: Vocabulary, value: str) -> str:
@@ -884,11 +901,8 @@ def expand_term(vocab: Vocabulary, value: str) -> str:
     Models often copy a term together with the label the lookup tools print beside it
     (``s223:Fluid-Water (Water)``, ``Water [s223:Fluid-Water]``). IRIs cannot contain spaces, so
     when stripping that label leaves a real term, that term is meant."""
-    for pattern in _TERM_WITH_LABEL:
-        if (m := pattern.match(value.strip())):
-            bare = _expand_bare(vocab, m.group(1))
-            if vocab.term(bare) is not None:
-                return bare
+    if (bare := _without_label(value)) != value and vocab.term(term := _expand_bare(vocab, bare)) is not None:
+        return term
     return _expand_bare(vocab, value)
 
 

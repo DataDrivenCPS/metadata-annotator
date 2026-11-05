@@ -343,6 +343,11 @@ def test_checking_citations_opens_the_source_at_the_cited_place(live, page, tmp_
     shown = tray.locator(".document-canvas img")
     expect(shown).to_have_attribute("alt", "plant.pdf, page 2")
     page.wait_for_function("(img) => img.complete && img.naturalWidth > 0", arg=shown.element_handle())
+    # The files the build read, listed under Details, open in the tray too rather than downloading.
+    page.locator(".proposal summary", has_text="Details").click()
+    page.locator(".proposal-details section", has_text="Sources").get_by_role("button", name="plant.pdf", exact=True).click()
+    expect(tray.locator(".citation-banner")).to_contain_text("plant.pdf · page 2")
+    expect(tray.locator(".document-navigation")).to_contain_text("Page 2 of 2")
     labels = [e["label"] for e in httpx.get(f"{base}/api/projects/{pid}/model", timeout=120).json()["view"]["equipment"]]
     assert labels == ["FROM-CSV"]  # checking its sources has applied nothing
     shot("citation-proposal")

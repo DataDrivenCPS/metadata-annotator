@@ -995,3 +995,27 @@ def test_the_reply_grammar_takes_only_real_ids_or_new_placeholders(sample_projec
     many = {f"eq-{i:06x}": type("Row", (), {"kind": "equipment"})() for i in range(ID_ENUM_LIMIT + 1)}
     assert id_defs(many)["equipment_id"]["anyOf"][0] == {"type": "string", "pattern": "^eq-[0-9a-z]+$"}
     assert step_schema(p.vocab).get("$defs") is None  # without the run's entities, ids stay free
+
+
+def test_browse_terms_lists_what_is_directly_below_a_term(sample_project, guidance):
+    """Search only finds terms the model can name: "disinfection" found no process, though
+    watr:Process-Chlorination exists. Browsing shows a branch of the vocabulary."""
+    from workbench.agent.tools import AgentTools
+    from workbench.agent.correction import _fmt_result
+    tools = AgentTools(sample_project, sample_project.head(), guidance)
+    fluids = _fmt_result(tools.browse_terms("s223:Mix-Fluid"))
+    assert fluids.startswith("Directly below s223:Mix-Fluid")
+    assert "s223:Fluid-Water - Water [" in fluids and "watr:Fluid-Sludge" in fluids
+    assert "watr:Water-Brine" not in fluids and "Ethernet" not in fluids  # members of members are a level down
+    assert "watr:Water-Brine" in _fmt_result(tools.browse_terms("Fluid-Water"))
+    assert "error" in tools.browse_terms("watr:NoSuchThing")
+
+
+def test_one_search_terms_call_can_search_several_things(sample_project, guidance):
+    search = {"action": "search_terms", "args": {"queries": ["coagulation basin", "fluoridation"]}}
+    llm = SchemaRecordingLLM([search, {"action": "propose", "explanation": "Nothing to change.", "operations": []}])
+    run(sample_project, llm, guidance, SelectionScope(), "inspect")
+    result = llm.seen[1][-1]["content"]
+    assert "'coagulation basin':\nwatr:CoagulationBasin - Coagulation Basin [equipment]" in result
+    assert "'fluoridation': no match" in result
+    assert any("queries" in shape["properties"] for shape in llm.schemas[0]["properties"]["args"]["anyOf"])

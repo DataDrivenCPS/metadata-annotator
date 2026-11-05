@@ -494,6 +494,7 @@ class Vocabulary:
     def _install_catalog(self, data: dict) -> None:
         self.terms = {iri: Term(**t) for iri, t in data["terms"].items()}
         self.ancestors = data["ancestors"]
+        self._children = None  # narrower(): built on first use
         self.qk_broader = data.get("qk_broader", {})
         self.by_kind = defaultdict(list)
         for iri, t in sorted(self.terms.items(), key=lambda kv: kv[1].label.lower()):
@@ -547,6 +548,20 @@ class Vocabulary:
 
     def is_a(self, cls: str, ancestor: str) -> bool:
         return cls == ancestor or ancestor in self.ancestors.get(cls, ())
+
+    def narrower(self, iri: str) -> list[str]:
+        """The terms directly below ``iri`` (subclasses, or members of an enumeration), by label;
+        deprecated ones left out."""
+        if getattr(self, "_children", None) is None:
+            children: dict[str, list[str]] = defaultdict(list)
+            for c, ancestors in self.ancestors.items():
+                above = set(ancestors)
+                for a in ancestors:  # a direct parent is not an ancestor of another ancestor
+                    if not any(a in self.ancestors.get(b, ()) for b in above if b != a):
+                        children[a].append(c)
+            self._children = children
+        return sorted((c for c in self._children.get(iri, ()) if c in self.terms and not self.terms[c].deprecated),
+                      key=lambda c: self.terms[c].label.lower())
 
     def kind_of(self, iri: str) -> str | None:
         t = self.terms.get(str(iri))

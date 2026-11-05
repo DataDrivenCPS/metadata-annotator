@@ -8,7 +8,6 @@ from ..documents import source_batches, source_context
 from ..llm import ImageInput, LLMError, context_window, reply_tokens
 from ..retrieval.evidence import Retrieved, retrieve, served_by_index
 from ..schemas import SelectionScope
-from ..vocabulary import S223
 
 NOTES_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -131,20 +130,13 @@ def request_query(project, rid, selection, instruction, prior_proposal=None) -> 
 
 def build_request(vocab) -> str:
     """What a build from documents is asked to do. Drawings show flow as lines and arrows; without
-    being asked, models extracted only the equipment. 223P connections need a medium, so the fluids
-    are listed here rather than costing a search."""
-    text = ("Build from the input sources in this batch: the equipment and unit processes, and the "
+    being asked, models extracted only the equipment."""
+    return ("Build from the input sources in this batch: the equipment and unit processes, and the "
             "connections between them. Each line or arrow joining two pieces of equipment in a drawing is "
-            "evidence of a connection: create_connection from the upstream equipment to the downstream one. "
-            "If a line's ends or direction are unclear, ask instead of guessing. Reconcile identifiers with "
+            "evidence of a connection: create_connection from the upstream equipment to the downstream one"
+            + (", with the medium it carries (browse_terms s223:Mix-Fluid lists them)" if vocab.family == "s223" else "")
+            + ". If a line's ends or direction are unclear, ask instead of guessing. Reconcile identifiers with "
             "the pending draft and current model; avoid duplicates. Use reference facts to interpret inputs. ")
-    if vocab.family == "s223":
-        fluid = str(S223["Mix-Fluid"])
-        media = sorted(vocab.curie(t.iri) for t in vocab.terms.values()
-                       if t.kind == "medium" and not t.deprecated and vocab.is_a(t.iri, fluid) and t.iri != fluid)
-        if media:
-            text += f"Media for connections (the fluid the line carries): {', '.join(media)}. "
-    return text
 
 
 def run_source_build(project, llm, guidance, rid, regions, instruction, run_id, progress, cancel, agent):

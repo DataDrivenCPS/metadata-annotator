@@ -120,6 +120,38 @@ class AgentTools:
                  **({"symbol": t.symbol} if t.symbol else {}),
                  **({"about": t.comment[:120]} if t.comment else {})} for t in results]
 
+    def search_many(self, queries: list[str], kind: str | None = None, limit: int = 6) -> list[Any]:
+        """search_terms for several queries at once: each query's results under its own heading."""
+        out: list[Any] = []
+        for q in dict.fromkeys(str(q).strip() for q in queries[:8] if str(q).strip()):
+            found = self.search_terms(q, kind, limit)
+            out += [f"{q!r}:", *found] if found else [
+                f"{q!r}: no match; try the words the term would be named by, a broader word, or browse_terms"]
+        return out
+
+    def browse_terms(self, term: str, limit: int = 40) -> list[str] | dict[str, Any]:
+        """The terms directly below a term (its subclasses, or an enumeration's members), one per line."""
+        from ..operations import expand_term
+
+        iri = expand_term(self.vocab, term)
+        if self.vocab.term(iri) is None:  # a name that names exactly one term is read as it
+            named = self.vocab.named(term, {t.kind for t in self.vocab.terms.values()})
+            iri = named[0] if len(named) == 1 else iri
+        t = self.vocab.term(iri)
+        if t is None:
+            return {"error": f"{term} is not a known term; search_terms finds one to start from"}
+        below = self.vocab.narrower(iri)
+        if not below:
+            return [f"Nothing is below {curie(self.vocab, iri)} - {t.label}."]
+        lines = [f"Directly below {curie(self.vocab, iri)} - {t.label} ({len(below)}):"]
+        for c in below[:limit]:
+            ct, more = self.vocab.terms[c], len(self.vocab.narrower(c))
+            lines.append(f"{curie(self.vocab, c)} - {ct.label}" + (" (abstract)" if ct.abstract else "")
+                         + (f" [{more} below]" if more else "") + (f": {ct.comment[:80]}" if ct.comment and not c.endswith(ct.comment) else ""))
+        if len(below) > limit:
+            lines.append(f"...and {len(below) - limit} more; browse a narrower term or use search_terms")
+        return lines
+
     def units_for(self, quantity_kind: str, limit: int = 25) -> list[dict[str, Any]]:
         from ..operations import expand_term
 
@@ -235,8 +267,13 @@ class AgentTools:
         kinds = (["equipment", "point_class", "location", "class", "relation", "unit", "quantity_kind"] if family == "brick"
                  else [k for k in AgentTools.KINDS if k != "point_class"])
         return (
-            "search_terms(query, kind?) - find ontology terms; kind one of "
+            "search_terms(query | queries, kind?) - find ontology terms; give queries (a list) to search"
+            " several things in one call; kind one of "
             + ", ".join(kinds)
+            + "\nbrowse_terms(term) - the terms directly below a term (its kinds, or an enumeration's members),"
+              " e.g. " + ("brick:Equipment, brick:Point, brick:Location" if family == "brick"
+                         else "s223:Equipment, s223:Mix-Fluid (the media of pipes), watr:Process (WaTr's"
+                              " treatment processes)")
             + "\nunits_for(quantity_kind) - list units valid for a quantity kind"
             + "\ndescribe_class(term) - parents and required properties of an equipment/sensor class"
             + ("\nfind_entities(query) - find equipment/points/connections in the model by name" if family == "brick"

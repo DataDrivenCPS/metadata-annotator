@@ -281,9 +281,10 @@ Bounded workflow, identical for local and remote models:
    objects (owner equipment, attached points, touching connections), all equipment, open issues
    on the selection, evidence, and vocabulary hints matched from the instruction.
 2. **Steps**: every model reply requests JSON constrained by a schema (llama-server compiles it to a
-   grammar): either a read-only tool call — `search_terms`, `units_for`, `describe_class`,
-   `find_entities`, `read_evidence`, `read_guidance`, `relations_for` — or `propose` with explanation, operations
-   and questions. At most 8 steps.
+   grammar): either a read-only tool call — `search_terms` (one query, or several as `queries`),
+   `browse_terms` (the terms directly below a term, e.g. the media under `s223:Mix-Fluid`), `units_for`,
+   `describe_class`, `find_entities`, `read_evidence`, `read_guidance`, `relations_for` — or `propose`
+   with explanation, operations and questions. At most 8 steps.
 3. **Candidate**: operations are resolved and applied to a copy of the base revision and
    validated. Malformed operations go back to the model with the problems and the closest valid
    terms (up to 2 repairs). Unknown entity references also carry nearby exact ids and

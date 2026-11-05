@@ -36,8 +36,8 @@ from ..schemas import ChangeProposal, EvidenceRef, IssueDismissal, SelectionScop
 from .guidance import SkillGuidance
 from .tools import AgentTools, curie, entity_line
 
-TOOL_ACTIONS = ["search_terms", "units_for", "describe_class", "find_entities", "relations_for", "read_evidence",
-                "read_guidance"]
+TOOL_ACTIONS = ["search_terms", "browse_terms", "units_for", "describe_class", "find_entities", "relations_for",
+                "read_evidence", "read_guidance"]
 
 S223_DOMAIN = """\
 You help a person correct a knowledge-graph model of a {system}. The person knows the
@@ -158,8 +158,9 @@ these reach everything):
 {virtual}Terms (types, units, ...) must be real vocabulary terms. If you are not sure a term exists
 or which one fits, use search_terms first. Never invent a term.
 Search with the words a term would be named by ("air handling unit", not "AHU" or
-"equipment"); search each thing once, and if a search finds nothing, try other words
-instead of repeating it. Once you have the terms you need, propose.
+"equipment"); search each thing once, several at a time with queries, and if a search finds
+nothing, try other words or browse_terms on a broader term instead of repeating it. Once you
+have the terms you need, propose.
 
 Rules:
 - Make the change the person asked for, scoped to their selection. You may read anything,
@@ -378,8 +379,10 @@ def tool_args_schema(search: bool = False, view: bool = False) -> dict:
     text = {"type": "string"}
     shapes = [
         shape("query", kind=text),  # search_terms, find_entities
+        {"type": "object", "additionalProperties": False, "required": ["queries"],  # search_terms, several
+         "properties": {"queries": {"type": "array", "items": text, "minItems": 1, "maxItems": 8}, "kind": text}},
         shape("quantity_kind"),  # units_for
-        shape("term"),  # describe_class
+        shape("term"),  # describe_class, browse_terms
         shape("entity_id"),  # relations_for
         shape("observation_id"),  # read_evidence, view_source of a passage
         shape("topic"),  # read_guidance
@@ -1130,10 +1133,10 @@ def run_correction(project: Project, llm: LLMClient, guidance: SkillGuidance, ri
                 evidence.append(EvidenceRef(kind="guidance", ref=str(args.get("topic")),
                                             summary=f"BuildingMOTIF skill {guidance.version}: {args.get('topic')}"))
             text = _fmt_result(result)
-            if action == "search_terms" and not result:
+            if action == "search_terms" and not result and not args.get("queries"):
                 text = (f"No terms match {args.get('query')!r}" + (f" of kind {args['kind']}" if args.get("kind") else "")
                         + ". Try the words the term would be named by (spell out abbreviations), a broader"
-                          " word, or no kind.")
+                          " word, no kind, or browse_terms on a broader term.")
             if replaced:  # said here, not by rewriting the earlier message: its cached prefix stays valid
                 text += "\n(The image from your earlier view_source is no longer attached.)"
             messages.append({"role": "user", "content": f"Result of {action}:\n{text}{remaining}",
@@ -1398,7 +1401,11 @@ def _terms(op) -> list[str]:
 def _call_tool(tools: AgentTools, action: str, args: dict) -> Any:
     try:
         if action == "search_terms":
+            if isinstance(args.get("queries"), list):
+                return tools.search_many(args["queries"], args.get("kind"))
             return tools.search_terms(str(args.get("query", "")), args.get("kind"))
+        if action == "browse_terms":
+            return tools.browse_terms(str(args.get("term") or args.get("query") or ""))
         if action == "units_for":
             return tools.units_for(str(args.get("quantity_kind") or args.get("term") or ""))
         if action == "describe_class":

@@ -180,7 +180,8 @@ def map_schema(item_props: dict) -> dict:
         "thought": {"type": "string"},
         "action": {"type": "string", "enum": [*TOOL_ACTIONS, "map"]},
         "args": {"type": "object", "additionalProperties": False, "properties": {
-            k: {"type": "string"} for k in ("query", "kind", "term", "quantity_kind", "topic", "observation_id")}},
+            **{k: {"type": "string"} for k in ("query", "kind", "term", "quantity_kind", "topic", "observation_id")},
+            "queries": {"type": "array", "items": {"type": "string"}, "maxItems": 8}}},
         "mappings": {"type": "array", "items": item},
         "explanation": {"type": "string"},
     }, "required": ["action"]}

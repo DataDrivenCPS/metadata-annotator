@@ -238,3 +238,27 @@ def test_correction_rejects_invented_citations_without_new_attachments(workspace
                               lambda *_: None, CancelToken(), agent=AgentConfig())
     assert result.proposal is None
     assert 'unknown source observation' in client.seen[1][-1]['content']
+
+
+def test_a_drawing_build_asks_for_connections_and_offers_the_fluids(workspace):
+    """Builds from flow diagrams proposed equipment only: nothing asked for the lines between them,
+    and each 223P connection needed a medium search the step budget had no room for."""
+    p = workspace.create('Flow diagram', 'watr')
+    source = p.add_source('flow.pdf', text_pdf('Feed tank -> Feed pump'))
+    regions = [SourceRegion(source_id=source.id, role='input')]
+
+    def build(messages):
+        asked = messages[0]['content']
+        assert 'the connections between them' in asked and 'create_connection from the upstream' in asked
+        media = asked.split('Media for connections')[1].split('\n')[0]
+        assert 'watr:Water-Freshwater' in media and 's223:Fluid-Water' in media
+        assert 'Ethernet' not in media and 'Constituent' not in media and 's223:Mix-Fluid' not in media
+        return {'action': 'propose', 'operations': [
+            {'op': 'create_equipment', 'id': 'new:tank', 'label': 'Feed tank', 'type': 'watr:Tank'},
+            {'op': 'create_equipment', 'id': 'new:pump', 'label': 'Feed pump', 'type': 's223:Pump'},
+            {'op': 'create_connection', 'from_equipment': 'new:tank', 'to_equipment': 'new:pump',
+             'medium': 'watr:Water-Freshwater'}]}
+
+    outcome = run_source_build(p, ScriptedLLM([build]), guidance(), p.head(), regions,
+                               '', None, lambda *_: None, CancelToken(), AgentConfig())
+    assert sum(c.entity_kind == 'connection' for c in outcome.proposal.changes) == 1

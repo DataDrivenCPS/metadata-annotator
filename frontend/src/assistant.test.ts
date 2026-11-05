@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   autofixCandidates, autofixProgress, autofixReport, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, issueSelection, issuesOnSelection, issuesPrompt,
-  leftOutSummary, owningRun, proposalStates, restorableProposal, siblingOptions, unchosenOptions,
+  leftOutSummary, owningRun, proposalStates, restorableProposal, siblingOptions,
   startsExchange, summarizeChanges, threadRuns, tokenTotals,
 } from './assistant'
 import { emptySelection, type AgentRun, type Proposal, type ReviewIssue, type Row } from './types'
@@ -307,15 +307,6 @@ describe('chat choices and proposal ownership', () => {
     expect(restorableProposal([p('stray'), p('mine')], thread, [], 'stray')?.id).toBe('stray')
     expect(restorableProposal([p('stray'), p('mine')], thread, ['mine'])).toBeNull()
     expect(restorableProposal([p('mine', 'dismissed')], thread, [])).toBeNull()
-  })
-
-  it('closing an auto-fix report closes only choices nobody answered', () => {
-    const af = run('af', '1', { kind: 'autofix', outcome: { autofix: { revisions: [], groups: [
-      { issues: [], explanations: [], status: 'choice', choices: [choice] },
-      { issues: [], explanations: [], status: 'choice', choices: [{ question: 'Q', options: [
-        { label: 'a', proposal_id: 'q1' }, { label: 'b', proposal_id: 'q2' }] }] },
-    ] } } })
-    expect(unchosenOptions(af, { q1: 'applied', q2: 'dismissed' })).toEqual(['p1', 'p2'])
   })
 })
 

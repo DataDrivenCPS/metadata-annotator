@@ -347,6 +347,34 @@ table.changes .after { color: var(--ok); font-weight: 500; }
 .ev-kind { font-size: var(--fs-tag); text-transform: uppercase; color: var(--muted); }
 .proposal-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 
+/* ------------------------------------------------------------ pending edits tab */
+.pending-edits { height: 100%; overflow: auto; padding: 10px 14px 16px; display: grid; gap: 14px; align-content: start; }
+.pending-intro { margin: 0; font-size: var(--fs-sm); }
+.pending-empty { padding: 24px 16px; max-width: 46em; }
+.pending-empty p { margin: 0 0 6px; }
+.pending-card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--panel); max-width: 64em; }
+.pending-card.open { border-color: var(--border-strong); }
+.pending-card-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 12px; text-align: left;
+  border-radius: var(--radius-lg); cursor: pointer; }
+.pending-card-head:hover { background: var(--proposed); }
+.pending-card.open > .pending-card-head { border-bottom: 1px solid var(--border); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+.pending-chevron { flex-shrink: 0; width: 24px; height: 24px; display: inline-grid; place-items: center; border-radius: 50%;
+  border: 1px solid var(--border-strong); background: var(--panel); color: var(--text); transition: transform .15s, background .15s; }
+.pending-card-head:hover .pending-chevron { background: var(--proposed-strong); border-color: var(--proposed-strong); color: white; }
+.pending-card-head[aria-expanded="true"] .pending-chevron { transform: rotate(90deg); }
+.pending-origin { flex-shrink: 0; font-size: var(--fs-tag); text-transform: uppercase; letter-spacing: .03em; font-weight: 600;
+  padding: 1px 6px; border-radius: var(--radius); background: var(--proposed); color: var(--proposed-strong); }
+.pending-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-card.open .pending-title { white-space: normal; }
+.pending-counts, .pending-when { flex-shrink: 0; white-space: nowrap; }
+.pending-card-body { display: grid; gap: 8px; padding: 10px 12px 12px; }
+.pending-request { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-card.focused { outline: 2px solid var(--proposed-strong); outline-offset: 3px; }
+.pending-reasons ul { margin: 4px 0 0; padding-left: 18px; }
+.proposal-ref.waiting { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px;
+  border-style: solid; border-color: var(--proposed-strong); color: var(--text); }
+.afx-go { color: var(--proposed-strong); flex-shrink: 0; }
+
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 8px 16px; border-radius: var(--radius-lg); background: var(--text); color: white; box-shadow: 0 8px 24px rgba(0,0,0,.2); z-index: 100; max-width: 80vw; }
 .toast.error { background: var(--bad-strong); }
 .toast.success { background: var(--ok-strong); }

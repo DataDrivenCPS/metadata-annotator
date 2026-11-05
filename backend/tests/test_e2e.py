@@ -156,7 +156,9 @@ def test_assistant_and_review_flow(live, page):
     page.locator(".needs-input button", has_text="Answer below").click()
     page.keyboard.type("Yes, it is piped later.")
     page.keyboard.press("Enter")
-    card = page.locator(".proposal")
+    # The chat links the proposed change; it is reviewed and applied in the Pending edits tab
+    page.locator(".proposal-ref button", has_text="Review in Pending edits").click()
+    card = page.locator(".pending-card .proposal")
     issues = card.locator(".proposal-fixes summary")
     expect(issues).to_have_text("Dismisses 1 issue · no new issues")
     issues.click()
@@ -208,7 +210,8 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
     expect(page.get_by_label('Role for manual.txt', exact=True)).to_have_value('reference')
     form.locator('textarea').fill('Build the storage tank; use the manual as evidence.')
     form.get_by_role('button', name='Build model', exact=True).click()
-    expect(page.locator('.proposal')).to_contain_text('TK-100', timeout=60000)
+    page.locator('.proposal-ref button', has_text='Review in Pending edits').click(timeout=60000)
+    expect(page.locator('.pending-card .proposal')).to_contain_text('TK-100')
     proposals = httpx.get(f'{base}/api/projects/{pid}/proposals', timeout=120).json()
     assert len(proposals) == 1
     assert [s['role'] for s in proposals[0]['build_summary']['sources']] == ['input', 'reference']
@@ -228,7 +231,8 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
     page.locator('.composer button.primary').click()
     expect(page.locator('.thread')).to_contain_text('What is its capacity?', timeout=60000)
     assert 'role: reference' in llm.seen[-2][0]['content']
-    page.get_by_role('button', name='Apply change', exact=True).click()
+    page.locator('.proposal-ref button', has_text='Review in Pending edits').last.click()
+    page.locator('.pending-card', has_text='TK-100').first.get_by_role('button', name='Apply change', exact=True).click()
     expect(page.locator('.toast')).to_contain_text('Applied', timeout=60000)
     page.locator('.model-pane nav.tabs').get_by_role('button', name=re.compile(r'^Equipment')).click()
     page.locator('.model-pane tbody tr', has_text='TK-100').click()
@@ -236,7 +240,7 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
     expect(page.locator('.inspector .evidence-excerpt', has_text='Tank TK-100 stores water.')).to_be_visible()
 
 
-def test_chat_choices_open_for_review_and_settle_when_applied(live, page):
+def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     from playwright.sync_api import expect
 
     base, llm = live
@@ -264,12 +268,13 @@ def test_chat_choices_open_for_review_and_settle_when_applied(live, page):
     expect(choices).to_contain_text("Which unit does CT-201 report?", timeout=60000)
     expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
 
-    # Picking an option opens it as an ordinary proposed change, under the question it answers.
+    # Picking an option opens the choice in Pending edits, each option a proposed change to choose.
     choices.get_by_role("button", name=re.compile("microsiemens")).click()
-    card = page.locator(".msg.agent .proposal")
-    expect(card).to_contain_text("CT-201")
-    expect(choices.locator("button.chosen")).to_contain_text("microsiemens")
-    card.get_by_role("button", name="Apply change", exact=True).click()
+    card = page.locator(".pending-card", has_text="Which unit does CT-201 report?")
+    expect(card.locator(".proposal")).to_have_count(2)
+    option = card.locator(".proposal", has_text="microsiemens")
+    expect(option).to_contain_text("CT-201")
+    option.get_by_role("button", name="Choose this", exact=True).click()
     expect(page.locator(".toast")).to_contain_text("Applied", timeout=60000)
     expect(choices).to_contain_text("✓ microsiemens per cm")
     statuses = [p["status"] for p in httpx.get(f"{base}/api/projects/{pid}/proposals", timeout=120).json()]

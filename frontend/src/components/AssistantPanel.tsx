@@ -1,7 +1,7 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api'
 import { autofixCandidates, callBreakdown, continuation, describeStep, effectiveSelection, formatDuration, isActive,
-  issuesOnSelection, leftOutSummary, owningRun, runOptionIds, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
+  issuesOnSelection, leftOutSummary, owningRun, startsExchange, summarizeChanges, threadRuns, type ProposalState } from '../assistant'
 import { AutofixBanner } from './AutofixReport'
 import { Disclosure } from './Disclosure'
 import { ActionButton, ChoiceButtons } from './Choices'
@@ -71,7 +71,7 @@ export function AssistantPanel() {
         {!thread.length && !orphan && !sending && <Starters />}
         {thread.map((run, i) => <Exchange key={run.id} run={run} divider={i > 0 && startsExchange(run)}
           isLast={run === last && !newRequest} />)}
-        {orphan && <ProposalPreview proposal={orphan} running={!!last && isActive(last)} />}
+        {orphan && <ProposalRef proposalId={orphan.id} />}
         {sending && <div className="msg user sending">
           <div className="msg-author">You <span className="spinner small" /><span className="muted small">sending…</span></div>
           <div className="msg-text">{sending}</div>
@@ -414,7 +414,6 @@ function LongText({ text }: { text: string }) {
 
 function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
   const cancelRun = useStore((s) => s.cancelRun)
-  const proposal = useStore((s) => s.proposal)
   const states = useStore((s) => s.proposalStates)
   const focusAssistant = useStore((s) => s.focusAssistant)
   const active = isActive(run)
@@ -422,9 +421,6 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
   const elapsed = (active ? now : Date.parse(run.finished_at ?? run.created_at)) - Date.parse(run.created_at)
   const proposalId = run.status === 'succeeded' ? run.outcome.proposal_id : null
   const choices = run.status === 'succeeded' && !proposalId ? run.outcome.choices ?? [] : []
-  // The proposal on screen belongs here if this run proposed it or offered it as an option.
-  const current = proposal && (proposal.id === proposalId || (choices.length > 0 && runOptionIds(run).includes(proposal.id)))
-    ? proposal : null
   const questions = !proposalId ? run.outcome.questions ?? [] : []
 
   return (
@@ -439,7 +435,7 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
       {run.status === 'failed' && <div className="error-text">{run.error ?? 'The run failed.'}</div>}
       {run.status === 'cancelled' && <div className="muted">Cancelled.</div>}
       {run.status === 'succeeded' && <>
-        {!proposalId && run.outcome.explanation && <div className="msg-text">{run.outcome.explanation}</div>}
+        {run.outcome.explanation && <LongText text={run.outcome.explanation} />}
         {!run.outcome.explanation && !proposalId && !questions.length && !choices.length && <div className="muted">No change proposed.</div>}
         {run.outcome.dismissed_proposal_id && <div className="thread-event">The earlier proposal is no longer needed and was closed.</div>}
       </>}
@@ -450,17 +446,13 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
       </div>}
       {choices.length > 0 && <div className="needs-input choices">
         <div className="needs-input-head"><span className="needs-input-icon">?</span> Pick an option
-          <span className="muted small"> · each opens as a change to review{isLast ? ', or answer below' : ''}</span></div>
-        {choices.map((c, k) => <ChoiceButtons key={k} choice={c} review />)}
+          <span className="muted small"> · each waits in Pending edits{isLast ? ', or answer below' : ''}</span></div>
+        {choices.map((c, k) => <ChoiceButtons key={k} choice={c} />)}
       </div>}
-      {current
-        ? <ProposalPreview proposal={current} running={false} />
-        : proposalId && <div className="proposal-ref">Proposed change · {states[proposalId] === undefined && isLast
-          ? <><span className="spinner small" /> loading…</> : proposalStateText(states[proposalId])}</div>}
+      {proposalId && <ProposalRef proposalId={proposalId} loading={states[proposalId] === undefined && isLast} />}
       {!active && <Disclosure className="run-details"
         summary={`Run details · ${run.progress.length} step${run.progress.length === 1 ? '' : 's'} · ${formatDuration(elapsed)}`}>
         {() => <>
-          {proposalId && run.outcome.explanation && <LongText text={run.outcome.explanation} />}
           {run.parent_run_id && <div className="muted">{run.continued ? 'Continued the earlier conversation.'
             : 'Started a fresh conversation with the current model.'}</div>}
           <RunSteps run={run} live={false} />
@@ -468,6 +460,26 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
       </Disclosure>}
     </div>
   )
+}
+
+/** The chat's line for a proposed change: it is reviewed and applied in the Pending edits tab. */
+function ProposalRef({ proposalId, loading = false }: { proposalId: string; loading?: boolean }) {
+  const state = useStore((s) => s.proposalStates[proposalId])
+  const proposal = useStore((s) => s.pendingEdits.find((p) => p.id === proposalId)
+    ?? (s.proposal?.id === proposalId ? s.proposal : undefined))
+  const showPending = useStore((s) => s.showPending)
+  const waiting = state === 'pending' || state === 'stale'
+  const lines = useMemo(() => proposal ? summarizeChanges(proposal.changes, fieldLabel) : [], [proposal])
+  const counts = { created: 0, updated: 0, deleted: 0 }
+  for (const l of lines) counts[l.change]++
+  const what = [counts.created && `${counts.created} added`, counts.updated && `${counts.updated} changed`,
+    counts.deleted && `${counts.deleted} removed`].filter(Boolean).join(' · ')
+  if (loading) return <div className="proposal-ref">Proposed change · <span className="spinner small" /> loading…</div>
+  return <div className={`proposal-ref${waiting ? ' waiting' : ''}`}>
+    <span>Proposed change{what && ` · ${what}`}{!waiting && ` · ${proposalStateText(state)}`}
+      {state === 'stale' && <span className="warn-text"> · made against an earlier model</span>}</span>
+    {waiting && <button className="link" onClick={() => showPending(proposalId)}>Review in Pending edits →</button>}
+  </div>
 }
 
 function proposalStateText(state: ProposalState | undefined) {
@@ -489,8 +501,10 @@ function fmt(v: unknown) {
 }
 
 const FACE_LINES = 8
-function ProposalPreview({ proposal, running: runningProp }: {
-  proposal: Proposal; running: boolean
+/** A proposed change with everything needed to decide on it, and Apply / Discard: in the chat, and
+ * as a card in the Pending edits tab (``title`` names it there; ``applyLabel`` for a choice's option). */
+export function ProposalPreview({ proposal, running: runningProp, title, applyLabel }: {
+  proposal: Proposal; running: boolean; title?: ReactNode; applyLabel?: string
 }) {
   const projectId = useStore((s) => s.projectId)
   const autofixRunning = useStore((s) => Object.values(s.runs).some((r) => r.kind === 'autofix' && isActive(r)))
@@ -547,7 +561,7 @@ function ProposalPreview({ proposal, running: runningProp }: {
   return (
     <div className={`proposal status-${proposal.status}`}>
       <div className="proposal-head">
-        <h3>Proposed change</h3>
+        <h3>{title ?? 'Proposed change'}</h3>
         {headline && <span className="muted">{headline}</span>}
         {outside > 0 && <span className="warn-text">{outside} outside your selection</span>}
         <span className="spacer" />
@@ -593,7 +607,7 @@ function ProposalPreview({ proposal, running: runningProp }: {
           {' '}— the assistant could not make {one ? 'it' : 'them'} valid, so {one ? 'it is' : 'they are'} not part of this proposal.</p>
         <ul>{leftOut.map((e, i) => <li key={i}><code>{leftOutSummary(e.operation)}</code>: {e.problems.join('; ')}</li>)}</ul>
         {proposal.status === 'pending' && <button className="link" disabled={running || busy} title={waitTitle}
-          onClick={() => void replyToProposal('Try the left-out operations again.', proposal.agent_run_id ?? undefined, true)}>
+          onClick={() => void replyToProposal('Try the left-out operations again.', proposal.agent_run_id ?? undefined, true, proposal)}>
           Try {one ? 'it' : 'these'} again</button>}
       </div>}
 
@@ -649,11 +663,11 @@ function ProposalPreview({ proposal, running: runningProp }: {
           </span>}
           <ActionButton className="primary" disabled={!!viewing || busy || running || (proposal.operations.length === 0 && !dismissals.length)}
             title={viewing ? 'Go back to the current model to apply it' : waitTitle}
-            onClick={applyProposal}>{proposal.operations.length ? 'Apply change'
-              : `Dismiss ${dismissals.length} issue(s)`}</ActionButton>
+            onClick={() => applyProposal(proposal)}>{applyLabel ?? (proposal.operations.length ? 'Apply change'
+              : `Dismiss ${dismissals.length} issue(s)`)}</ActionButton>
           {proposal.status === 'stale' && <ActionButton disabled={!!viewing || busy || running} title={waitTitle}
-            onClick={regenerate}>Refresh on latest</ActionButton>}
-          <ActionButton disabled={busy || running} title={waitTitle} onClick={dismissProposal}>Discard</ActionButton>
+            onClick={() => regenerate(proposal)}>Refresh on latest</ActionButton>}
+          <ActionButton disabled={busy || running} title={waitTitle} onClick={() => dismissProposal(proposal)}>Discard</ActionButton>
         </>}
         {proposal.status === 'applied' && <span className="ok-text">{proposal.operations.length
           ? `Applied as ${proposal.applied_revision}.` : `Dismissed ${dismissals.length} issue(s).`}</span>}

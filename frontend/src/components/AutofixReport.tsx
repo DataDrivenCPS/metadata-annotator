@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { autofixProgress, autofixReport, isActive, issueSelection, type AutofixGroup, type AutofixStatus } from '../assistant'
+import { autofixProgress, autofixReport, isActive, issueSelection, pendingCount, type AutofixGroup, type AutofixStatus } from '../assistant'
 import { affectedRows, groupIssues, headline, isHandled, labelList, reportSections, STATUS_INFO, tally,
   type ReportSection } from '../autofixView'
 import { useStore } from '../store'
@@ -53,8 +53,9 @@ function AutofixReport({ run }: { run: AgentRun }) {
   // Which groups the person has dealt with, worked out once for the summary, the sections and the items.
   const handled = useMemo(() => new Set(groups.flatMap((g, key) => isHandled(g, states) ? [key] : [])), [groups, states])
   const counts = tally(groups, states)
-  // Open when something needs the person; an all-fixed report stays a one-line summary.
-  const [open, setOpen] = useState(counts.forYou > 0)
+  // Open only when something needs the person outside Pending edits (questions, failures): edits
+  // and choices wait in that tab, so the report stays a one-line summary with a link to it.
+  const [open, setOpen] = useState(groups.some((g) => g.status === 'input' || g.status === 'failed'))
   const [filter, setFilter] = useState<AutofixStatus | null>(null)
   // The first item to act on starts expanded, so its options and buttons are in view.
   const [expanded, setExpanded] = useState<Set<number>>(() => {
@@ -75,6 +76,7 @@ function AutofixReport({ run }: { run: AgentRun }) {
       <span className="autofix-tray-summary">
         <strong>Auto-fix {run.status === 'succeeded' ? 'finished' : run.status}</strong>
         <span className="muted">{summaryText(run, groups.length, counts)}</span>
+        <PendingLink run={run} />
       </span>
       <span className="autofix-tray-hint">
         <span className="autofix-expand">Show results</span>
@@ -132,7 +134,8 @@ function ReportSectionView({ section: { status, items }, handled, expanded, onTo
   </section>
 }
 
-/** One group: a single summary line, and on click everything known about it and what can be done. */
+/** One group: a single summary line. An edit or choice still waiting opens its card in Pending edits;
+ * anything else shows everything known about it and what can be done. */
 function ReportItemView({ group, handled, open, onToggle, onContinue }: {
   group: AutofixGroup; handled: boolean; open: boolean; onToggle: () => void; onContinue: () => void
 }) {
@@ -140,9 +143,13 @@ function ReportItemView({ group, handled, open, onToggle, onContinue }: {
   const rows = useStore((s) => s.rows)
   const mine = useMemo(() => groupIssues(group, issues), [group, issues])
   const affected = useMemo(() => affectedRows(mine, rows), [mine, rows])
+  const showPending = useStore((s) => s.showPending)
+  const edit = !handled ? group.proposal_id ?? group.choices?.[0]?.options[0]?.proposal_id : undefined
   return <li className={`afx-item ${group.status}${handled ? ' handled' : ''}${open ? ' open' : ''}`}>
-    <button className="bare afx-item-head" aria-expanded={open} onClick={onToggle}
-      title={open ? 'Hide the details' : 'Show the details and what you can do'}>
+    <button className="bare afx-item-head" aria-expanded={edit ? undefined : open}
+      onClick={edit ? () => { showPending(edit); onContinue() } : onToggle}
+      title={edit ? 'Open it in Pending edits, where you review and apply it'
+        : open ? 'Hide the details' : 'Show the details and what you can do'}>
       <span className={`afx-badge ${group.status}`}>{handled ? '✓ Done' : STATUS_INFO[group.status].badge}</span>
       <span className="afx-item-text">
         <span className="afx-headline">{headline(group)}</span>
@@ -151,21 +158,31 @@ function ReportItemView({ group, handled, open, onToggle, onContinue }: {
             .filter(Boolean).join(' · ')}
         </span>}
       </span>
-      <span className="afx-chevron" aria-hidden="true">▸</span>
+      <span className={edit ? 'afx-go' : 'afx-chevron'} aria-hidden="true">{edit ? '→' : '▸'}</span>
     </button>
-    {open && <ItemDetail group={group} mine={mine} affected={affected} onContinue={onContinue} />}
+    {open && !edit && <ItemDetail group={group} mine={mine} affected={affected} onContinue={onContinue} />}
   </li>
 }
 
-/** The review action: open the proposal, or say where it went. */
+/** The review action: the change waits in the Pending edits tab, with Apply and Discard on it. */
 function ReviewAction({ proposalId, onContinue }: { proposalId: string; onContinue: () => void }) {
-  const reviewProposal = useStore((s) => s.reviewProposal)
-  const isOpen = useStore((s) => s.proposal?.id === proposalId)
+  const showPending = useStore((s) => s.showPending)
   const state = useStore((s) => s.proposalStates[proposalId])
-  if (isOpen) return <span className="muted small">The proposed change is open below in the assistant panel.</span>
   if (state === 'applied') return <span className="small ok-text">✓ Applied</span>
   if (state === 'dismissed') return <span className="muted small">Discarded</span>
-  return <button className="primary" onClick={() => void reviewProposal(proposalId).then(onContinue)}>Review the proposed change</button>
+  return <button className="primary" onClick={() => { showPending(proposalId); onContinue() }}
+    title="The change waits in Pending edits: see what it changes, then apply or discard it">Open in Pending edits</button>
+}
+
+/** The edits from this run still waiting, with a way to them. */
+function PendingLink({ run }: { run: AgentRun }) {
+  const showPending = useStore((s) => s.showPending)
+  const edits = useStore((s) => s.pendingEdits)
+  const runs = useStore((s) => s.runs)
+  const waiting = useMemo(() => pendingCount(edits, runs, run.id), [edits, runs, run.id])
+  if (!waiting) return null
+  return <button className="link" onClick={(e) => { e.preventDefault(); e.stopPropagation(); showPending() }}>
+    {waiting} pending edit{waiting === 1 ? '' : 's'} →</button>
 }
 
 function ItemDetail({ group, mine, affected, onContinue }: {

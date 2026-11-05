@@ -67,15 +67,74 @@ export const runOptionIds = (run: AgentRun): string[] =>
 export const owningRun = (thread: AgentRun[], proposalId: string): AgentRun | undefined =>
   thread.find((r) => r.outcome.proposal_id === proposalId || runOptionIds(r).includes(proposalId))
 
-/** The other options of the chat choice this proposal is an option of (closed once one is applied). */
-export function siblingOptions(runs: Record<string, AgentRun>, proposalId: string): string[] {
+/** A question with options, from a chat reply or an auto-fix group (auto-fix options were checked
+ * against the issues; chat options were not). */
+export interface OfferedChoice { choice: AutofixChoice; runId: string; autofix: boolean }
+
+/** Every choice the runs offered, by the proposal id of each of its options. */
+export function choicesByOption(runs: Record<string, AgentRun>): Map<string, OfferedChoice> {
+  const out = new Map<string, OfferedChoice>()
   for (const run of Object.values(runs)) {
-    for (const choice of run.outcome.choices ?? []) {
-      const ids = choice.options.map((o) => o.proposal_id)
-      if (ids.includes(proposalId)) return ids.filter((id) => id !== proposalId)
-    }
+    const offered = [
+      ...(run.outcome?.choices ?? []).map((choice) => ({ choice, runId: run.id, autofix: false })),
+      ...autofixReport(run).groups.flatMap((g) => (g.choices ?? []).map((choice) => ({ choice, runId: run.id, autofix: true }))),
+    ]
+    for (const c of offered) for (const o of c.choice.options) out.set(o.proposal_id, c)
   }
-  return []
+  return out
+}
+
+/** The other options of the choice this proposal is an option of (closed once one is applied). */
+export function siblingOptions(runs: Record<string, AgentRun>, proposalId: string): string[] {
+  const offered = choicesByOption(runs).get(proposalId)
+  return offered ? offered.choice.options.map((o) => o.proposal_id).filter((id) => id !== proposalId) : []
+}
+
+/** Proposals still waiting for the person (pending, or made against an earlier model), newest first. */
+export const openEdits = (proposals: Proposal[]): Proposal[] =>
+  proposals.filter((p) => p.status === 'pending' || p.status === 'stale')
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+
+/** What the tab lists: single edits, and choices whose options are edits (one card per choice). */
+export type PendingItem =
+  | { kind: 'edit'; proposal: Proposal }
+  | { kind: 'choice'; offered: OfferedChoice; options: Proposal[] }
+
+export function pendingItems(edits: Proposal[], runs: Record<string, AgentRun>): PendingItem[] {
+  const byOption = choicesByOption(runs)
+  const items: PendingItem[] = []
+  const seen = new Map<AutofixChoice, Extract<PendingItem, { kind: 'choice' }>>()
+  for (const p of edits) {
+    const offered = byOption.get(p.id)
+    if (!offered) { items.push({ kind: 'edit', proposal: p }); continue }
+    let item = seen.get(offered.choice)
+    if (!item) {
+      item = { kind: 'choice', offered, options: [] }
+      seen.set(offered.choice, item)
+      items.push(item)
+    }
+    item.options.push(p)
+  }
+  return items
+}
+
+/** Where a proposal came from: auto-fix, a build, or a chat request. */
+export function proposalOrigin(p: Proposal, runs: Record<string, AgentRun>): 'Auto-fix' | 'Build' | 'Assistant' {
+  const run = p.agent_run_id ? runs[p.agent_run_id] : undefined
+  if (run?.kind === 'autofix') return 'Auto-fix'
+  if (p.kind === 'build' || run?.kind === 'build') return 'Build'
+  return 'Assistant'
+}
+
+/** How many things wait for the person in the tab (a choice counts once), optionally only one run's. */
+export const pendingCount = (edits: Proposal[], runs: Record<string, AgentRun>, runId?: string) =>
+  pendingItems(runId ? edits.filter((p) => p.agent_run_id === runId) : edits, runs).length
+
+/** The auto-fix group a proposal came from (its issues name what the edit is for). */
+export function autofixGroupOf(p: Proposal, runs: Record<string, AgentRun>): AutofixGroup | undefined {
+  const run = p.agent_run_id ? runs[p.agent_run_id] : undefined
+  return autofixReport(run).groups.find((g) => g.proposal_id === p.id
+    || (g.choices ?? []).some((c) => c.options.some((o) => o.proposal_id === p.id)))
 }
 
 /**
@@ -88,18 +147,6 @@ export function restorableProposal(proposals: Proposal[], thread: AgentRun[], cl
   const proposed = new Set(thread.map((r) => r.outcome.proposal_id).filter(Boolean))
   const open = proposals.filter((p) => !cleared.includes(p.id) && (p.status === 'pending' || p.status === 'stale'))
   return open.find((p) => p.id === currentId) ?? open.find((p) => proposed.has(p.id)) ?? null
-}
-
-/** Auto-fix options left unchosen: closed with the report so they do not linger as open proposals. */
-export function unchosenOptions(run: AgentRun | undefined, states: Record<string, ProposalState>): string[] {
-  const out: string[] = []
-  for (const group of autofixReport(run).groups) {
-    for (const choice of group.choices ?? []) {
-      const ids = choice.options.map((o) => o.proposal_id)
-      if (!ids.some((id) => states[id] === 'applied')) out.push(...ids.filter((id) => !states[id] || states[id] === 'pending' || states[id] === 'stale'))
-    }
-  }
-  return out
 }
 
 /** Proposal states for the thread: a proposal revised by a later reply is superseded. */

@@ -26,12 +26,13 @@ start a new section rather than rewriting them.
 1. Points tab → click the **Unit** cell of `CT-201` (it says Milligram per Litre).
    The assistant shows **"Units for 1 point"**.
 2. Type: *The unit is wrong, this analyzer reads uS/cm.* → **Propose change**.
-3. The proposal shows `CT-201 · Unit · Milligram per Litre → Microsiemens per Centimetre` and
+3. The chat links the proposal (**Review in Pending edits →**); its card in the **Pending edits**
+   tab shows `CT-201 · Unit · Milligram per Litre → Microsiemens per Centimetre` and
    an **Addresses … issues** section and whether it introduces new issues. Open **Technical detail** to see the one operation
    and the exact triples removed/added.
 4. **Apply**. The header moves to the next revision; the Unit cell shows a purple dot (set or
-   confirmed by a person). The applied proposal folds into a summary; choose **show** to
-   inspect it again.
+   confirmed by a person). The card leaves Pending edits, and the chat's line for it says
+   *applied*.
 
 ## 2. Reassign selected points to different equipment
 
@@ -74,8 +75,8 @@ beside a record jumps to its point. Open **Individual changes** for a detailed l
 **Undo** to return to the prior revision. Records left outside the model can be submitted with
 **Build the rest** after correcting or clarifying their source convention.
 
-Before applying any proposal, type a response in the Assistant box above it and send it as a
-reply to the proposed change. For example, *A2 is an AHU, not a VAV*. The
+Before applying any proposal, type a response in the Assistant box and send it as a
+reply to the proposed change (it waits in Pending edits meanwhile). For example, *A2 is an AHU, not a VAV*. The
 assistant can inspect the pending draft, including newly proposed objects, and returns an
 updated proposal; review the complete updated changes and questions before **Apply**.
 Source builds preserve extraction evidence and do not lock fields when applied. Direct edits
@@ -132,7 +133,7 @@ edit after an undo clears the redo history.
 ## 6. Stale proposals
 
 Ask for another change, and before applying it make a direct edit (double-click any cell, e.g.
-rename `LT-101`). The pending proposal turns orange: *"The model is now at rev-N; this proposal
+rename `LT-101`). The proposal's card in Pending edits turns orange: *"The model is now at rev-N; this proposal
 was made against rev-M"*, with **Refresh on latest** (re-runs the same request on the current model)
 and **Discard**. Applying a stale proposal is refused by the server (HTTP 409).
 

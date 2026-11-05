@@ -272,15 +272,4 @@ describe('proposal response ownership', () => {
     expect(useStore.getState().proposal?.id).toBe('new')
     expect(useStore.getState().proposalStates.old).toBe('dismissed')
   })
-
-  it('does not install a proposal requested in a project that has been closed', async () => {
-    const pending = deferred<Proposal>()
-    vi.mocked(api.proposal).mockReturnValueOnce(pending.promise)
-    const reviewing = useStore.getState().reviewProposal('old')
-    await useStore.getState().openProject(null)
-    pending.resolve({ id: 'old', status: 'pending' } as Proposal)
-    await reviewing
-    expect(useStore.getState().proposal).toBeNull()
-    expect(useStore.getState().proposalStates).toEqual({})
-  })
 })

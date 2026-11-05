@@ -164,8 +164,8 @@ function Composer() {
         {chosen.length ? <>
           {chosen.slice(0, 6).map((r) => <span key={r!.id} className={`chip ${r!.kind}`}>{r!.label}</span>)}
           {chosen.length > 6 && <span className="muted">+{chosen.length - 6} more</span>}
-          {source === 'current' && <button className="link" onClick={clearSelection}>clear</button>}
-          {source === 'conversation' && <button className="link" onClick={dropScope}>clear</button>}
+          {source === 'current' && <button className="link" onClick={clearSelection}>Clear</button>}
+          {source === 'conversation' && <button className="link" onClick={dropScope}>Clear</button>}
           {fixable.length > 0 && <button className="link" disabled={running}
             title="The assistant fixes these issues group by group; fixes that pass every check are applied (and can be undone), the rest wait for you"
             onClick={() => void startAutofix(fixable)}>· Auto-fix {fixable.length} issue{fixable.length === 1 ? '' : 's'}</button>}
@@ -174,14 +174,14 @@ function Composer() {
       {selection.source_regions.length > 0 && <div className="composer-selection">
         <span className="muted" title="Sent with this message only; attach again to use them in a later message">
           Attached to this message: {attachmentSummary(selection.source_regions)}</span>
-        <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>clear evidence</button>
+        <button className="link" onClick={() => useStore.getState().setSelection({ ...selection, source_regions: [] })}>Clear</button>
       </div>}
       {canContinue && <div className={`composer-mode mode-${next ? next.kind : 'new'}`}>
         {next ? <>
           <span>↩ {CONTINUE_LABEL[next.kind]}</span>
           <button className="link" onClick={() => setNewRequest(true)}>Start a new request</button>
         </> : <>
-          <span>New request — the assistant won’t see the earlier conversation</span>
+          <span title="The assistant won’t see the earlier conversation">New request</span>
           <button className="link" onClick={() => setNewRequest(false)}>Continue instead</button>
         </>}
       </div>}
@@ -199,7 +199,7 @@ function Composer() {
         }}
       />
       <div className="assist-actions">
-        <span className="muted small">Enter to send · Shift+Enter for a new line</span>
+        <span className="spacer" />
         <button className="primary" disabled={!!viewing || !text.trim() || running || sending} onClick={() => void send()}
           title="Enter to send · Shift+Enter for a new line">
           {next?.kind === 'proposal' ? 'Send reply' : 'Send'}
@@ -255,7 +255,7 @@ function ModelStatus() {
       <span className={`status-pill ${state}`} title={health?.ok
         ? `Connected to ${current?.base_url ?? provider} · ${shortModel(health.model ?? current?.model ?? '')}`
         : health?.detail ?? 'Checking the model endpoint…'}>
-        <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? 'Connected' : 'Unavailable'}
+        <span className="dot" />{state === 'checking' ? 'Checking…' : state === 'ok' ? '' : 'Unavailable'}
       </span>
       <select value={shown.value} title="Model" onChange={(e) => {
         setHealth(null)
@@ -273,6 +273,7 @@ function ModelStatus() {
 }
 
 const STARTER_ISSUES = 10
+const AUTOFIX_HINT = 'Fixes that pass every check are applied (and can be undone); the rest wait for you'
 
 /** One-click ways to start a conversation; each fills the message box for review first. */
 function Starters() {
@@ -288,12 +289,12 @@ function Starters() {
   const starters = [
     onSelection.length > 0 && {
       label: `Auto-fix the ${onSelection.length} issue${onSelection.length === 1 ? '' : 's'} on the selection`,
-      hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
+      hint: AUTOFIX_HINT,
       run: () => void startAutofix(onSelection),
     },
     violations.length > 1 && !autofixing && {
       label: `Auto-fix the ${violations.length} open violations`,
-      hint: 'The assistant works through each issue; you approve, skip or answer each proposal',
+      hint: AUTOFIX_HINT,
       run: () => void startAutofix(autofixCandidates(issues ?? [], new Set())),
     },
     violations.length > 0 && {
@@ -314,10 +315,8 @@ function Starters() {
     },
   ].filter((x) => !!x)
   return <div className="thread-empty">
-    <p className="muted">Select rows in a table or the graph, then describe what is wrong or what to add. The assistant
-      replies with an explanation, questions, or a proposed change you review before it is applied.</p>
     <div className="starters">
-      <span className="muted small">Or start with</span>
+      <span className="muted small">Start with</span>
       {starters.map((st) => <button key={st.label} onClick={st.run} title={st.hint}>{st.label}</button>)}
     </div>
   </div>
@@ -365,8 +364,7 @@ function RunSteps({ run, live }: { run: AgentRun; live: boolean }) {
           {` · ${run.outcome.estimated ? '~' : ''}${run.outcome.input_tokens}+${run.outcome.output_tokens} tokens`}
           {run.outcome.cached_tokens ? ` (${run.outcome.cached_tokens} cached)` : ''}</span> : ''}</li>}
     </ol>
-    {slowModel && <div className="muted small step-note">The model is still working. Self-hosted models can take a
-      minute or more per step; you can keep browsing while you wait.</div>}
+    {slowModel && <div className="muted small step-note">Still working; local models can take a minute or more per step.</div>}
   </>
 }
 
@@ -449,7 +447,7 @@ function AssistantMessage({ run, isLast }: { run: AgentRun; isLast: boolean }) {
         </>}
       </LazyDetails> : !active && <>
         <div className="msg-foot">
-          <button className="link" onClick={() => setOpen(!open)}>{open ? 'hide steps' : `${run.progress.length} steps`}</button>
+          <button className="link" onClick={() => setOpen(!open)}>{open ? 'Hide steps' : `${run.progress.length} steps`}</button>
           <span className="muted"> · took {formatDuration(elapsed)}</span>
         </div>
         {open && <RunSteps run={run} live={false} />}

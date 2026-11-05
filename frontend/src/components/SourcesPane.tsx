@@ -153,10 +153,10 @@ function SourceSetBuild({ sources, onClose }: { sources: Source[]; onClose: () =
   return <div className="build-box source-set-build">
     <div className="build-head"><strong>Build from {sources.length} selected source{sources.length === 1 ? '' : 's'}</strong>
       <button onClick={onClose}>Close</button></div>
-    <p className="muted small">Build inputs supply equipment, points, and connections. Supporting evidence helps interpret and verify them.</p>
     {sources.map((s) => <div className="source-role" key={s.id}>
       <label><span title={s.filename}>{s.filename}</span>
         <select aria-label={`Role for ${s.filename}`} value={selectedRoles[s.id]}
+          title="Build inputs supply equipment, points and connections; supporting evidence helps interpret and check them"
           onChange={(e) => setRoles({ ...roles, [s.id]: e.target.value as SourceRole })}>
           <option value="input">Build input</option>
           <option value="reference">Supporting evidence</option>
@@ -167,18 +167,17 @@ function SourceSetBuild({ sources, onClose }: { sources: Source[]; onClose: () =
           onChange={(e) => setPages({ ...pages, [s.id]: e.target.value })} placeholder="1-3, 5" />
       </label>}
     </div>)}
-    <p className="muted small">Files and pages are read in batches. You’ll review one combined proposal. Conflicting sources become questions.</p>
     {unmapped && <p className="warn-text small">Confirm each CSV’s structure before building.</p>}
-    {needsVision && <p className="warn-text small">Choose a model that supports images in the assistant panel.</p>}
-    {!vision && sources.some((s) => s.kind === 'pdf') && <p className="muted small">This model reads PDF text only; scans and diagrams need a model with image support.</p>}
+    <VisionNote vision={vision} sources={sources} />
     <textarea rows={3} value={hint} onChange={(e) => setHint(e.target.value)}
       placeholder="What should it build? e.g. Build from the point list and drawing; use the manual to identify treatment stages." />
     <div className="csv-actions">
       <button className="primary" disabled={!inputs.length || unmapped || needsVision || starting || running || !!viewing}
+        title="Files and pages are read in batches into one proposal to review; conflicting sources become questions"
         onClick={() => void build()}>{starting ? 'Starting…' : 'Build model'}</button>
       <button disabled={unmapped || needsVision || running || !!viewing || starting} onClick={attach}>Use as evidence in chat</button>
     </div>
-    {!inputs.length && <p className="muted small">Choose at least one build input, or use these sources as evidence in chat.</p>}
+    {!inputs.length && <p className="muted small">Mark at least one source as a build input.</p>}
   </div>
 }
 
@@ -235,16 +234,11 @@ function RecordsView({ source }: { source: Source }) {
         </div>
         {building && (
           <div className="build-form">
-            <p className="muted small">
-              The assistant follows the BuildingMOTIF skill's point-list workflow: it works out the naming
-              convention, maps each distinct point {family === 'brick' ? 'suffix to a Brick point class' : 'description to a point kind, unit and sensor'},
-              classifies equipment by the points it carries, and proposes the whole model for your review.
-              Anything it can't map with a verified term is left for you to resolve.
-            </p>
             <textarea rows={2} placeholder="Anything it should know? e.g. “A1, A2, E1 are AHUs; RMxxxx entries are VAV boxes with reheat.”"
               value={hint} onChange={(e) => setHint(e.target.value)} />
             <div className="csv-actions">
-              <button className="primary" onClick={async () => { if (await startBuild([source.id], hint.trim())) setBuilding(false) }}>
+              <button className="primary" onClick={async () => { if (await startBuild([source.id], hint.trim())) setBuilding(false) }}
+                title={`Works out the naming convention, maps each point ${family === 'brick' ? 'suffix to a Brick point class' : 'description to a point kind, unit and sensor'}, groups points into equipment, and proposes the model for review; anything it can't map with a verified term is left for you`}>
                 Build</button>
               <button onClick={() => setBuilding(false)}>Cancel</button>
             </div>
@@ -258,7 +252,7 @@ function RecordsView({ source }: { source: Source }) {
       </div>
       <div className="grid-scroll tall">
         <table className="raw-grid">
-          <thead><tr><th>Where</th><th>Point name</th>{keys.map((k) => <th key={k}>{k}</th>)}<th>Model</th></tr></thead>
+          <thead><tr><th>Where</th><th>Point name</th>{keys.map((k) => <th key={k}>{k}</th>)}<th title="Records stay separate from the model; each modeled point cites its record as evidence">Model</th></tr></thead>
           <tbody>{shown.slice(0, 1000).map((o) => (
             <tr key={o.id} title={o.id}>
               <th>{o.location.kind === 'csv_row' ? `row ${(o.location.row ?? 0) + 1}` : `col ${(o.location.column ?? 0) + 1}`}</th>
@@ -274,7 +268,6 @@ function RecordsView({ source }: { source: Source }) {
           ))}</tbody>
         </table>
       </div>
-      <p className="muted small">Source records stay separate from the model; each modeled point cites its record as evidence.</p>
     </div>
   )
 }
@@ -430,10 +423,10 @@ function CsvView({ source, onConfirmed }: { source: Source; onConfirmed: () => v
         </div>
       </>}
       <div className="csv-actions">
-        <button className="primary" disabled={busy || !preview || preview.total === 0} onClick={() => void confirm()}>
+        <button className="primary" disabled={busy || !preview || preview.total === 0} onClick={() => void confirm()}
+          title={grid.confirmed ? 'Replaces records that aren’t linked to the model yet' : undefined}>
           {grid.confirmed ? 'Re-confirm mapping' : 'Confirm mapping'}
         </button>
-        {grid.confirmed && <span className="muted small">Re-confirming replaces records that aren't linked to the model yet.</span>}
       </div>
     </div>
   )
@@ -480,7 +473,7 @@ function ImageView({ source }: { source: Source }) {
         <button onClick={() => setView((v) => ({ ...v, scale: v.scale / 1.25 }))}>−</button>
         <button onClick={fit}>Fit</button>
         {region && <button className="link" onClick={() => setSelection({ ...selection,
-          source_regions: selection.source_regions.filter((r) => r.source_id !== source.id) })}>clear region</button>}
+          source_regions: selection.source_regions.filter((r) => r.source_id !== source.id) })}>Clear region</button>}
       </div>
       <div ref={frame} className={`image-frame ${mode}`}
         onWheel={(e) => {
@@ -519,14 +512,23 @@ function ImageView({ source }: { source: Source }) {
         </div>
       </div>
       <p className="muted small">
-        {region ? `Region ${region[2]}×${region[3]} px selected as evidence for the assistant.` : 'Scroll to zoom. Use “Select region” to mark part of the diagram as evidence.'}
-        {' '}Build from the full image using the button above, or ask the assistant about the selected region.
+        {region ? `Region ${region[2]}×${region[3]} px attached as evidence for your next message.` : 'Scroll to zoom; “Select region” marks part of the drawing as evidence.'}
       </p>
     </div>
   )
 }
 
 // --------------------------------------------------------- document extraction
+
+/** The one note about image support: images can't be read without it; scans in PDFs are skipped. */
+function VisionNote({ vision, sources }: { vision: boolean; sources: Source[] }) {
+  if (vision) return null
+  if (sources.some((s) => s.kind === 'image')) return <p className="warn-text small">
+    This model doesn’t read images; choose one that does in the assistant panel.</p>
+  if (sources.some((s) => s.kind === 'pdf')) return <p className="muted small">
+    This model reads PDF text only; scanned pages and drawings are skipped.</p>
+  return null
+}
 
 function DocumentBuild({ source }: { source: Source }) {
   const startBuild = useStore((s) => s.startBuild)
@@ -552,16 +554,13 @@ function DocumentBuild({ source }: { source: Source }) {
   }
   return <div className="build-box document-build">
     <strong>Build model from {source.kind === 'image' ? 'image' : source.kind === 'pdf' ? 'PDF' : 'document'}</strong>
-    <p className="muted small">The assistant extracts equipment, points, and supported connections. Review the proposed changes before applying.</p>
     {source.kind === 'pdf' && <label className="document-pages">Pages to read
       <input value={pages} onChange={(e) => setPages(e.target.value)} placeholder="1-3, 5" />
-      <span className="muted small">Selected pages are read in batches of up to {MAX_BUILD_PAGES}.</span>
     </label>}
     <textarea rows={2} value={hint} onChange={(e) => setHint(e.target.value)}
       placeholder="What should it extract? Include any naming conventions or relevant context." />
-    {source.filename.toLowerCase().endsWith('.docx') && <p className="muted small">Reads Word text and tables. Export embedded diagrams as images or PDF to include them.</p>}
-    {!vision && source.kind === 'image' && <p className="warn-text small">Choose a model that supports images in the assistant panel.</p>}
-    {!vision && source.kind === 'pdf' && <p className="muted small">This model reads PDF text only. Choose a model that supports images to read scans or diagrams.</p>}
+    {source.filename.toLowerCase().endsWith('.docx') && <p className="muted small">Diagrams inside Word files aren’t read; export them as images or PDF.</p>}
+    <VisionNote vision={vision} sources={[source]} />
     <button className="primary" disabled={!canBuild || starting || running} onClick={() => void build()}>
       {starting ? 'Starting…' : running ? 'Assistant is working…' : source.kind === 'pdf' ? 'Build from selected pages' : 'Build model'}
     </button>

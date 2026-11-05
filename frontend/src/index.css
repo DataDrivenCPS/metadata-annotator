@@ -243,7 +243,7 @@ pre.code { background: var(--subtle); border: 1px solid var(--border); border-ra
 .model-status select { flex: 1; min-width: 0; font-size: var(--fs-sm); padding: 4px 6px; }
 .status-pill { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; font-size: var(--fs-sm); padding: 2px 8px; border-radius: var(--radius-lg); background: var(--hover); color: var(--muted); cursor: default; }
 .status-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-.status-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.status-pill.ok { background: none; color: var(--ok); gap: 0; padding: 2px 4px; }
 .status-pill.bad { background: var(--bad-soft); color: var(--bad); }
 .model-status-detail { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: var(--fs-sm); color: var(--bad); line-height: 1.4; }
 .starters { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 16px auto 0; max-width: 300px; }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Disclosure } from './Disclosure'
 import { api } from '../api'
 import { useStore } from '../store'
 import { choiceReadsImages } from '../providers'
@@ -591,9 +592,8 @@ function DocumentView({ source }: { source: Source }) {
       <div className="document-page"><img src={api.sourcePageUrl(projectId, source.id, page)} alt={`${source.filename}, page ${page}`} /></div>
     </>}
     {error && <p className="error-text">{error}</p>}
-    {preview && <details open={source.kind !== 'pdf'}>
-      <summary>Readable text{preview.truncated ? ' (preview truncated)' : ''}</summary>
+    {preview && <Disclosure defaultOpen={source.kind !== 'pdf'} summary={`Readable text${preview.truncated ? ' (preview truncated)' : ''}`}>
       <pre className="document-text">{preview.text || 'No text layer. A model that supports images can read this page visually.'}</pre>
-    </details>}
+    </Disclosure>}
   </div>
 }

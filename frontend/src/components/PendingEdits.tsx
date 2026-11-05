@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
+import { Disclosure } from './Disclosure'
 import { autofixGroupOf, pendingItems, proposalOrigin, type PendingItem } from '../assistant'
 import { headline } from '../autofixView'
 import { useStore } from '../store'
@@ -27,17 +28,30 @@ export function PendingEdits() {
 }
 
 function PendingCard({ item, runs }: { item: PendingItem; runs: Record<string, AgentRun> }) {
-  const first = item.kind === 'edit' ? item.proposal : item.options[0]
+  const proposals = item.kind === 'edit' ? [item.proposal] : item.options
+  const first = proposals[0]
+  // A link from the chat or the auto-fix report brings this card into view and marks it for a moment.
+  const focused = useStore((s) => !!s.pendingFocus && proposals.some((p) => p.id === s.pendingFocus))
+  const ref = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!focused) return
+    ref.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    const t = window.setTimeout(() => useStore.setState({ pendingFocus: null }), 2500)
+    return () => window.clearTimeout(t)
+  }, [focused])
   const when = new Date(first.created_at).toLocaleString()
   // An auto-fix edit is named by the issue it fixes; its request is the run's own wording.
   const group = autofixGroupOf(first, runs)
   const about = group ? (group.status === 'choice' ? group.explanations[0] : headline(group)) : first.instruction.trim()
-  return <article className="pending-card">
+  return <article ref={ref} className={`pending-card${focused ? ' focused' : ''}`}>
     <header className="pending-card-head">
       <span className="pending-origin">{proposalOrigin(first, runs)}</span>
       <span className="muted small" title={when}>{when}</span>
       {about && <span className="pending-request muted small" title={about}>{group ? `For: ${about}` : `“${about}”`}</span>}
     </header>
+    {!!group?.reasons?.length && <Disclosure className="pending-reasons small" summary="Why auto-fix did not apply it">
+      <ul>{group.reasons.map((r) => <li key={r}>{r}</li>)}</ul>
+    </Disclosure>}
     {item.kind === 'edit'
       ? <>
         {item.proposal.explanation && <p className="pending-explanation">{item.proposal.explanation}</p>}

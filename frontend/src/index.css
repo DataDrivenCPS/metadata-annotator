@@ -358,6 +358,11 @@ table.changes .after { color: var(--ok); font-weight: 500; }
   padding: 1px 6px; border-radius: var(--radius); background: var(--proposed); color: var(--proposed-strong); }
 .pending-request { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 48em; }
 .pending-explanation, .pending-question { margin: 0; }
+.pending-card.focused { outline: 2px solid var(--proposed-strong); outline-offset: 6px; border-radius: var(--radius-lg); }
+.pending-reasons ul { margin: 4px 0 0; padding-left: 18px; }
+.proposal-ref.waiting { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px;
+  border-style: solid; border-color: var(--proposed-strong); color: var(--text); }
+.afx-go { color: var(--proposed-strong); flex-shrink: 0; }
 
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 8px 16px; border-radius: var(--radius-lg); background: var(--text); color: white; box-shadow: 0 8px 24px rgba(0,0,0,.2); z-index: 100; max-width: 80vw; }
 .toast.error { background: var(--bad-strong); }

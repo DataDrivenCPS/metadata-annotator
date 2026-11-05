@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
   autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, openEdits, proposalStates, restorableProposal,
-  siblingOptions, threadRuns, type AutofixChoice, type AutofixState, type ProposalState,
+  siblingOptions, threadRuns, type AutofixState, type ProposalState,
 } from './assistant'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import { providerOf } from './providers'
@@ -31,6 +31,8 @@ interface State {
   proposalStates: Record<string, ProposalState>
   /** Every proposal still waiting for the person (chat, auto-fix, builds), newest first: the Pending edits tab. */
   pendingEdits: Proposal[]
+  /** The card the Pending edits tab scrolls to and highlights (set by links from the chat). */
+  pendingFocus: string | null
   /** Repair-engine detail per issue id, for the revision named (loaded in the background). */
   repairs: { revision: string; byIssue: Record<string, IssueRepair> } | null
   assistantDraft: string
@@ -92,7 +94,7 @@ interface State {
   redo: () => Promise<void>
   sendMessage: (text: string) => Promise<boolean>
   assist: (instruction: string, parentRunId?: string) => Promise<boolean>
-  replyToProposal: (instruction: string, parentRunId?: string, retryLeftOut?: boolean) => Promise<boolean>
+  replyToProposal: (instruction: string, parentRunId?: string, retryLeftOut?: boolean, proposal?: Proposal) => Promise<boolean>
   startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>) => Promise<boolean>
   cancelRun: () => Promise<void>
   /** Apply, discard or redo a proposal: the one given (from the Pending edits tab), else the one open in the panel. */
@@ -111,10 +113,8 @@ interface State {
   stopAutofix: () => Promise<void>
   /** Undo the automatic revisions, newest first, while they are still the newest. */
   undoAutofix: () => Promise<void>
-  /** Open a proposal auto-fix left for review in the assistant panel. */
-  reviewProposal: (proposalId: string) => Promise<void>
-  /** Pick an auto-fix option: apply its proposal (the person confirmed it) and discard the others. */
-  chooseOption: (choice: AutofixChoice, proposalId: string) => Promise<void>
+  /** Open the Pending edits tab, on one proposal's card if given (proposals are reviewed only there). */
+  showPending: (proposalId?: string) => void
   viewRevision: (revision: string | null) => Promise<void>
 }
 
@@ -195,6 +195,7 @@ export const useStore = create<State>((set, get) => ({
   proposal: null,
   proposalStates: {},
   pendingEdits: [],
+  pendingFocus: null,
   repairs: null,
   assistantDraft: '',
   assistantSending: null,
@@ -476,9 +477,10 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  replyToProposal: async (instruction, parentRunId, retryLeftOut = false) => {
+  replyToProposal: async (instruction, parentRunId, retryLeftOut = false, given) => {
     if (readOnly()) return false
-    const { projectId, proposal, provider, selection, assistantFresh } = get()
+    const { projectId, provider, selection, assistantFresh } = get()
+    const proposal = given ?? get().proposal
     if (!projectId || !proposal || proposal.status !== 'pending') return false
     const project = projectGeneration
     const request = ++assistantGeneration
@@ -720,46 +722,7 @@ export const useStore = create<State>((set, get) => ({
       : { kind: 'info', text: 'Nothing to undo: the model has changed since the automatic fixes' })
   },
 
-  reviewProposal: async (proposalId) => {
-    const { projectId } = get()
-    if (!projectId) return
-    const project = projectGeneration
-    const request = ++assistantGeneration
-    let proposal: Proposal
-    try {
-      proposal = await api.proposal(projectId, proposalId)
-    } catch (e) {
-      if (project === projectGeneration) get().notify({ kind: 'error', text: `Could not open the proposal: ${errorText(e)}` })
-      return
-    }
-    if (project !== projectGeneration || request !== assistantGeneration || get().projectId !== projectId) return
-    set({ proposal, proposalStates: { ...get().proposalStates, [proposal.id]: proposal.status } })
-  },
-
-  chooseOption: async (choice, proposalId) => {
-    const { projectId } = get()
-    if (!projectId || readOnly()) return
-    const project = projectGeneration
-    set({ busy: true })
-    try {
-      const rev = await api.applyProposal(projectId, proposalId)
-      const others = choice.options.map((o) => o.proposal_id).filter((id) => id !== proposalId)
-      await Promise.all(others.map((id) => api.dismissProposal(projectId, id).catch(() => {})))
-      if (project !== projectGeneration || get().projectId !== projectId) return
-      set({ proposalStates: { ...get().proposalStates, [proposalId]: 'applied',
-                              ...Object.fromEntries(others.map((id) => [id, 'dismissed' as const])) } })
-      await get().reload()
-      void get().loadPending()
-      if (project !== projectGeneration || get().projectId !== projectId) return
-      const label = choice.options.find((o) => o.proposal_id === proposalId)?.label ?? 'the option'
-      get().notify({ kind: 'success', text: `Applied ${label} as ${rev.id}`, action: { label: 'Undo', run: () => void get().undo() } })
-    } catch (e) {
-      if (project !== projectGeneration || get().projectId !== projectId) return
-      get().notify({ kind: 'error', text: `Could not apply: ${errorText(e)}` })
-    } finally {
-      if (project === projectGeneration && get().projectId === projectId) set({ busy: false })
-    }
-  },
+  showPending: (proposalId) => set({ tab: 'pending', pendingFocus: proposalId ?? null }),
 
   viewRevision: async (viewing) => {
     if (viewing && get().autofix) set({ autofix: null })

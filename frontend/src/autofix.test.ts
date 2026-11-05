@@ -86,16 +86,9 @@ describe('auto-fix', () => {
     expect(api.undo).not.toHaveBeenCalled()
   })
 
-  it('opens a proposal left for review', async () => {
-    await useStore.getState().reviewProposal('prop-7')
-    expect(useStore.getState().proposal?.id).toBe('prop-7')
-  })
-
-  it('choosing an option applies it and discards the others', async () => {
-    await useStore.getState().chooseOption(unitChoice, 'prop-a')
-    expect(vi.mocked(api.applyProposal).mock.calls[0][1]).toBe('prop-a')
-    expect(vi.mocked(api.dismissProposal).mock.calls.map((c) => c[1])).toEqual(['prop-b'])
-    expect(useStore.getState().proposalStates).toMatchObject({ 'prop-a': 'applied', 'prop-b': 'dismissed' })
+  it('links from the chat open the Pending edits tab on that card', () => {
+    useStore.getState().showPending('prop-7')
+    expect(useStore.getState()).toMatchObject({ tab: 'pending', pendingFocus: 'prop-7' })
   })
 })
 

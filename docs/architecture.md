@@ -503,7 +503,9 @@ discards nothing.
 each as a card with what it changes, the issues it fixes or adds, and Apply / Discard on the
 card; a choice is one card whose options each apply with "Choose this" (and close the others).
 Auto-fix cards name the issue they fix. Applying one moves the model, so the rest refetch as
-stale; applying a stale card rebases it as above.
+stale; applying a stale card rebases it as above. Proposals are reviewed only there: the chat
+shows a one-line summary with **Review in Pending edits →**, and chat choices and auto-fix report
+items open their card in the tab.
 
 Runs execute in a thread pool with cooperative cancellation (checked between steps and
 between streamed tokens; closing the stream aborts generation in llama-server). Progress is

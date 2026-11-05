@@ -134,7 +134,8 @@ function ReportSectionView({ section: { status, items }, handled, expanded, onTo
   </section>
 }
 
-/** One group: a single summary line, and on click everything known about it and what can be done. */
+/** One group: a single summary line. An edit or choice still waiting opens its card in Pending edits;
+ * anything else shows everything known about it and what can be done. */
 function ReportItemView({ group, handled, open, onToggle, onContinue }: {
   group: AutofixGroup; handled: boolean; open: boolean; onToggle: () => void; onContinue: () => void
 }) {
@@ -142,9 +143,13 @@ function ReportItemView({ group, handled, open, onToggle, onContinue }: {
   const rows = useStore((s) => s.rows)
   const mine = useMemo(() => groupIssues(group, issues), [group, issues])
   const affected = useMemo(() => affectedRows(mine, rows), [mine, rows])
+  const showPending = useStore((s) => s.showPending)
+  const edit = !handled ? group.proposal_id ?? group.choices?.[0]?.options[0]?.proposal_id : undefined
   return <li className={`afx-item ${group.status}${handled ? ' handled' : ''}${open ? ' open' : ''}`}>
-    <button className="bare afx-item-head" aria-expanded={open} onClick={onToggle}
-      title={open ? 'Hide the details' : 'Show the details and what you can do'}>
+    <button className="bare afx-item-head" aria-expanded={edit ? undefined : open}
+      onClick={edit ? () => { showPending(edit); onContinue() } : onToggle}
+      title={edit ? 'Open it in Pending edits, where you review and apply it'
+        : open ? 'Hide the details' : 'Show the details and what you can do'}>
       <span className={`afx-badge ${group.status}`}>{handled ? '✓ Done' : STATUS_INFO[group.status].badge}</span>
       <span className="afx-item-text">
         <span className="afx-headline">{headline(group)}</span>
@@ -153,30 +158,30 @@ function ReportItemView({ group, handled, open, onToggle, onContinue }: {
             .filter(Boolean).join(' · ')}
         </span>}
       </span>
-      <span className="afx-chevron" aria-hidden="true">▸</span>
+      <span className={edit ? 'afx-go' : 'afx-chevron'} aria-hidden="true">{edit ? '→' : '▸'}</span>
     </button>
-    {open && <ItemDetail group={group} mine={mine} affected={affected} onContinue={onContinue} />}
+    {open && !edit && <ItemDetail group={group} mine={mine} affected={affected} onContinue={onContinue} />}
   </li>
 }
 
 /** The review action: the change waits in the Pending edits tab, with Apply and Discard on it. */
 function ReviewAction({ proposalId, onContinue }: { proposalId: string; onContinue: () => void }) {
-  const setTab = useStore((s) => s.setTab)
+  const showPending = useStore((s) => s.showPending)
   const state = useStore((s) => s.proposalStates[proposalId])
   if (state === 'applied') return <span className="small ok-text">✓ Applied</span>
   if (state === 'dismissed') return <span className="muted small">Discarded</span>
-  return <button className="primary" onClick={() => { setTab('pending'); onContinue() }}
+  return <button className="primary" onClick={() => { showPending(proposalId); onContinue() }}
     title="The change waits in Pending edits: see what it changes, then apply or discard it">Open in Pending edits</button>
 }
 
 /** The edits from this run still waiting, with a way to them. */
 function PendingLink({ run }: { run: AgentRun }) {
-  const setTab = useStore((s) => s.setTab)
+  const showPending = useStore((s) => s.showPending)
   const edits = useStore((s) => s.pendingEdits)
   const runs = useStore((s) => s.runs)
   const waiting = useMemo(() => pendingCount(edits, runs, run.id), [edits, runs, run.id])
   if (!waiting) return null
-  return <button className="link" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setTab('pending') }}>
+  return <button className="link" onClick={(e) => { e.preventDefault(); e.stopPropagation(); showPending() }}>
     {waiting} pending edit{waiting === 1 ? '' : 's'} →</button>
 }
 

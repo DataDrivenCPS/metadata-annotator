@@ -283,8 +283,10 @@ Bounded workflow, identical for local and remote models:
 2. **Steps**: every model reply requests JSON constrained by a schema (llama-server compiles it to a
    grammar): either a read-only tool call — `search_terms` (one query, or several as `queries`),
    `browse_terms` (the terms directly below a term, e.g. the media under `s223:Mix-Fluid`), `units_for`,
-   `describe_class`, `find_entities`, `read_evidence`, `read_guidance`, `relations_for` — or `propose`
-   with explanation, operations and questions. At most 8 steps.
+   `describe_class`, `find_entities`, `read_evidence`, `read_guidance`, `relations_for`, `issues_for`
+   (an entity's open issues with repair suggestions), `trace` (connections up/downstream of equipment)
+   — or `propose` with explanation, operations and questions. At most 8 steps. The context carries at
+   most 20 issues and 100 connections; its cut-off notes point to `issues_for` and `trace`.
 3. **Candidate**: operations are resolved and applied to a copy of the base revision and
    validated. Malformed operations go back to the model with the problems and the closest valid
    terms (up to 2 repairs). Unknown entity references also carry nearby exact ids and

@@ -207,6 +207,73 @@ class AgentTools:
                    if r.subject.id == entity_id or (r.object and r.object.id == entity_id)]
         return {"entity": entity_line(self.vocab, row), "allowed_relations": allowed, "current": current}
 
+    def issues_for(self, entity_id: str, limit: int = 30) -> list[str] | dict[str, Any]:
+        """The open issues on one entity, with what the repair engine suggests for each."""
+        from .correction import issue_line
+
+        row = self._view().rows().get(entity_id)
+        if row is None:
+            return {"error": f"no entity {entity_id}; find_entities finds its id"}
+        found = [i for i in self.project.issues(self.revision) if i.resolution_state == "open"
+                 and i.severity != "suggestion" and entity_id in i.affected_ids]
+        note = ([" (these are the current model's issues; the pending draft is validated when proposed)"]
+                if self.preview is not None else [])
+        if not found:
+            return [f"No open issues on {entity_line(self.vocab, row)}.", *note]
+        repairs = self.project.repairs(self.revision)
+        return [f"Open issues on {entity_line(self.vocab, row)} ({len(found)}):", *note,
+                *(issue_line(i, repairs.get(i.id)) for i in found[:limit]),
+                *([f"  (+{len(found) - limit} more)"] if len(found) > limit else [])]
+
+    def trace(self, entity_id: str, direction: str = "downstream", depth: int = 4) -> list[str] | dict[str, Any]:
+        """Follow connections from a piece of equipment, upstream or downstream (or both), up to
+        ``depth`` hops: one line per connection, indented by hop."""
+        view = self._view()
+        rows = view.rows()
+        start = rows.get(entity_id)
+        if start is None:
+            return {"error": f"no entity {entity_id}; find_entities finds its id"}
+        direction = direction if direction in ("upstream", "downstream", "both") else "downstream"
+        depth = max(1, min(int(depth or 4), 8))
+        edges: dict[str, list[tuple[str, str, Any]]] = {}  # equipment -> (arrow, other end, connection)
+        for c in view.connections:
+            if not (c.from_equipment and c.to_equipment):
+                continue
+            a, b = c.from_equipment.id, c.to_equipment.id
+            if direction in ("downstream", "both") or not c.directed:
+                edges.setdefault(a, []).append(("->" if c.directed else "--", b, c))
+            if direction in ("upstream", "both") or not c.directed:
+                edges.setdefault(b, []).append(("<-" if c.directed else "--", a, c))
+
+        def name(eid: str) -> str:
+            r = rows.get(eid)
+            return f"{r.label} [{eid}]" if r is not None else eid
+
+        lines = [f"{'Upstream and downstream' if direction == 'both' else direction.capitalize()} of {name(entity_id)}:"]
+        seen, frontier = {entity_id}, [entity_id]
+        shown: set[str] = set()
+        for hop in range(depth):
+            nxt = []
+            for eid in frontier:
+                for arrow, other, c in edges.get(eid, []):
+                    if c.id in shown:
+                        continue
+                    shown.add(c.id)
+                    medium = f", {c.medium.label}" if c.medium else ""
+                    lines.append(f"{'  ' * (hop + 1)}{name(eid)} {arrow} {name(other)} via {c.id}{medium}"
+                                 + (" (seen above)" if other in seen else ""))
+                    if other not in seen:
+                        seen.add(other)
+                        nxt.append(other)
+            frontier = nxt
+            if not frontier:
+                break
+        if len(lines) == 1:
+            lines.append(f"  (no {direction} connections)")
+        elif frontier and any(edges.get(e) for e in frontier):
+            lines.append(f"  (continues past {depth} hops; trace from the last equipment to follow it)")
+        return lines
+
     def read_guidance(self, topic: str) -> str:
         """Modeling guidance from the BuildingMOTIF skill for one topic."""
         return self.guidance.topic(topic)
@@ -280,6 +347,9 @@ class AgentTools:
                else "\nfind_entities(query) - find equipment/points/connections/connection points by name"
                     " (an equipment's name lists its connection points too)")
             + "\nrelations_for(entity_id) - relations the vocabulary allows for an entity, and its current ones"
+            + "\nissues_for(entity_id) - the open issues on an entity, with the repair engine's suggestions"
+            + "\ntrace(entity_id, direction?, depth?) - follow connections from equipment: direction downstream"
+              " (default), upstream or both; depth in hops (default 4)"
             + "\nread_evidence(observation_id) - the source record behind an entity"
             + ("\nsearch_sources(query, source?) - passages of the uploaded documents (manuals, datasheets,"
                " drawings) matching the query; source narrows to one file. Each passage has an observation_id"

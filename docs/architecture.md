@@ -357,6 +357,13 @@ are supplied according to the model's image support; source regions and page ref
 retained as evidence. Source build proposals require review before applying and preserve
 existing human locks without marking extracted values as human-confirmed.
 
+An object created during a source run without a citation is linked to the supplied sources
+that name it (`agent/citing.py`, matched in code): those containing its whole label, else
+those with the most of the tags in its label, spelled with or without separators (`P-101`,
+`P101`, `P 101`, and `P-101-STS` for `P-101`). Only when none names it, such as a drawing with
+no text layer, is it linked to every source supplied. The run's progress says how many created
+objects cited nothing and how many of those were linked by name.
+
 Sources attached to an assistant message belong to that message: the composer drops them once
 the message starts a run, and a follow-up does not inherit them (`RunManager.continued_selection`).
 The conversation history records what was attached to each earlier message and that it was

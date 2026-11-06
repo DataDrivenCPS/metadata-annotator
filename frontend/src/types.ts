@@ -197,7 +197,7 @@ export interface EntityDetail {
   id: string; iri: string; revision: string; row: Row | null
   types: { iri: string; label: string }[]; turtle: string; locked: string[]
   properties: EntityPropertyValue[]
-  evidence: { id: string; content: Record<string, unknown>; location: Record<string, unknown> }[]
+  evidence: Citation[]
   issues: ReviewIssue[]
   history: { revision_id: string; field: string; before: string; after: string; origin: string; created_at: string }[]
 }
@@ -244,8 +244,20 @@ export interface CsvPreview { total: number; duplicates: Record<string, number>;
 export interface Observation {
   id: string; source_id: string; kind: string; status: string; entity_ids: string[]
   content: { name?: string; metadata?: Record<string, string> } & Record<string, unknown>
-  location: { kind: string; row?: number | null; column?: number | null; bbox?: number[] | null }
+  location: { kind: string; row?: number | null; column?: number | null; bbox?: number[] | null
+    page?: number | null; text_range?: number[] | null }
   entity_id?: string | null
+}
+/** An observation cited as evidence; its content names the file, and passages add text, section and box. */
+export type Citation = Observation
+export interface ProposalCitations {
+  /** Observation ids cited per changed entity. */
+  changes: Record<string, string[]>
+  /** Cited by operations that name no one entity, such as a relation. */
+  other: string[]
+  /** Shown to the assistant but not cited by any operation. */
+  read: string[]
+  observations: Record<string, Citation>
 }
 
 /** GET /entities/{id}/relations: what the vocabulary's shapes allow, with candidates in the model. */

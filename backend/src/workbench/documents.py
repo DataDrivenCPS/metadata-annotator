@@ -66,6 +66,21 @@ def document_text(data: bytes, filename: str) -> str:
         raise SourceError(f"Could not read the Word document: {exc}") from None
 
 
+def pdf_page_size(data: bytes, page_number: int) -> list[float]:
+    """A page's width and height in PDF points: the units of a passage's box."""
+    import pypdfium2 as pdfium
+    try:
+        with PDF_LOCK, pdfium.PdfDocument(data) as pdf:
+            if page_number < 1 or page_number > len(pdf):
+                raise SourceError(f"Page {page_number} is outside this PDF's 1–{len(pdf)} range.")
+            with closing(pdf[page_number - 1]) as page:
+                return list(page.get_size())
+    except SourceError:
+        raise
+    except Exception as exc:
+        raise SourceError(f"Could not read PDF page {page_number}: {exc}") from None
+
+
 def pdf_page(data: bytes, page_number: int, render: bool = True) -> tuple[str, bytes | None]:
     import pypdfium2 as pdfium
     try:

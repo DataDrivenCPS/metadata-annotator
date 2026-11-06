@@ -10,6 +10,7 @@ Needs the built frontend (cd frontend && npm run build) and a Playwright browser
     uv run pytest -m e2e
 """
 
+import os
 import re
 import shutil
 import socket
@@ -22,6 +23,7 @@ import pytest
 import uvicorn
 
 from test_agent import ScriptedLLM
+from test_documents import text_pdf
 from workbench.api import create_app
 from workbench.config import load_settings
 
@@ -30,6 +32,7 @@ pytestmark = pytest.mark.e2e
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "frontend"
 SAMPLES = ROOT / "samples" / "ro-train"
+SHOTS = Path(os.environ["WORKBENCH_TEST_SCREENSHOTS"]) if os.environ.get("WORKBENCH_TEST_SCREENSHOTS") else None
 
 
 def _check_frontend_build() -> None:
@@ -236,7 +239,7 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
     expect(page.locator('.toast')).to_contain_text('Applied', timeout=60000)
     page.locator('.model-pane nav.tabs').get_by_role('button', name=re.compile(r'^Equipment')).click()
     page.locator('.model-pane tbody tr', has_text='TK-100').click()
-    expect(page.locator('.inspector').get_by_role('link', name='equipment.txt', exact=True)).to_be_visible()
+    expect(page.locator('.inspector').get_by_role('button', name='equipment.txt', exact=True)).to_be_visible()
     expect(page.locator('.inspector .evidence-excerpt', has_text='Tank TK-100 stores water.')).to_be_visible()
 
 
@@ -284,3 +287,130 @@ def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     page.reload()
     expect(page.locator(".needs-input.choices")).to_contain_text("✓ microsiemens per cm")
     expect(page.locator(".proposal-actions button.primary")).to_have_count(0)
+
+
+def test_checking_citations_opens_the_source_at_the_cited_place(live, page, tmp_path):
+    from playwright.sync_api import expect
+
+    base, llm = live
+    pid = httpx.post(f"{base}/api/projects", json={"name": "Citations", "profile": "brick"}, timeout=120).json()["id"]
+
+    def shot(name):  # WORKBENCH_TEST_SCREENSHOTS=<dir> keeps pictures of each step, to look at
+        if SHOTS:
+            page.screenshot(path=str(SHOTS / f"{name}.png"))
+
+    def upload(name, data, media):
+        response = httpx.post(f"{base}/api/projects/{pid}/sources", files={"file": (name, data, media)}, timeout=120)
+        response.raise_for_status()
+        return response.json()["id"]
+
+    pdf = upload("plant.pdf", text_pdf("Page one: P-1", "Page two: TK-2"), "application/pdf")
+    image = upload("diagram.png", (SAMPLES / "diagram.png").read_bytes(), "image/png")
+    notes = upload("notes.txt", b"First paragraph.\nPump P-1 feeds tank TK-2.\nA last paragraph, with more words in it.", "text/plain")
+    points = upload("points.csv", b"Name\nFIRST\nSECOND\nTHIRD\n", "text/csv")
+    grid = httpx.get(f"{base}/api/projects/{pid}/sources/{points}/grid", timeout=120).json()
+    httpx.post(f"{base}/api/projects/{pid}/sources/{points}/confirm", json={
+        **grid["config"], "layout": "row_points", "header_row": 0, "first_data_row": 1, "name_column": 0,
+    }, timeout=120).raise_for_status()
+    records = httpx.get(f"{base}/api/projects/{pid}/sources/{points}/observations", timeout=120).json()
+    second = next(r for r in records if r["content"]["name"] == "SECOND")
+
+    head = httpx.get(f"{base}/api/projects/{pid}/model", timeout=120).json()["head"]
+    edited = httpx.post(f"{base}/api/projects/{pid}/edits", json={"base_revision": head, "operations": [
+        {"op": "create_equipment", "label": "FROM-CSV", "type": "brick:AHU", "evidence": [second["id"]]}]}, timeout=120)
+    edited.raise_for_status()
+    head = edited.json()["revision"]["id"]
+    model = httpx.get(f"{base}/api/projects/{pid}/model", timeout=120).json()
+    eid = next(e["id"] for e in model["view"]["equipment"] if e["label"] == "FROM-CSV")
+
+    # A build from page two of the PDF, citing what it read: checked before it is applied.
+    def propose(messages):
+        ids = re.findall(r"Source evidence (obs-[^: ]+):", messages[-1]["content"])
+        return {"action": "propose", "explanation": "Page two names the air handler.", "operations": [
+            {"op": "create_equipment", "label": "TK-2", "type": "brick:AHU", "evidence": ids},
+            {"op": "update_equipment", "id": eid, "label": "RENAMED"}]}
+
+    llm.steps = [propose]
+    llm.supports_images = True
+    httpx.post(f"{base}/api/projects/{pid}/build", json={
+        "base_revision": head, "source_ids": [pdf], "source_pages": {pdf: [2]}}, timeout=120).raise_for_status()
+
+    page.add_init_script(f"localStorage.setItem('workbench.project', '{pid}')")
+    page.goto(base)
+    # Reviewed in Pending edits: the Evidence line is on the proposal's card there.
+    page.locator(".proposal-ref button", has_text="Review in Pending edits").click(timeout=60000)
+    summary = page.locator(".pending-card .proposal summary", has_text="1 of 2 changes link to a source")
+    expect(summary).to_be_visible(timeout=60000)
+    summary.click()
+    sources = page.locator(".proposal-sources")
+    expect(sources.locator("section", has_text="RENAMED")).to_contain_text("No source linked.")
+    sources.get_by_role("button", name=re.compile(r"plant\.pdf · page 2")).click()
+    tray = page.locator(".sources-pane")
+    expect(tray.locator(".citation-banner")).to_contain_text("plant.pdf · page 2")
+    expect(tray.locator(".document-navigation")).to_contain_text("Page 2 of 2")
+    shown = tray.locator(".document-canvas img")
+    expect(shown).to_have_attribute("alt", "plant.pdf, page 2")
+    page.wait_for_function("(img) => img.complete && img.naturalWidth > 0", arg=shown.element_handle())
+    # The files the build read, listed under Details, open in the tray too rather than downloading.
+    page.locator(".pending-card .proposal summary", has_text="Details").click()
+    page.locator(".proposal-details section", has_text="Sources").get_by_role("button", name="plant.pdf", exact=True).click()
+    expect(tray.locator(".citation-banner")).to_contain_text("plant.pdf · page 2")
+    expect(tray.locator(".document-navigation")).to_contain_text("Page 2 of 2")
+    labels = [e["label"] for e in httpx.get(f"{base}/api/projects/{pid}/model", timeout=120).json()["view"]["equipment"]]
+    assert labels == ["FROM-CSV"]  # checking its sources has applied nothing
+    shot("citation-proposal")
+
+    # The inspector's citations open at the place too. Passages with a box come from the document
+    # index, so this entity's evidence is shaped like them here.
+
+    def boxed(route):
+        detail = route.fetch().json()
+        record = dict(detail["evidence"][0])
+        detail["evidence"] += [
+            {**record, "id": "obs-box", "source_id": pdf, "location": {"kind": "document", "page": 1},
+             "content": {"filename": "plant.pdf", "text": "A description of the page.", "generated": True,
+                         "box_pt": [72, 72, 144, 72]}},
+            {**record, "id": "obs-region", "source_id": image, "location": {"kind": "image_region", "bbox": [400, 150, 300, 150]},
+             "content": {"filename": "diagram.png"}},
+            {**record, "id": "obs-passage", "source_id": notes, "location": {"kind": "document", "text_range": [17, 42]},
+             "content": {"filename": "notes.txt", "text": "Pump P-1 feeds tank TK-2."}}]
+        route.fulfill(json=detail)
+
+    page.route(f"**/api/projects/{pid}/entities/{eid}*", boxed)
+    page.reload()
+    page.locator(".model-pane nav.tabs").get_by_role("button", name=re.compile(r"^Equipment")).click()
+    page.locator(".model-pane tbody tr", has_text="FROM-CSV").click()
+    inspector = page.locator(".inspector")
+
+    inspector.get_by_role("button", name=re.compile(r"points\.csv · row")).click()
+    row = tray.locator("tr.cited")
+    expect(row).to_contain_text("SECOND")
+    expect(tray.locator("tr.cited")).to_have_count(1)
+    shot("citation-csv")
+
+    inspector.get_by_role("button", name=re.compile(r"plant\.pdf · page 1")).click()
+    expect(tray.locator(".document-navigation")).to_contain_text("Page 1 of 2")
+    expect(tray.locator(".citation-banner")).to_contain_text("model's description")
+    box = tray.locator(".document-canvas .region.cited")
+    expect(box).to_be_visible()
+    size = httpx.get(f"{base}/api/projects/{pid}/sources/{pdf}/document-preview?page=1", timeout=120).json()["page_size"]
+    canvas, drawn = tray.locator(".document-canvas").bounding_box(), box.bounding_box()
+    assert abs((drawn["x"] - canvas["x"]) / canvas["width"] - 72 / size[0]) < 0.01
+    assert abs((drawn["y"] - canvas["y"]) / canvas["height"] - 72 / size[1]) < 0.01
+    shot("citation-pdf-box")
+
+    inspector.get_by_role("button", name=re.compile(r"diagram\.png")).click()
+    expect(tray.locator(".image-canvas .region.cited")).to_be_visible()
+    picture = tray.locator(".image-canvas img")
+    page.wait_for_function("(img) => img.complete && img.naturalWidth > 0", arg=picture.element_handle())
+    assert tray.locator(".citation-banner").bounding_box()["height"] < 60  # a line, not stretched by the tray
+    shot("citation-image")
+
+    inspector.get_by_role("button", name=re.compile(r"notes\.txt")).click()
+    expect(tray.locator(".document-text mark")).to_have_text("Pump P-1 feeds tank TK-2.")
+
+    tray.locator(".citation-banner").get_by_role("button", name="clear", exact=True).click()
+    expect(tray.locator(".document-text mark")).to_have_count(0)
+    inspector.get_by_role("button", name=re.compile(r"diagram\.png")).click()
+    tray.locator(".citation-banner").get_by_role("button", name="clear", exact=True).click()
+    expect(tray.locator(".region.cited")).to_have_count(0)

@@ -86,9 +86,9 @@ and ontologies, so give it a little time; later launches reuse the cache.
    surfaced as questions; duplicate CSV records with matching assertions share one point
    with citations to both records. Each CSV can have its own naming convention.
    Choose **Use as evidence in chat** to attach selected sources to a correction or a
-   reply to a pending proposal. Source citations in the inspector link to the file and
-   identify the supporting page, row, column, or text passage. Word extraction reads text
-   and tables; upload embedded diagrams separately as images or PDF. Scans and diagrams
+   reply to a pending proposal. Source citations on a proposal (before you apply it) and in the
+   inspector open the source in the tray, at the supporting page, region, row, or passage.
+   Word extraction reads text and tables; upload embedded diagrams separately as images or PDF. Scans and diagrams
    require an image-capable model.
 4. **Review and apply.** Inspect the proposed changes and their source evidence.
    Answer questions or ask for adjustments in chat, then choose **Apply** when

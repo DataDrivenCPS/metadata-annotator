@@ -507,13 +507,13 @@ function ProposalSources({ proposal }: { proposal: Proposal }) {
   }, [projectId, proposal.id])
   if (error) return <p className="error-text">{error}</p>
   if (!data) return <p className="muted">Loading evidence…</p>
-  const items = (ids: string[]) => ids.flatMap((id) => data.observations[id] ? [data.observations[id]] : [])
-    .map((c) => <CitationItem key={c.id} citation={c} />)
+  const items = (ids: string[], about?: string) => ids.flatMap((id) => data.observations[id] ? [data.observations[id]] : [])
+    .map((c) => <CitationItem key={c.id} citation={c} about={about} />)
   const changes = proposal.changes.filter((c) => c.change !== 'deleted')
   return <div className="proposal-sources">
     {(all ? changes : changes.slice(0, CITED_CHANGES_SHOWN)).map((change) => <section key={change.entity_id}>
       <h5><span className={`change-kind ${change.change}`}>{change.change}</span> {change.label}</h5>
-      {data.changes[change.entity_id]?.length ? items(data.changes[change.entity_id])
+      {data.changes[change.entity_id]?.length ? items(data.changes[change.entity_id], change.label)
         : <p className="warn-text">No source linked.</p>}
     </section>)}
     {!all && changes.length > CITED_CHANGES_SHOWN && <button className="link" onClick={() => setAll(true)}>

@@ -33,6 +33,14 @@ export function citationBox(citation: Citation): number[] | null {
   return Array.isArray(box) && box.length === 4 && box.every((v) => typeof v === 'number') ? box as number[] : null
 }
 
+/** The smallest box around all of ``boxes``, to zoom to several at once. */
+export function unionBox(boxes: number[][]): number[] | null {
+  if (!boxes.length) return null
+  const left = Math.min(...boxes.map((b) => b[0])), top = Math.min(...boxes.map((b) => b[1]))
+  const right = Math.max(...boxes.map((b) => b[0] + b[2])), bottom = Math.max(...boxes.map((b) => b[1] + b[3]))
+  return [left, top, right - left, bottom - top]
+}
+
 /** A box as percentages of its page, to place it over the page image at any zoom. */
 export function boxPercent(box: number[], width: number, height: number) {
   return { left: `${box[0] / width * 100}%`, top: `${box[1] / height * 100}%`,

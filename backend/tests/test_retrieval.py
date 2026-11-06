@@ -783,3 +783,25 @@ def test_attached_pictures_go_with_the_request_beside_their_passages(workspace, 
     run_with_evidence(p, text_only, guidance(), rev.id, selection, "What does the drawing show?", None,
                       lambda *_: None, CancelToken(), agent=AgentConfig())
     assert "ATTACHED IMAGES" not in text_only.seen[0][0]["content"]
+
+
+def test_a_drawing_shows_where_it_labels_an_object(sample_project, indexer):
+    indexer.docling = FakeDocling({".png": json.loads((FIXTURES / "docling-diagram.json").read_text())})
+    image = sample_project.add_source("pid.png", png(1105, 482))
+    settled(sample_project, [image.id])
+    from workbench.retrieval.evidence import named_labels
+
+    found = named_labels(sample_project, image.id, "P-101")
+    assert found["labelled"] and [m["text"] for m in found["matches"]] == ["FEED PUMP P-101"]
+    x, y, w, h = found["matches"][0]["bbox"]  # pixels, where the fixture draws the pump
+    assert 190 < x < 230 and 200 < y < 230
+    assert named_labels(sample_project, image.id, "P101 feed pump")["matches"]  # its tag, spelled otherwise
+    assert named_labels(sample_project, image.id, "TK-999") == {"labelled": True, "matches": []}
+
+
+def test_without_labels_a_drawing_says_so(sample_project, indexer):
+    image = sample_project.add_source("plain.png", png())
+    settled(sample_project, [image.id])
+    from workbench.retrieval.evidence import named_labels
+
+    assert named_labels(sample_project, image.id, "P-101") == {"labelled": False, "matches": []}

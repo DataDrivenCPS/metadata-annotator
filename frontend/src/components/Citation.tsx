@@ -10,14 +10,14 @@ export function GeneratedBadge() {
 }
 
 /** One source citation: its link opens the source at the cited place in the sources tray. */
-export function CitationItem({ citation }: { citation: Citation }) {
+export function CitationItem({ citation, about }: { citation: Citation; about?: string | null }) {
   const openCitation = useStore((s) => s.openCitation)
   const [all, setAll] = useState(false)
   const { content } = citation
   const text = typeof content.text === 'string' ? content.text : typeof content.name === 'string' ? content.name : ''
   const short = excerpt(text)
   return <div className="evidence-item">
-    <button className="link citation-link" onClick={() => openCitation(citation)}>{citationLabel(citation)}</button>
+    <button className="link citation-link" onClick={() => openCitation(citation, about)}>{citationLabel(citation)}</button>
     {isGenerated(citation) && <GeneratedBadge />}
     {text && <p className="evidence-excerpt">{all ? text : short.text}
       {short.truncated && <> <button className="link" onClick={() => setAll(!all)}>{all ? 'Show less' : 'Show all'}</button></>}

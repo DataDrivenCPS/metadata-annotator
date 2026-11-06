@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { boxPercent, sourceCitation, citationBox, citationLabel, citationSummary, excerpt, isGenerated, locatePassage, recordsToShow, zoomToBox } from './citations'
+import { boxPercent, sourceCitation, unionBox, citationBox, citationLabel, citationSummary, excerpt, isGenerated, locatePassage, recordsToShow, zoomToBox } from './citations'
 import type { Citation, Proposal } from './types'
 
 const cite = (content: Citation['content'], location: Partial<Citation['location']> = {}): Citation =>
@@ -24,6 +24,13 @@ describe('whole-source citation', () => {
     expect(source.id).toBe('')
     expect(citationBox(source)).toBeNull()
     expect(locatePassage('any text at all here', source)).toBeNull()
+  })
+})
+
+describe('union of boxes', () => {
+  it('encloses every box', () => {
+    expect(unionBox([[10, 20, 5, 5], [0, 30, 4, 10]])).toEqual([0, 20, 15, 20])
+    expect(unionBox([])).toBeNull()
   })
 })
 

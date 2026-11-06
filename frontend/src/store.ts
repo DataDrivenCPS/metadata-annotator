@@ -7,7 +7,7 @@ import {
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import { providerOf } from './providers'
 import {
-  emptySelection, type AgentRun, type Citation, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
+  emptySelection, type AgentRun, type Citation, type OpenCitation, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
 } from './types'
 
 export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connection_points' | 'graph' | 'issues' | `view:${string}`
@@ -60,7 +60,7 @@ interface State {
   sourcesVersion: number
   sourcesOpen: boolean
   /** The citation being checked: the sources tray shows its source at the cited place. */
-  citation: Citation | null
+  citation: OpenCitation | null
   /** The auto-fix run being followed: obvious fixes are applied, the rest wait for the person. */
   autofix: AutofixState | null
   /** An earlier revision being browsed read-only; null = the current model. */
@@ -78,7 +78,7 @@ interface State {
   clearSelection: () => void
   setTab: (tab: Tab) => void
   setDrawerTab: (tab: DrawerTab) => void
-  openCitation: (citation: Citation) => void
+  openCitation: (citation: Citation, about?: string | null) => void
   clearCitation: () => void
   setAssistantDraft: (text: string) => void
   setAssistantNewRequest: (newRequest: boolean) => void
@@ -329,7 +329,7 @@ export const useStore = create<State>((set, get) => ({
   setDrawerTab: (drawerTab) => set({ drawerTab }),
   // A new object each time, so opening the same citation again goes back to it. Opening the tray
   // this way isn't a choice to remember for the project.
-  openCitation: (citation) => set({ sourcesOpen: true, citation: { ...citation } }),
+  openCitation: (citation, about) => set({ sourcesOpen: true, citation: { ...citation, about: about ?? null } }),
   clearCitation: () => set({ citation: null }),
   setAssistantDraft: (assistantDraft) => set((s) => ({ assistantDraft,
     assistantIssueContext: s.assistantIssueContext && assistantDraft.includes(s.assistantIssueContext.text)

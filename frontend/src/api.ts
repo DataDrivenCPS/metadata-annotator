@@ -1,7 +1,7 @@
 import type {
   AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage, RunChanges,
 } from './types'
-import type { ProposalCitations, SourceIndex } from './types'
+import type { ProposalCitations, SourceIndex, SourceLabels } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -108,6 +108,8 @@ export const api = {
   sourcePreview: (pid: string, sid: string, cfg: CsvImportConfig) => req<CsvPreview>('POST', `${P(pid)}/sources/${sid}/preview`, cfg),
   sourceConfirm: (pid: string, sid: string, cfg: CsvImportConfig) =>
     req<{ observations: number; superseded: number }>('POST', `${P(pid)}/sources/${sid}/confirm`, cfg),
+  sourceLabels: (pid: string, sid: string, name: string) =>
+    req<SourceLabels>('GET', `${P(pid)}/sources/${sid}/labels?name=${encodeURIComponent(name)}`),
   proposalCitations: (pid: string, id: string) => req<ProposalCitations>('GET', `${P(pid)}/proposals/${id}/citations`),
   observations: (pid: string, sid: string) => req<Observation[]>('GET', `${P(pid)}/sources/${sid}/observations?limit=5000`),
   reindexSource: (pid: string, sid: string) => req<SourceIndex>('POST', `${P(pid)}/sources/${sid}/reindex`),

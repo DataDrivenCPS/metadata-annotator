@@ -774,8 +774,7 @@ def _expand_build_token_updates(project: Project, prior: ChangeProposal,
     keys = {(m["token"], m.get("units")): m["id"] for m in mappings.values()}
     source_ids = [s["id"] for s in summary.get("sources", []) if s.get('role', 'input') == 'input']
     recs = [Rec(o, str(o.content.get("name", "")), dict(o.content.get("metadata") or {}))
-            for sid in source_ids for o in project.observations(sid)
-            if o.status != "superseded" and o.kind == 'point_record']
+            for o in project.point_records(source_ids)]
     parse = summary.get('parse') or {}
     specs = parse.get('source_specs') or {sid: parse for sid in source_ids}
     for sid, spec in specs.items():

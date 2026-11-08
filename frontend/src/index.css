@@ -421,7 +421,7 @@ table.changes .after { color: var(--ok); font-weight: 500; }
 .grid-scroll.short { max-height: 220px; }
 table.raw-grid { border-collapse: collapse; font-size: var(--fs-sm); }
 table.raw-grid th { position: sticky; top: 0; background: var(--hover); color: var(--muted); font-weight: 500; padding: 2px 6px; text-align: left; }
-table.raw-grid tbody th { position: static; }
+table.raw-grid tbody th { position: static; white-space: nowrap; }
 table.raw-grid td { padding: 2px 6px; border-top: 1px solid var(--hover); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 table.raw-grid td.name { background: var(--accent-soft); font-weight: 500; }
 table.raw-grid td.meta { background: var(--ok-soft); }
@@ -442,6 +442,10 @@ table.raw-grid td.excluded { color: var(--faint); text-decoration: line-through;
 .csv-source > .tabs { background: none; padding: 0; }
 .records-view { display: flex; flex-direction: column; gap: 6px; }
 .records-head { display: flex; gap: 8px; align-items: center; }
+table.raw-grid .pick { width: 1%; padding: 2px 4px; text-align: center; }
+table.raw-grid .pick input { margin: 0; vertical-align: middle; }
+table.raw-grid tr.picked td, table.raw-grid tr.picked th { background: var(--accent-soft); }
+.records-picked { display: inline-flex; gap: 6px; align-items: baseline; margin-left: auto; }
 .records-head .filter { flex: 1; min-width: 0; }
 .grid-scroll.tall { max-height: 62vh; }
 .obs-status.accepted { background: var(--ok-soft); color: var(--ok); }

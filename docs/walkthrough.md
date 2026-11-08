@@ -66,7 +66,9 @@ records.
 For a new project, choose WaTr, ASHRAE 223P or Brick before uploading a point list. Open
 **▸ Sources** at the left of the tabs (it starts closed until a project has sources), upload a CSV and confirm the detected row or column layout. The **Records** view
 shows the confirmed source rows. Select **Build model from these records**, optionally add a
-hint about site names, and start the run. Watch progress in the assistant panel.
+hint about site names, and start the run. To build only some rows, tick them first (shift-click
+picks a range, the header box every shown row not yet in the model); the button then reads
+**Build N selected…**. Watch progress in the assistant panel.
 
 The proposal summarizes how many records matched the naming pattern, each token's vocabulary
 mapping, and equipment classes. Review unresolved mappings and validation issues, then apply

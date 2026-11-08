@@ -75,6 +75,8 @@ class BuildRequest(BaseModel):
     source_pages: dict[str, list[int]] = Field(default_factory=dict)
     source_roles: dict[str, Literal["input", "reference"]] = Field(default_factory=dict)
     supersedes_proposal_id: str | None = None
+    # CSV records (rows) to build; empty means every record not yet in the model
+    record_ids: list[str] = Field(default_factory=list)
 
 
 class ProposalReplyRequest(BaseModel):
@@ -640,7 +642,8 @@ def create_app(settings: Settings | None = None, registry: VocabularyRegistry | 
             source_or_404(p, sid)
         try:
             run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider,
-                                   body.source_pages, body.source_roles, body.supersedes_proposal_id)
+                                   body.source_pages, body.source_roles, body.supersedes_proposal_id,
+                                   body.record_ids)
         except (SourceError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except KeyError as exc:

@@ -141,6 +141,36 @@ def test_mapping_batches_run_concurrently_up_to_the_provider_limit(workspace):
     assert outcome.steps == 1 + 3 + 1 and outcome.input_tokens == 50
 
 
+def test_a_build_of_picked_rows_models_only_those_and_the_rest_stay_unbuilt(workspace):
+    p = workspace.create("AHUs", "brick")
+    source = p.add_source("points.csv", b"Name,Description\nA1:Temp,Zone Air Temp\nA2:Temp,Zone Air Temp\n"
+                                        b"A1:Mystery,Unknown Signal\n")
+    p.confirm_csv_mapping(source.id, CsvImportConfig(layout="row_points", delimiter=",", header_row=0,
+                                                      first_data_row=1, name_column=0, metadata_columns=[1]))
+    obs = {o.content["name"]: o.id for o in p.observations(source.id)}
+    guidance = SkillGuidance(load_settings().skill_dir)
+    seen = []
+    def parse(messages):
+        seen.append(messages[-1]["content"])
+        return {"pattern": r"(?P<equipment>A\d+):(?P<point>.+)", "equipment_from": "group:equipment",
+                "token_from": "column:Description", "units_from": "none", "explanation": "AHU prefix"}
+    llm = ScriptedLLM([
+        parse,
+        {"action": "map", "mappings": [{"id": "T1", "point_type": "brick:Zone_Air_Temperature_Sensor"}]},
+        {"action": "map", "mappings": [{"id": "G1", "type": "brick:AHU"}]},
+    ])
+    picked = {obs["A1:Temp"]}
+    outcome = run_build(p, llm, guidance, p.head(), [source.id], "", None, lambda *_: None, CancelToken(),
+                        record_ids=picked)
+    # the naming convention is read from every unbuilt record; only the picked one is modeled
+    assert "3 records" in seen[0] and "A1:Mystery" in seen[0]
+    summary = outcome.proposal.build_summary
+    assert summary["records"] == 1 and summary["points_created"] == 1 and summary["equipment_created"] == 1
+    rev = p.apply_proposal(outcome.proposal.id)
+    assert set(p.evidence_map(rev.id)) == picked
+    assert [pt.label for pt in p.view(rev.id).points] == ["A1:Temp"]
+
+
 def test_cancelled_build_cannot_save_a_validated_draft(workspace):
     from workbench.llm import Cancelled
 

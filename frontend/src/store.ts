@@ -98,7 +98,8 @@ interface State {
   sendMessage: (text: string) => Promise<boolean>
   assist: (instruction: string, parentRunId?: string) => Promise<boolean>
   replyToProposal: (instruction: string, parentRunId?: string, retryLeftOut?: boolean, proposal?: Proposal) => Promise<boolean>
-  startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>) => Promise<boolean>
+  /** ``recordIds``: the CSV rows to build (none: every row not yet in the model). */
+  startBuild: (sourceIds: string[], instruction: string, sourcePages?: Record<string, number[]>, sourceRoles?: Record<string, SourceRole>, recordIds?: string[]) => Promise<boolean>
   cancelRun: () => Promise<void>
   /** Apply, discard or redo a proposal: the one given (from the Pending edits tab), else the one open in the panel. */
   applyProposal: (proposal?: Proposal) => Promise<void>
@@ -501,7 +502,7 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  startBuild: async (sourceIds, instruction, sourcePages, sourceRoles) => {
+  startBuild: async (sourceIds, instruction, sourcePages, sourceRoles, recordIds) => {
     if (readOnly()) return false
     const { projectId, model, provider, proposal } = get()
     if (!projectId || !model) return false
@@ -509,7 +510,8 @@ export const useStore = create<State>((set, get) => ({
     const request = ++assistantGeneration
     const replaced = proposal && (proposal.status === 'pending' || proposal.status === 'stale') ? proposal.id : undefined
     try {
-      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages, sourceRoles, replaced)
+      const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages, sourceRoles, replaced,
+        recordIds)
       if (replaced) set((s) => ({ proposalStates: { ...s.proposalStates, [replaced]: 'dismissed' as const } }))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {

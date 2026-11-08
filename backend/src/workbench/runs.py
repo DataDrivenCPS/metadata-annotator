@@ -309,8 +309,10 @@ class RunManager:
     def start_build(self, project: Project, base: str, source_ids: list[str], instruction: str,
                     provider: str | None = None, source_pages: dict[str, list[int]] | None = None,
                     source_roles: dict[str, str] | None = None,
-                    supersedes_proposal_id: str | None = None) -> AgentRun:
-        """Build from confirmed CSV records or selected image/document evidence."""
+                    supersedes_proposal_id: str | None = None,
+                    record_ids: list[str] | None = None) -> AgentRun:
+        """Build from confirmed CSV records or selected image/document evidence. ``record_ids``: build
+        only these CSV records (rows the person picked) instead of every record not yet in the model."""
         from .agent.build import run_build
 
         if base != project.head():
@@ -333,6 +335,15 @@ class RunManager:
             source.kind != "pdf" and source.id in source_pages for source in sources
         )):
             raise SourceError("Page selections must refer to PDF sources in this build.")
+        picked = set(record_ids) if record_ids else None
+        if picked is not None:
+            if documents:
+                raise SourceError("Rows can be picked only when building from CSV files alone.")
+            if unknown := picked - {o.id for o in project.point_records(source_ids)}:
+                raise SourceError(f"{len(unknown)} selected row(s) are not current records of these files; "
+                                  "reload the records and pick again.")
+            if modeled := picked & project.built_records(base):
+                raise SourceError(f"{len(modeled)} selected row(s) are already in the model.")
         selection = SelectionScope(source_regions=[SourceRegion(
             source_id=sid, pages=(source_pages or {}).get(sid), role=roles[sid]) for sid in source_ids])
         if selection:
@@ -348,7 +359,8 @@ class RunManager:
                                         rid, progress, token, self.settings.agent)
         else:
             def work(llm, rid, progress, token):
-                return run_build(project, llm, self.guidance, base, source_ids, instruction, rid, progress, token)
+                return run_build(project, llm, self.guidance, base, source_ids, instruction, rid, progress, token,
+                                 record_ids=picked)
         return self._launch(project, cfg, work, supersedes_proposal_id, kind="build", mode="build",
                             input_revision=base, source_ids=source_ids, selection=selection, instruction=instruction)
 

@@ -862,6 +862,15 @@ class Project:
                               + " ORDER BY rowid", tuple(args)).fetchall()
         return [Observation.model_validate_json(r["body"]) for r in rows]
 
+    def point_records(self, source_ids: list[str]) -> list[Observation]:
+        """The current (not superseded) point records of these sources, in file order: what a build reads."""
+        return [o for sid in source_ids for o in self.observations(sid)
+                if o.status != "superseded" and o.kind == "point_record"]
+
+    def built_records(self, rid: str) -> set[str]:
+        """Records a live point cites in a revision: the rows already built (never stored separately)."""
+        return {oid for point in self.view(rid).points for oid in point.evidence}
+
     # ---------------------------------------------------------------- layout
 
     def layout(self) -> dict[str, list[float]]:

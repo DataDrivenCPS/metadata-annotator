@@ -643,7 +643,7 @@ def create_app(settings: Settings | None = None, registry: VocabularyRegistry | 
         try:
             run = runs.start_build(p, body.base_revision, body.source_ids, body.instruction, body.provider,
                                    body.source_pages, body.source_roles, body.supersedes_proposal_id,
-                                   body.record_ids or None)
+                                   body.record_ids)
         except (SourceError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from None
         except KeyError as exc:

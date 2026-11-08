@@ -12,6 +12,13 @@ export interface ClickTarget {
   relationship?: boolean // connections are relationships
 }
 
+/** The rows from ``anchor`` to ``id`` as shown (shift-click), or null when either is not shown. */
+export function displayRange(order: readonly string[], anchor: string | null, id: string): string[] | null {
+  const a = anchor ? order.indexOf(anchor) : -1
+  const b = order.indexOf(id)
+  return a < 0 || b < 0 ? null : order.slice(Math.min(a, b), Math.max(a, b) + 1)
+}
+
 /** Selection after clicking a row/cell/node/edge. ``displayOrder`` is the order as shown. */
 export function applyClick(
   sel: Selection, target: ClickTarget, mods: Modifiers, displayOrder: string[], anchor: string | null,
@@ -20,10 +27,8 @@ export function applyClick(
   const other = target.relationship ? 'entity_ids' : 'relationship_ids'
   let mine: string[]
   let others: string[]
-  if (mods.shift && anchor && displayOrder.includes(anchor) && displayOrder.includes(target.id)) {
-    const a = displayOrder.indexOf(anchor)
-    const b = displayOrder.indexOf(target.id)
-    const range = displayOrder.slice(Math.min(a, b), Math.max(a, b) + 1)
+  const range = mods.shift ? displayRange(displayOrder, anchor, target.id) : null
+  if (range) {
     mine = mods.ctrl ? Array.from(new Set([...sel[key], ...range])) : range
     others = mods.ctrl ? sel[other] : []
   } else if (mods.ctrl) {

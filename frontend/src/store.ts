@@ -511,7 +511,7 @@ export const useStore = create<State>((set, get) => ({
     const replaced = proposal && (proposal.status === 'pending' || proposal.status === 'stale') ? proposal.id : undefined
     try {
       const run = await api.build(projectId, model.head, sourceIds, instruction, provider ?? undefined, sourcePages, sourceRoles, replaced,
-        recordIds?.length ? recordIds : undefined)
+        recordIds)
       if (replaced) set((s) => ({ proposalStates: { ...s.proposalStates, [replaced]: 'dismissed' as const } }))
       return acceptStartedRun(run, projectId, project, request, true)
     } catch (e) {

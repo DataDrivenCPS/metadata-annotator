@@ -339,12 +339,10 @@ class RunManager:
         if picked is not None:
             if documents:
                 raise SourceError("Rows can be picked only when building from CSV files alone.")
-            current = {o.id for sid in source_ids for o in project.observations(sid)
-                       if o.status != "superseded" and o.kind == "point_record"}
-            if unknown := picked - current:
+            if unknown := picked - {o.id for o in project.point_records(source_ids)}:
                 raise SourceError(f"{len(unknown)} selected row(s) are not current records of these files; "
                                   "reload the records and pick again.")
-            if modeled := picked & set(project.evidence_map(base)):
+            if modeled := picked & project.built_records(base):
                 raise SourceError(f"{len(modeled)} selected row(s) are already in the model.")
         selection = SelectionScope(source_regions=[SourceRegion(
             source_id=sid, pages=(source_pages or {}).get(sid), role=roles[sid]) for sid in source_ids])

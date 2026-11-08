@@ -370,21 +370,17 @@ def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: st
     family = vocab.family
 
     # ---- records not yet in the model
-    modeled = {oid for point in project.view(rid).points for oid in point.evidence}
+    modeled = project.built_records(rid)
     sources = {sid: project.source(sid) for sid in source_ids}
-    all_obs = [o for sid in source_ids for o in project.observations(sid)
-               if o.status != "superseded" and o.kind == "point_record"]
+    all_obs = project.point_records(source_ids)
     unbuilt = [Rec(o, str(o.content.get("name", "")), dict(o.content.get("metadata") or {}))
                for o in all_obs if o.id not in modeled]
-    if record_ids is not None:
-        all_obs = [o for o in all_obs if o.id in record_ids]
-    recs = [r for r in unbuilt if record_ids is None or r.obs.id in record_ids]
-    skipped_existing = len(all_obs) - len(recs)
+    recs = [r for r in unbuilt if r.obs.id in record_ids] if record_ids else unbuilt
+    skipped_existing = 0 if record_ids else len(all_obs) - len(recs)
     if not recs:
         raise LLMError("every record from these sources is already in the model" if all_obs
                        else "no confirmed records: confirm the CSV structure in the Sources pane first")
-    progress("inventory", f"{len(recs)} {'selected ' if record_ids is not None else ''}records to model from "
-             f"{', '.join(x.filename for x in sources.values())}"
+    progress("inventory", f"{len(recs)} records to model from {', '.join(x.filename for x in sources.values())}"
              + (f" ({skipped_existing} already modeled)" if skipped_existing else ""), {})
 
     # Different files may have different naming conventions and metadata columns.

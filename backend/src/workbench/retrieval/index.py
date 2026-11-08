@@ -287,11 +287,12 @@ class Indexer:
             self.schedule_maintenance(project_id)
 
     def schedule_maintenance(self, project_id: str) -> None:
+        # Submitted under the lock that shutdown() closes with, so nothing is submitted after it.
         with self._lock:
             if self._closed or project_id in self._maintaining:
                 return
             self._maintaining.add(project_id)
-        self._maintain.submit(self._run_maintenance, project_id)
+            self._maintain.submit(self._run_maintenance, project_id)
 
     def _run_maintenance(self, project_id: str) -> None:
         with self._lock:
@@ -350,18 +351,15 @@ class Indexer:
 
     def enqueue(self, project: "Project", sid: str, *, embed_only: bool = False) -> None:
         key = (project.id, sid)
+        # Marked and submitted under the lock that shutdown() closes with, so nothing is queued after it.
         with self._lock:
             if self._closed or key in self._queued:
                 return
             token = self._queued[key] = CancelToken()
-        if not embed_only:
-            source = project.source(sid)
-            _put_status(project, sid, {"status": "queued", "sha256": source.sha256, "message": "Waiting to be indexed"})
-        try:
+            if not embed_only:
+                source = project.source(sid)
+                _put_status(project, sid, {"status": "queued", "sha256": source.sha256, "message": "Waiting to be indexed"})
             self._work.submit(self._job, project, sid, embed_only, token)
-        except RuntimeError:  # shut down since the check above (the app is stopping)
-            with self._lock:
-                self._queued.pop(key, None)
 
     def reindex(self, project: "Project", sid: str) -> None:
         self._cancel(project.id, sid)

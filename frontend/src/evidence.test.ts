@@ -57,7 +57,7 @@ describe('attached evidence belongs to one message', () => {
     vi.mocked(api.build).mockResolvedValue(started('build', []))
     await useStore.getState().startBuild(['src-csv'], '', undefined, undefined, ['obs-1', 'obs-2'])
     expect(vi.mocked(api.build).mock.lastCall?.[8]).toEqual(['obs-1', 'obs-2'])
-    await useStore.getState().startBuild(['src-csv'], '', undefined, undefined, [])
+    await useStore.getState().startBuild(['src-csv'], '')
     expect(vi.mocked(api.build).mock.lastCall?.[8]).toBeUndefined()
   })
 })

@@ -348,8 +348,11 @@ Reconfirming the layout reuses observation ids for unchanged coordinates and con
 supersedes changed unresolved records, and retains records linked through model evidence.
 `agent/build.py` discovers naming conventions and maps tokens to vocabulary terms, then
 builds points and equipment in batches. The proposal carries its mapping summary and source
-evidence; unresolved records can be built later. Replies can revise a token mapping across
-all matching draft points with `token_updates`.
+evidence; unresolved records can be built later. A build can take only the rows the person
+ticked (`record_ids`: current records of those CSVs, none already in the model); the naming
+convention is still read from all of the file's unbuilt records. Whether a record is built is
+never stored: it is in the model when a live point cites it (`Project.evidence_map`). Replies can
+revise a token mapping across all matching draft points with `token_updates`.
 
 Images, PDFs and text documents use the correction workflow with source context. PDF builds
 read explicitly selected pages, at most eight pages or images per build. Text and page images

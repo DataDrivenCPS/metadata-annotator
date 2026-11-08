@@ -361,7 +361,10 @@ def _parse_source(s: Session, recs: list[Rec], filename: str, instruction: str):
 
 def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: str, source_ids: list[str],
               instruction: str, run_id: str | None, progress: Progress, cancel: CancelToken,
-              evidence_context: str = "", persist: bool = True, source_evidence: list | None = None) -> BuildOutcome:
+              evidence_context: str = "", persist: bool = True, source_evidence: list | None = None,
+              record_ids: set[str] | None = None) -> BuildOutcome:
+    """``record_ids``: build only these records (the rows the person picked); the naming convention is
+    still worked out from all of the sources' records not yet in the model."""
     s = Session(project, llm, guidance, rid, progress, cancel, evidence_context, source_evidence)
     vocab = project.vocab
     family = vocab.family
@@ -371,22 +374,26 @@ def run_build(project: Project, llm: LLMClient, guidance: SkillGuidance, rid: st
     sources = {sid: project.source(sid) for sid in source_ids}
     all_obs = [o for sid in source_ids for o in project.observations(sid)
                if o.status != "superseded" and o.kind == "point_record"]
-    recs = [Rec(o, str(o.content.get("name", "")), dict(o.content.get("metadata") or {}))
-            for o in all_obs if o.id not in modeled]
+    unbuilt = [Rec(o, str(o.content.get("name", "")), dict(o.content.get("metadata") or {}))
+               for o in all_obs if o.id not in modeled]
+    if record_ids is not None:
+        all_obs = [o for o in all_obs if o.id in record_ids]
+    recs = [r for r in unbuilt if record_ids is None or r.obs.id in record_ids]
     skipped_existing = len(all_obs) - len(recs)
     if not recs:
         raise LLMError("every record from these sources is already in the model" if all_obs
                        else "no confirmed records: confirm the CSV structure in the Sources pane first")
-    progress("inventory", f"{len(recs)} records to model from {', '.join(x.filename for x in sources.values())}"
+    progress("inventory", f"{len(recs)} {'selected ' if record_ids is not None else ''}records to model from "
+             f"{', '.join(x.filename for x in sources.values())}"
              + (f" ({skipped_existing} already modeled)" if skipped_existing else ""), {})
 
     # Different files may have different naming conventions and metadata columns.
     specs, failures = {}, []
     for sid, source in sources.items():
-        source_recs = [r for r in recs if r.obs.source_id == sid]
-        if not source_recs:
+        if not any(r.obs.source_id == sid for r in recs):
             continue
-        spec, _, failed = _parse_source(s, source_recs, source.filename, instruction)
+        # More examples give a better pattern: read it from every unbuilt record of the file.
+        spec, _, failed = _parse_source(s, [r for r in unbuilt if r.obs.source_id == sid], source.filename, instruction)
         specs[sid] = spec
         failures.extend(failed)
     spec = next(iter(specs.values()))

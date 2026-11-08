@@ -80,6 +80,11 @@ def test_source_upload_preview_confirm(client):
     assert obs[0]["content"]["name"] == "LT-101" and obs[0]["location"]["column"] == 1
     listed = client.get(f"/api/projects/{pid}/sources").json()
     assert listed[0]["observation_count"] == 6 and listed[0]["status"] == "configured"
+    # Picked rows must be current records of the files being built
+    head = client.get(f"/api/projects/{pid}/model").json()["head"]
+    picked = client.post(f"/api/projects/{pid}/build", json={"base_revision": head, "source_ids": [src["id"]],
+                                                             "record_ids": [obs[0]["id"], "obs-nope"]})
+    assert picked.status_code == 400 and "not current records" in picked.json()["detail"]
     with open(SAMPLES / "diagram.png", "rb") as f:
         img = client.post(f"/api/projects/{pid}/sources", files={"file": ("diagram.png", f, "image/png")}).json()
     assert img["kind"] == "image" and img["width"] > 0

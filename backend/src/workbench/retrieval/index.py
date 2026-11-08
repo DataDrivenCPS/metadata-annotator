@@ -357,7 +357,11 @@ class Indexer:
         if not embed_only:
             source = project.source(sid)
             _put_status(project, sid, {"status": "queued", "sha256": source.sha256, "message": "Waiting to be indexed"})
-        self._work.submit(self._job, project, sid, embed_only, token)
+        try:
+            self._work.submit(self._job, project, sid, embed_only, token)
+        except RuntimeError:  # shut down since the check above (the app is stopping)
+            with self._lock:
+                self._queued.pop(key, None)
 
     def reindex(self, project: "Project", sid: str) -> None:
         self._cancel(project.id, sid)

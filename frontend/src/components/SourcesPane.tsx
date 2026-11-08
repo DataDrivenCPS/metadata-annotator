@@ -6,6 +6,7 @@ import { choiceReadsImages } from '../providers'
 import type { CsvGrid, CsvImportConfig, CsvPreview, Observation, Source, SourceRole } from '../types'
 import { MAX_BUILD_PAGES, parsePageSelection } from '../documents'
 import { SourceIndexStatus } from './SourceIndexStatus'
+import { pickAllShown, pickRows } from '../recordSelection'
 
 const LAYOUTS: [CsvImportConfig['layout'], string, string][] = [
   ['row_points', 'Rows describe points', 'One point per row: a name column plus optional metadata columns.'],
@@ -213,12 +214,23 @@ function RecordsView({ source }: { source: Source }) {
   const [filter, setFilter] = useState('')
   const [building, setBuilding] = useState(false)
   const [hint, setHint] = useState('')
+  // Rows picked to build, and the last one clicked (shift-click picks the range from it)
+  const [picked, setPicked] = useState<Set<string>>(() => new Set())
+  const [anchor, setAnchor] = useState<string | null>(null)
   useEffect(() => {
     api.observations(projectId, source.id).then((o) => setObs(o.filter((x) => x.status !== 'superseded')))
   }, [projectId, source.id, sourcesVersion])
   if (!obs) return <p className="muted">Loading records…</p>
   const q = filter.trim().toLowerCase()
   const shown = q ? obs.filter((o) => JSON.stringify(o.content).toLowerCase().includes(q)) : obs
+  const listed = shown.slice(0, 1000)
+  // Only rows not yet in the model can be picked; picks of rows since built drop out.
+  const selectable = new Set(obs.filter((o) => !o.entity_id).map((o) => o.id))
+  const chosen = [...picked].filter((id) => selectable.has(id))
+  const listedIds = listed.map((o) => o.id)
+  const listedSelectable = listedIds.filter((id) => selectable.has(id))
+  const allListed = listedSelectable.length > 0 && listedSelectable.every((id) => picked.has(id))
+  const someListed = listedSelectable.some((id) => picked.has(id))
   const keys = Array.from(new Set(obs.flatMap((o) => Object.keys(o.content.metadata ?? {}))))
   const inModel = obs.filter((o) => o.entity_id).length
   const run = activeRunId ? runs[activeRunId] : null
@@ -230,7 +242,7 @@ function RecordsView({ source }: { source: Source }) {
           <strong>{inModel} of {obs.length} in the model</strong>
           {inModel < obs.length && !building && (
             <button className="primary" disabled={!!running} onClick={() => setBuilding(true)}>
-              {inModel ? 'Build the rest…' : 'Build model from these records…'}</button>
+              {chosen.length ? `Build ${chosen.length} selected…` : inModel ? 'Build the rest…' : 'Build model from these records…'}</button>
           )}
         </div>
         {building && (
@@ -238,9 +250,11 @@ function RecordsView({ source }: { source: Source }) {
             <textarea rows={2} placeholder="Anything it should know? e.g. “A1, A2, E1 are AHUs; RMxxxx entries are VAV boxes with reheat.”"
               value={hint} onChange={(e) => setHint(e.target.value)} />
             <div className="csv-actions">
-              <button className="primary" onClick={async () => { if (await startBuild([source.id], hint.trim())) setBuilding(false) }}
+              <button className="primary" onClick={async () => {
+                if (await startBuild([source.id], hint.trim(), undefined, undefined, chosen)) { setBuilding(false); setPicked(new Set()) }
+              }}
                 title={`Works out the naming convention, maps each point ${family === 'brick' ? 'suffix to a Brick point class' : 'description to a point kind, unit and sensor'}, groups points into equipment, and proposes the model for review; anything it can't map with a verified term is left for you`}>
-                Build</button>
+                {chosen.length ? `Build ${chosen.length} selected` : 'Build'}</button>
               <button onClick={() => setBuilding(false)}>Cancel</button>
             </div>
           </div>
@@ -250,12 +264,23 @@ function RecordsView({ source }: { source: Source }) {
       <div className="records-head">
         <input className="filter" placeholder="Filter records…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         <span className="muted small">{shown.length} of {obs.length}</span>
+        {chosen.length > 0 && <span className="small records-picked">{chosen.length} selected
+          <button className="link" onClick={() => setPicked(new Set())}>Clear</button></span>}
       </div>
       <div className="grid-scroll tall">
         <table className="raw-grid">
-          <thead><tr><th>Where</th><th>Point name</th>{keys.map((k) => <th key={k}>{k}</th>)}<th title="Records stay separate from the model; each modeled point cites its record as evidence">Model</th></tr></thead>
-          <tbody>{shown.slice(0, 1000).map((o) => (
-            <tr key={o.id} title={o.id}>
+          <thead><tr><th className="pick"><input type="checkbox" aria-label="Select all shown rows not in the model"
+            checked={allListed} disabled={!listedSelectable.length}
+            ref={(el) => { if (el) el.indeterminate = someListed && !allListed }}
+            onChange={() => setPicked(pickAllShown(picked, listedIds, selectable))} /></th><th>Where</th><th>Point name</th>{keys.map((k) => <th key={k}>{k}</th>)}<th title="Records stay separate from the model; each modeled point cites its record as evidence">Model</th></tr></thead>
+          <tbody>{listed.map((o) => (
+            <tr key={o.id} title={o.id} className={picked.has(o.id) && selectable.has(o.id) ? 'picked' : undefined}>
+              <td className="pick"><input type="checkbox" aria-label={`Select ${o.content.name}`}
+                checked={picked.has(o.id) && selectable.has(o.id)} disabled={!selectable.has(o.id)}
+                onChange={(e) => {
+                  setPicked(pickRows(picked, o.id, (e.nativeEvent as MouseEvent).shiftKey, anchor, listedIds, selectable))
+                  setAnchor(o.id)
+                }} /></td>
               <th>{o.location.kind === 'csv_row' ? `row ${(o.location.row ?? 0) + 1}` : `col ${(o.location.column ?? 0) + 1}`}</th>
               <td className="name">{o.content.name}</td>
               {keys.map((k) => <td key={k}>{o.content.metadata?.[k] ?? ''}</td>)}

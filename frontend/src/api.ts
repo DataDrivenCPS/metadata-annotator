@@ -74,8 +74,8 @@ export const api = {
     req<AgentRun>('POST', `${P(pid)}/assist`, { base_revision, selection, instruction, provider, parent_run_id, inherit_selection, supersedes_proposal_id, fresh }),
   autofix: (pid: string, base_revision: string, issue_ids: string[], provider?: string) =>
     req<AgentRun>('POST', `${P(pid)}/autofix`, { base_revision, issue_ids, provider }),
-  build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>, source_roles?: Record<string, SourceRole>, supersedes_proposal_id?: string) =>
-    req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages, source_roles, supersedes_proposal_id }),
+  build: (pid: string, base_revision: string, source_ids: string[], instruction: string, provider?: string, source_pages?: Record<string, number[]>, source_roles?: Record<string, SourceRole>, supersedes_proposal_id?: string, record_ids?: string[]) =>
+    req<AgentRun>('POST', `${P(pid)}/build`, { base_revision, source_ids, instruction, provider, source_pages, source_roles, supersedes_proposal_id, record_ids }),
   run: (pid: string, id: string) => req<AgentRun>('GET', `${P(pid)}/runs/${id}`),
   runChanges: (pid: string, id: string) => req<RunChanges>('GET', `${P(pid)}/runs/${id}/changes`),
   runs: (pid: string) => req<AgentRun[]>('GET', `${P(pid)}/runs`),

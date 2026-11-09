@@ -153,6 +153,34 @@ def test_attached_reference_supports_correction_and_links_evidence(workspace):
     assert row.label == 'Supply air handler' and row.evidence == [p.observations(source.id)[0].id]
 
 
+def test_uncited_objects_link_to_the_sources_that_name_them(workspace):
+    p = workspace.create('Uncited objects', 'brick')
+    pumps = p.add_source('pumps.txt', b'Feed pump P-101 runs on low level in the tank.')
+    tanks = p.add_source('tanks.txt', b'TK-2 is the permeate tank.')
+    cited = p.add_source('notes.txt', b'General notes about the plant.')
+
+    def build(messages):
+        note = p.observations(cited.id)[0].id
+        return {'action': 'propose', 'operations': [
+            {'op': 'create_equipment', 'label': 'P101', 'type': 'brick:Pump'},
+            {'op': 'create_equipment', 'label': 'TK-2', 'type': 'brick:Tank'},
+            {'op': 'create_equipment', 'label': 'Mystery unit', 'type': 'brick:Equipment'},
+            {'op': 'create_equipment', 'label': 'Chosen', 'type': 'brick:Equipment', 'evidence': [note]}]}
+
+    steps = []
+    outcome = run_with_evidence(p, ScriptedLLM([notes, notes, notes, build]), guidance(), p.head(),
+                                SelectionScope(source_regions=[SourceRegion(source_id=s.id) for s in (pumps, tanks, cited)]),
+                                'Add the equipment', None, lambda *args: steps.append(args), CancelToken(), agent=AgentConfig())
+    evidence = {op.label: op.evidence for op in outcome.proposal.operations}
+    first = {s.id: p.observations(s.id)[0].id for s in (pumps, tanks, cited)}
+    assert evidence['P101'] == [first[pumps.id]]  # named in another spelling
+    assert evidence['TK-2'] == [first[tanks.id]]
+    assert sorted(evidence['Mystery unit']) == sorted(first.values())  # nothing names it: every source, as before
+    assert evidence['Chosen'] == [first[cited.id]]  # the model's own citation is kept
+    linked = [data for kind, _, data in steps if kind == 'linked']
+    assert linked == [{'uncited': 3, 'by_label': 2}]
+
+
 def test_source_notes_reject_invented_citations(workspace):
     p = workspace.create('Citations', 'brick')
     source = p.add_source('manual.txt', b'A1 is an air handler.')

@@ -561,7 +561,8 @@ def ensure_ids(pg: ProjectGraph, vocab: Vocabulary) -> int:
 QUDT_NS = "http://qudt.org/schema/qudt/"
 # Relations the typed tables show as fields: predicate -> the field. Display only: relate can
 # write any relation, and a fact is listed as a relationship unless a typed row already shows
-# that pair (see shown_pairs), e.g. a room's second parent or a VAV feeding a zone.
+# that pair (see shown_pairs), e.g. a room's second parent or a VAV feeding a zone, and unless
+# it is a 223P relation stated on the wrong kind of subject (see misplaced).
 TYPED_FIELDS: dict[str, dict[str, str]] = {
     "s223": {
         **{str(S223[p]): "connection points" for p in (
@@ -596,6 +597,19 @@ def typed_field(vocab: Vocabulary, predicate: str) -> str | None:
     return TYPED_FIELDS.get(vocab.family, {}).get(predicate)
 
 
+def misplaced(vocab: Vocabulary, predicate: str, subject_types: list[str]) -> bool:
+    """A 223P relation on a subject its shapes do not give it to, e.g. ``connectsAt`` (Connection
+    -> ConnectionPoint) stated on a connection point. 223P's closed-world shape reports exactly
+    these, so such a fact is a finding to show and remove, not something a typed field displays.
+    Brick has no such rule (and its shapes cover inverse relations unevenly), so never there."""
+    if vocab.family != "s223":
+        return False
+    t = vocab.term(predicate)
+    if t is None or not t.shapes:
+        return False
+    return not any(vocab.is_a(c, sh["subject"]) for sh in t.shapes for c in subject_types)
+
+
 def shown_pairs(view: ModelView) -> set[frozenset[str]]:
     """Pairs of ids (or id and vocabulary IRI) that a typed row's fields already show."""
     pairs: set[frozenset[str]] = set()
@@ -623,6 +637,7 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
     seen: set[tuple[str, str, str]] = set()
     counts: dict[str, int] = {}
     shown = shown_pairs(view)
+    types: dict[URIRef, list[str]] = {}
     for s, p, o in facts(pg, vocab):
         if str(s) not in nodes:
             continue
@@ -632,7 +647,10 @@ def add_relationships(pg: ProjectGraph, vocab: Vocabulary, view: ModelView) -> N
         if obj is None and value is None:
             continue
         if typed_field(vocab, str(p)) and frozenset((sid, obj[0] if obj else str(o))) in shown:
-            continue  # a typed field shows it
+            if s not in types:
+                types[s] = [str(t) for t in pg.model.objects(s, RDF.type)]
+            if not misplaced(vocab, str(p), types[s]):
+                continue  # a typed field shows it
         key = relationship_key(vocab, s, p, o)
         if key in seen:
             continue

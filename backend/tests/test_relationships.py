@@ -245,3 +245,30 @@ def test_any_row_can_be_locked_and_unlocked(zones):
     # a person's direct edit still locks what it sets
     rev, _ = p.edit(rev.id, ops({"op": "update_entity", "id": zone.id, "label": "Zone B"}))
     assert by_label(p.view(rev.id).entities, "Zone B").locked == ["label"]
+
+
+def test_a_223p_relation_stated_the_wrong_way_round_is_listed_so_it_can_be_removed(sample_project):
+    """223P's connectsAt goes from a Connection to a ConnectionPoint. Stated on a connection point
+    (as some imported models do), the closed-world shape reports it. The point's connection field
+    shows that pair, but the misplaced fact is still listed as a relationship so it can be seen and
+    unrelated; the same relation the right way round stays shown by the typed field."""
+    p = sample_project
+    v = p.view(p.head())
+    port = next(cp for cp in v.connection_points if cp.connection)
+    cx = port.connection.id
+    closed_world = lambda rid: [i for i in p.issues(rid)  # noqa: E731
+                                if "connectsAt" in i.explanation and "not defined" in i.explanation]
+    assert not closed_world(p.head())
+    rev, cand = p.edit(p.head(), ops(
+        {"op": "relate", "subject": port.id, "relation": "s223:connectsAt", "object": cx},
+        {"op": "relate", "subject": cx, "relation": "s223:connectsAt", "object": port.id}))
+    assert any("connectsAt is not used for" in n for n in cand.result.notes)
+    assert closed_world(rev.id)
+    listed = [r for r in p.view(rev.id).relationships if r.relation.iri == str(S223.connectsAt)]
+    assert [(r.subject.id, r.object.id) for r in listed] == [(port.id, cx)]
+
+    rev2, _ = p.edit(rev.id, ops({"op": "unrelate", "id": listed[0].id}))
+    g = p.graph(rev2.id).model
+    assert (URIRef(port.iri), S223.connectsAt, None) not in g
+    assert (URIRef(v.rows()[cx].iri), S223.connectsAt, URIRef(port.iri)) in g
+    assert not closed_world(rev2.id)

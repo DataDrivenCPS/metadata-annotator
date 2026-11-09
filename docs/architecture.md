@@ -127,7 +127,12 @@ ontologies define:
   (`hasPoint`, `feeds`, `contains`, `hasLocation`, `rec:isPartOf`…). Display only: a fact is
   listed as a relationship unless a typed row already shows that pair (`shown_pairs`), so a
   room's second parent or a VAV feeding a zone appear as relationships while the room's level
-  stays its `part_of`.
+  stays its `part_of`. In 223P a relation stated on a subject its shapes do not give it to —
+  `connectsAt` (Connection → ConnectionPoint) on a connection point, as some imported models
+  have — is always listed (`projection.misplaced`), even when a typed field shows that pair:
+  223P's closed-world shape reports it, and listing it is what lets a person or the assistant
+  unrelate it. 223P's own rules derive `connectsAt`/`connectsThrough` from `cnx`, which is all
+  the connection operations write.
 - The inspector's **Relationships** panel lists an entity's relations and adds any relation
   the vocabulary has for it. The assistant has the same operations and a `relations_for(entity_id)`
   tool.
@@ -189,6 +194,40 @@ Other views are declarative tables:
 `[views.<id>]` in `workbench.toml` adds views or overrides fields of curated ones (e.g.
 `[views.spaces] exclude_profiles = []` brings Spaces back for WaTr). `GET /views` lists a
 project's views with spec problems, `GET /views/{id}` evaluates one.
+
+## Graph draft mode (`frontend/src/draft.ts`, `GraphView`, `DraftPanel`)
+
+The graph's pencil button (**Draft**) collects several changes and saves them as **one direct
+edit**, so drawing a model costs no assistant call per change. A draft lives in the browser
+only (zustand `graphDraft`, kept per project in local storage); the graph overlays it on the
+model and the model itself is untouched until it is saved.
+
+- **Gestures.** Drag from a node's right handle onto another node's left handle to create a
+  connection; drag an edge's end onto another node's handle to re-point it; drag **+ Equipment** onto the canvas
+  (or click it) to place new equipment; click any equipment or connection to edit it in the
+  draft panel (name, type, WaTr process; connection name, ends, medium, kind). Double-click
+  outside draft mode starts a draft on that object.
+- **Placeholders.** Drafted objects are `new:eq-N` / `new:cx-N`. `compileDraft` turns the draft
+  into ordinary operations — creates first, then connections, then one merged `update_*` per
+  edited row (fields set back to the model's value are dropped) — and lists what must be
+  settled first (equipment type, a 223P connection's medium). `resolve` mints the ids; the
+  edit response's `ids` maps each placeholder to its id so new nodes keep their drawn position.
+- **Connection points** are never drawn: a new connection's end joins its equipment's one
+  free connection point of the right direction and a compatible medium when there is exactly
+  one (that point's medium then stands in for a missing one), and otherwise lets
+  `create_connection` mint `<cx>.out` / `<cx>.in`. The panel can override either end.
+- **Check** calls `POST /edits/preview` (`Project.preview_edit`): `build_candidate` without
+  publishing, returning the changes, notes, minted ids and the validation issues the draft
+  would introduce or resolve (ids compared with the head). Validation only, ~1 s.
+- **Save** publishes through `POST /edits` (author user, kind edit: it locks what it sets).
+  **Save & fix issues** then starts one auto-fix run over only the issues the saved revision
+  introduced; auto-fix never changes locked fields, so it repairs around the drawn changes,
+  and its fixes are separate, undoable revisions.
+
+Not in draft mode yet (next phase): **nesting** — equipment inside equipment (`contained_in`,
+`s223:contains`), equipment location in a space, and space hierarchy (`part_of`), e.g. by
+dropping a node onto a container. Until then these stay in the tables and the inspector.
+Deleting objects and points (which the graph does not draw) are also outside draft mode.
 
 ## Revisions, undo, stale proposals
 

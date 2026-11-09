@@ -16,7 +16,7 @@ import logging
 import re
 import secrets
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rdflib import Graph, URIRef
@@ -72,6 +72,7 @@ class Candidate:
     summary: ValidationSummary
     changes: list[EntityChange]
     diff: TripleDiff
+    ids: dict[str, str] = field(default_factory=dict)  # new:* placeholder -> minted id
 
 
 # Displayed fields per entity kind: (field id, getter producing a display value)
@@ -443,14 +444,15 @@ class Project:
         Raises OperationError for malformed operations. Does not publish anything.
         """
         before = self.graph(base)
-        resolved = ops_mod.resolve(before, self.vocab, operations)
+        minted: dict[str, str] = {}
+        resolved = ops_mod.resolve(before, self.vocab, operations, minted=minted)
         after = before.copy()
         result = ops_mod.apply(after, self.vocab, resolved, lock=lock)
         run, issues, summary = self.validate_graph(after)
         selected = set(selection.entity_ids + selection.relationship_ids) if selection else set()
         changes = compute_changes(self.view(base), project(after, self.vocab), selected, before, after, self.vocab)
         return Candidate(base, resolved, before, after, result, run, issues, summary, changes,
-                         triple_diff(before.model, after.model))
+                         triple_diff(before.model, after.model), ids=minted)
 
     # ------------------------------------------------------------- publishing
 
@@ -504,6 +506,28 @@ class Project:
                 raise StaleRevision(base, self.head())
             cand = self.build_candidate(base, operations)
             return self.publish(cand, author="user", kind="edit", summary=summary), cand
+
+    def preview_edit(self, base: str, operations: list) -> dict:
+        """What a direct edit would do, without publishing it: the graph's draft mode checks a
+        batch of edits this way before saving them. Validation only; no model is called.
+
+        ``introduced``/``resolved`` compare validation issue ids (entity, shape, path and the
+        validator's message) with ``base``; malformed operations raise OperationError."""
+        if base != self.head():
+            raise StaleRevision(base, self.head())
+        cand = self.build_candidate(base, operations)
+        before = {i.id: i for i in self.issues(base)
+                  if i.origin == "validation" and i.severity != "suggestion"}
+        after = {i.id: i for i in cand.issues if i.severity != "suggestion"}
+        return {
+            "changes": [c.model_dump() for c in cand.changes],
+            "notes": cand.result.notes,
+            "ids": cand.ids,
+            "validation": cand.summary.model_dump(),
+            "introduced": [i.model_dump() for iid, i in after.items() if iid not in before],
+            "resolved": [i.model_dump() for iid, i in before.items()
+                         if iid not in after and i.resolution_state == "open"],
+        }
 
     # ------------------------------------------------------------ undo/redo
 

@@ -52,6 +52,18 @@ start a new section rather than rewriting them.
    issue as fixed. The model may also ask a question (e.g. about the brine medium); questions
    are shown but don't block applying. **Apply**. Nodes you didn't touch keep their positions.
 
+### Or draw it yourself: draft mode
+
+1. Graph tab → **Draft** (pencil, top right). Drag the arrow end of the **L-06** edge from
+   TK-201 onto TK-301's left handle; the edge turns teal (edited) and the panel shows
+   `To … was TK-201`.
+2. Drag **+ Equipment** onto the canvas, type a name, pick a type, then drag from TK-201's right
+   handle onto the new node's left handle. Pick the new connection's medium in the panel (the
+   draft bar lists what is still missing). Connection points are created as needed.
+3. **Check** validates the draft without saving it; **Save** stores everything as one revision
+   (one Undo reverts it), and **Save & fix issues** also lets auto-fix work through the issues
+   the draft introduced, without changing what you drew.
+
 ## 4. Inspect the evidence behind a proposal
 
 In any proposal, open **Evidence**: the selected model rows as the agent saw them, any source

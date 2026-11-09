@@ -88,6 +88,13 @@ export interface ModelResponse {
   revision: Revision; head: string; info: ProjectInfo; view: ModelView
   issues: ReviewIssue[]; layout: Record<string, [number, number]>
 }
+/** ``POST /edits`` (``Project.edit``): ``ids`` maps each ``new:*`` placeholder to the id minted for it. */
+export interface EditResponse { revision: Revision; changes: EntityChange[]; notes: string[]; ids: Record<string, string> }
+/** ``POST /edits/preview`` (``Project.preview_edit``): what the edits would do, nothing saved. */
+export interface EditPreview {
+  changes: EntityChange[]; notes: string[]; ids: Record<string, string>; validation: ValidationSummary
+  introduced: ReviewIssue[]; resolved: ReviewIssue[]
+}
 
 export type SourceRole = 'input' | 'reference'
 export interface SourceRegion { source_id: string; bbox?: number[] | null; rows?: number[] | null; pages?: number[] | null; text_range?: number[] | null; role?: SourceRole }

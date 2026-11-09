@@ -141,6 +141,40 @@ table.data td.empty { text-align: center; color: var(--muted); padding: 30px; }
 .edge-label { position: absolute; font-size: 10px; background: rgba(255,255,255,.9); padding: 0 4px; border-radius: 4px; pointer-events: none; white-space: nowrap; }
 .edge-label.selected { color: var(--accent); font-weight: 600; }
 
+/* ----------------------------------------------------------- graph draft */
+.graph-wrap { --draft: #0b7d6e; --draft-soft: #e3f4f1; }
+.graph-tools { position: absolute; z-index: 6; top: 8px; right: 10px; display: flex; gap: 6px; align-items: center; }
+.graph-tools .graph-toggle { position: static; }
+.draft-toggle { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; padding: 3px 10px; }
+.draft-toggle.active { background: var(--draft-soft); border-color: var(--draft); color: var(--draft); font-weight: 600; }
+.draft-bar { position: absolute; z-index: 6; top: 8px; left: 10px; max-width: calc(100% - 300px); display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; background: var(--panel); border: 1px solid var(--draft); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .08); font-size: 12px; }
+.draft-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.draft-bar button { font-size: 12px; padding: 3px 8px; }
+.draft-bar .draft-chip { border-style: dashed; border-color: var(--draft); color: var(--draft); cursor: grab; }
+.draft-confirm { color: var(--bad); }
+.draft-problems { margin: 0; padding-left: 18px; color: var(--warn); }
+.draft-problems button.link { padding: 0; }
+.draft-issues { margin: 0; padding-left: 18px; max-height: 150px; overflow: auto; }
+.draft-issues button.link { padding: 0; text-align: left; white-space: normal; color: var(--text); }
+.draft-panel { position: absolute; z-index: 6; top: 44px; right: 10px; width: 300px; max-height: calc(100% - 100px); overflow: auto; padding: 8px 12px 10px; background: var(--panel); border: 1px solid var(--draft); border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .12); font-size: 12px; }
+.draft-panel-head { display: flex; align-items: center; margin-bottom: 6px; }
+.draft-panel dl { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 6px 8px; margin: 6px 0 0; align-items: baseline; }
+.draft-panel dt { color: var(--muted); }
+.draft-panel dd { margin: 0; min-width: 0; }
+.draft-panel .term-picker { min-width: 0; }
+.draft-panel .term-options { position: static; width: auto; max-height: 200px; box-shadow: none; }
+.draft-was { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.draft-panel-foot { margin-top: 8px; text-align: right; }
+.graph-wrap.drafting .react-flow__handle { width: 10px; height: 10px; background: var(--draft); border-color: white; }
+.eq-node.draft-new { border: 1.5px dashed var(--draft); background: var(--draft-soft); }
+.eq-node.draft-edited { border-color: var(--draft); box-shadow: inset 3px 0 0 var(--draft); }
+.eq-node.draft-problem { border-color: var(--warn); }
+.eq-node.selected.draft-new, .eq-node.selected.draft-edited { border-color: var(--accent); }
+.eq-node.selected.draft-edited { box-shadow: inset 3px 0 0 var(--draft), 0 0 0 3px var(--accent-soft); }
+.react-flow__edge.draft-new .react-flow__edge-path { stroke: var(--draft); stroke-dasharray: 6 4; stroke-width: 2; }
+.react-flow__edge.draft-edited .react-flow__edge-path { stroke: var(--draft); stroke-width: 2; }
+.react-flow__edge.draft-problem .react-flow__edge-path { stroke: var(--warn); }
+
 /* ---------------------------------------------------------------- drawer */
 .drawer { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--border); background: var(--panel); }
 .drawer-body { flex: 1; overflow: auto; }

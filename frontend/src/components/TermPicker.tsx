@@ -8,7 +8,8 @@ interface Props {
   quantityKind?: string | null
   initial?: string
   allowClear?: boolean
-  onPick: (iri: string | null) => void
+  /** The chosen term's IRI (null: cleared), and the term itself for showing its label. */
+  onPick: (iri: string | null, term?: Term) => void
   onCancel: () => void
 }
 
@@ -52,14 +53,14 @@ export function TermPicker({ kind, quantityKind, initial = '', allowClear = true
           if (e.key === 'Escape') onCancel()
           else if (e.key === 'ArrowDown') { e.preventDefault(); setActive((a) => Math.min(a + 1, options.length - 1)) }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)) }
-          else if (e.key === 'Enter' && options[active]) onPick(options[active].iri)
+          else if (e.key === 'Enter' && options[active]) onPick(options[active].iri, options[active])
         }}
         onBlur={() => setTimeout(onCancel, 150)}
       />
       <ul className="term-options">
         {allowClear && <li className="clear" onMouseDown={() => onPick(null)}>— none —</li>}
         {options.map((t, i) => (
-          <li key={t.iri} className={i === active ? 'active' : ''} onMouseDown={() => onPick(t.iri)} title={t.iri}>
+          <li key={t.iri} className={i === active ? 'active' : ''} onMouseDown={() => onPick(t.iri, t)} title={t.iri}>
             <span>{t.label}</span>
             {t.symbol && <span className="sym">{t.symbol}</span>}
             <span className="iri">{shortIri(t.iri)}</span>

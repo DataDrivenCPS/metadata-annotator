@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import { api, ApiError } from './api'
 import {
-  autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, proposalStates, restorableProposal,
+  autofixCandidates, autofixReport, continuation, effectiveSelection, isActive, issueSelection, issuesPrompt, proposalStates, restorableProposal,
   siblingOptions, threadRuns, unchosenOptions, type AutofixChoice, type AutofixState, type ProposalState,
 } from './assistant'
+import { compileDraft, emptyDraft, type Draft } from './draft'
 import { applyClick, pruneSelection, type ClickTarget, type Modifiers } from './selection'
 import {
   emptySelection, type AgentRun, type IssueRepair, type ViewInfo, type ModelResponse, type Proposal, type ReviewIssue, type Row, type Selection, type SourceRole, type Status,
@@ -13,6 +14,15 @@ export type Tab = 'points' | 'equipment' | 'spaces' | 'connections' | 'connectio
 export type DrawerTab = 'inspector' | 'rdf' | 'history'
 
 interface Toast { kind: 'info' | 'error' | 'success'; text: string; action?: { label: string; run: () => void } }
+
+/** A check of the graph draft (validation only, no model call), for the draft object it was made of. */
+export interface DraftCheck {
+  draft: Draft; status: 'checking' | 'done' | 'error'
+  introduced: ReviewIssue[]; resolved: ReviewIssue[]; notes: string[]
+  /** Placeholder -> the id the check minted, to find a drafted object from an issue. */
+  ids: Record<string, string>
+  error: string | null
+}
 
 interface State {
   status: Status | null
@@ -56,6 +66,18 @@ interface State {
   viewing: string | null
   /** Table views for the project (curated + workbench.toml); builtin ones extend a typed table. */
   views: ViewInfo[]
+  /** Changes drawn on the graph and saved together as one edit; null when not drafting. Kept per
+   * project in browser storage so a reload does not lose them. */
+  graphDraft: Draft | null
+  draftCheck: DraftCheck | null
+  startDraft: () => void
+  setGraphDraft: (draft: Draft) => void
+  discardDraft: () => void
+  /** Validate the draft without saving it: what it would introduce or resolve. */
+  checkDraft: () => Promise<void>
+  /** Save the draft as one edit (a person's change: it locks what it sets). With ``fix``, auto-fix
+   * then works through the issues the draft introduced, without changing what it set. */
+  saveDraft: (fix: boolean) => Promise<boolean>
 
   toggleSources: () => void
   loadStatus: () => Promise<void>
@@ -121,6 +143,26 @@ const clearedChat = (projectId: string | null): State['assistantCleared'] => {
   return { runs: [], proposals: [] }
 }
 
+const draftKey = (projectId: string) => `workbench.graphDraft.${projectId}`
+
+function storedDraft(projectId: string | null): Draft | null {
+  if (!projectId) return null
+  try {
+    const d = JSON.parse(localStorage.getItem(draftKey(projectId)) ?? 'null')
+    if (d && typeof d.seq === 'number' && Array.isArray(d.equipment) && Array.isArray(d.connections)
+        && d.edits && typeof d.edits === 'object') return d as Draft
+  } catch { /* unavailable storage or an invalid saved value: no draft */ }
+  return null
+}
+
+function storeDraft(projectId: string | null, draft: Draft | null) {
+  if (!projectId) return
+  try {
+    if (draft) localStorage.setItem(draftKey(projectId), JSON.stringify(draft))
+    else localStorage.removeItem(draftKey(projectId))
+  } catch { /* the draft still works for this session */ }
+}
+
 let projectGeneration = 0
 let modelGeneration = 0
 let reconciliationGeneration = 0
@@ -181,6 +223,8 @@ export const useStore = create<State>((set, get) => ({
   autofix: null,
   viewing: null,
   views: [],
+  graphDraft: null,
+  draftCheck: null,
 
   // Remembered per project once toggled; until then the tray opens only if the project has sources.
   toggleSources: () => {
@@ -202,7 +246,7 @@ export const useStore = create<State>((set, get) => ({
     set({ projectId: id, model: null, rows: new Map(), selection: emptySelection(), proposal: null, proposalStates: {}, repairs: null,
           runs: {}, activeRunId: null, inspectId: null, drawerTab: 'inspector', assistantDraft: '', assistantSending: null, assistantIssueContext: null, assistantNewRequest: false,
           assistantCleared: clearedChat(id),
-          autofix: null, viewing: null, views: [], busy: false })
+          autofix: null, viewing: null, views: [], busy: false, graphDraft: storedDraft(id), draftCheck: null })
     if (id) {
       localStorage.setItem('workbench.project', id)
       const stored = localStorage.getItem(`workbench.sourcesOpen.${id}`)
@@ -693,6 +737,91 @@ export const useStore = create<State>((set, get) => ({
     if (viewing && get().autofix) set({ autofix: null })
     set({ viewing })
     await get().reload()
+  },
+
+  startDraft: () => {
+    if (readOnly()) return
+    const graphDraft = get().graphDraft ?? emptyDraft()
+    storeDraft(get().projectId, graphDraft)
+    set({ graphDraft })
+  },
+  setGraphDraft: (graphDraft) => {
+    storeDraft(get().projectId, graphDraft)
+    set({ graphDraft })
+  },
+  discardDraft: () => {
+    storeDraft(get().projectId, null)
+    set({ graphDraft: null, draftCheck: null })
+  },
+
+  checkDraft: async () => {
+    const { projectId, model, graphDraft: draft } = get()
+    if (!projectId || !model || !draft) return
+    const { ops, problems } = compileDraft(model, draft)
+    if (problems.length || !ops.length) return
+    const project = projectGeneration
+    const current = () => project === projectGeneration && get().projectId === projectId && get().graphDraft === draft
+    set({ draftCheck: { draft, status: 'checking', introduced: [], resolved: [], notes: [], ids: {}, error: null } })
+    try {
+      const r = await api.previewEdit(projectId, model.head, ops)
+      if (current()) set({ draftCheck: { draft, status: 'done', introduced: r.introduced, resolved: r.resolved, notes: r.notes, ids: r.ids, error: null } })
+    } catch (e) {
+      if (!current()) return
+      if (e instanceof ApiError && e.isStale) {
+        // Someone else saved meanwhile: check against the new head (the draft names ids, not revisions).
+        await get().reload()
+        if (current() && get().model?.head !== model.head) return get().checkDraft()
+      }
+      set({ draftCheck: { draft, status: 'error', introduced: [], resolved: [], notes: [], ids: {}, error: errorText(e) } })
+    }
+  },
+
+  saveDraft: async (fix) => {
+    if (readOnly()) return false
+    const { projectId, model, graphDraft: draft } = get()
+    if (!projectId || !model || !draft) return false
+    const { ops, problems } = compileDraft(model, draft)
+    if (problems.length) {
+      get().notify({ kind: 'error', text: `Settle the draft first: ${problems.length} item(s) need attention.` })
+      return false
+    }
+    if (!ops.length) { get().discardDraft(); return true }
+    const project = projectGeneration
+    const before = new Set(model.issues.map((i) => i.id))
+    set({ busy: true })
+    try {
+      const res = await api.edit(projectId, model.head, ops)
+      // Place new equipment where it was drawn, under the ids the server minted, before the
+      // reload lays out anything without a position.
+      const placed = Object.fromEntries(draft.equipment.flatMap((e) => res.ids?.[e.key] ? [[res.ids[e.key], e.position]] : []))
+      if (Object.keys(placed).length) await api.saveLayout(projectId, placed).catch(() => {})
+      if (project !== projectGeneration || get().projectId !== projectId) return false
+      get().discardDraft()
+      await get().reload()
+      const issues = get().model?.issues ?? []
+      const introduced = issues.filter((i) => i.resolution_state === 'open' && i.severity !== 'suggestion' && !before.has(i.id))
+      const saved = `Saved the draft as ${res.revision.id}`
+      const notes = res.notes.length ? ` — note: ${res.notes.join('; ')}` : ''
+      const undo = { label: 'Undo', run: () => void get().undo() }
+      if (fix && introduced.length) {
+        await get().startAutofix(autofixCandidates(issues, new Set(introduced.map((i) => i.id))))
+        get().notify({ kind: 'info', text: `${saved}. The assistant is working through the ${introduced.length} issue(s) it introduced;`
+          + ' it leaves what you set alone, and its fixes are separate revisions.' + notes })
+      } else {
+        get().notify({ kind: 'success', text: saved + (introduced.length ? ` with ${introduced.length} new issue(s)` : fix ? '; it introduced no issues' : '') + notes,
+          action: undo })
+      }
+      return true
+    } catch (e) {
+      if (project !== projectGeneration || get().projectId !== projectId) return false
+      if (e instanceof ApiError && e.isStale) {
+        await get().reload()
+        get().notify({ kind: 'error', text: 'The model changed while the draft was being saved. Your draft is kept: check it and save again.' })
+      } else get().notify({ kind: 'error', text: `Draft not saved: ${errorText(e)}` })
+      return false
+    } finally {
+      if (project === projectGeneration && get().projectId === projectId) set({ busy: false })
+    }
   },
 }))
 

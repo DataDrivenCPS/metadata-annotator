@@ -439,11 +439,12 @@ def property_literal(spec: dict, value) -> RDFLiteral:
     return RDFLiteral(str(value))
 
 
-def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
+def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list, minted: dict[str, str] | None = None) -> list:
     """Check structure; mint ids for new entities. Returns new, fully resolved operations.
 
     Virtual relations are expanded first (relations.expand), so the result holds only
     operations on stored facts. Raises OperationError listing every problem found.
+    ``minted``, when given, receives each ``new:*`` placeholder's minted id.
     """
     expanded, problems = expand(pg, vocab, [o.model_dump() for o in ops])
     origin = [i for i, _ in expanded]  # positions as written, for messages
@@ -629,6 +630,8 @@ def resolve(pg: ProjectGraph, vocab: Vocabulary, ops: list) -> list:
 
     if problems:
         raise OperationError(problems, unknown_terms, unknown_entities)
+    if minted is not None:
+        minted.update(placeholders)
     return out
 
 

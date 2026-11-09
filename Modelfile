@@ -1,0 +1,7 @@
+FROM gemma4:e4b
+
+# Set the context size to 32,768 tokens
+PARAMETER num_ctx 32768
+
+# Set output size to unlimited
+PARAMETER num_predict -1

@@ -1,27 +1,35 @@
 import dagre from '@dagrejs/dagre'
 import {
-  Background, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, Position, ReactFlow,
-  type Edge, type EdgeProps, type Node, type NodeProps,
+  Background, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, Position, ReactFlow, ReactFlowProvider, useReactFlow,
+  type Connection, type Edge, type EdgeProps, type Node, type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
+import {
+  addConnection, addEquipment, compileDraft, draftConnectionRows, draftCount, draftEquipmentRows, isDraftId, moveEquipment, setField,
+} from '../draft'
 import { isSelected } from '../selection'
 import { useStore } from '../store'
 import type { EquipmentRow, SpaceRow } from '../types'
+import { DraftBar, DraftPanel, EQUIPMENT_DRAG, PencilIcon } from './DraftPanel'
 
 const W = 190
 const H = 64
 
-type EqNodeData = { row: EquipmentRow; issues: number; proposed: boolean }
+/** How the draft touches a drawn object: drafted anew, or an existing object with drafted edits. */
+type DraftState = 'new' | 'edited' | null
+type EqNodeData = { row: EquipmentRow; issues: number; proposed: boolean; draft: DraftState; problem: boolean }
+
+const draftClass = (draft: DraftState, problem: boolean) => `${draft ? `draft-${draft}` : ''} ${problem ? 'draft-problem' : ''}`
 
 function EquipmentNode({ data, selected }: NodeProps<Node<EqNodeData>>) {
-  const { row, issues, proposed } = data
+  const { row, issues, proposed, draft, problem } = data
   return (
-    <div className={`eq-node ${selected ? 'selected' : ''} ${proposed ? 'proposed' : ''}`}>
+    <div className={`eq-node ${selected ? 'selected' : ''} ${proposed ? 'proposed' : ''} ${draftClass(draft, problem)}`}>
       <Handle type="target" position={Position.Left} />
-      <div className="eq-label">{row.label}</div>
-      <div className="eq-type">{row.type?.label ?? 'Untyped'}{row.point_count ? ` · ${row.point_count} pts` : ''}</div>
+      <div className="eq-label">{row.label || <span className="muted">unnamed</span>}</div>
+      <div className="eq-type">{row.type?.label ?? (draft === 'new' ? 'choose a type' : 'Untyped')}{row.point_count ? ` · ${row.point_count} pts` : ''}</div>
       {issues > 0 && <span className="badge warn eq-badge" title="Open issues">{issues}</span>}
       <Handle type="source" position={Position.Right} />
     </div>
@@ -128,19 +136,37 @@ function placeMissing(ids: string[], edges: [string, string][], saved: Record<st
   return placed
 }
 
+/** Containment, space and virtual edges are drawn for context; only connections are model rows here. */
+const CONTEXT_EDGE = /^(contains|part_of|location|virtual):/
+
 export function GraphView() {
+  return <ReactFlowProvider><GraphCanvas /></ReactFlowProvider>
+}
+
+function GraphCanvas() {
   const model = useStore((s) => s.model)!
   const projectId = useStore((s) => s.projectId)!
   const selection = useStore((s) => s.selection)
   const proposal = useStore((s) => s.proposal)
   const click = useStore((s) => s.click)
   const clearSelection = useStore((s) => s.clearSelection)
+  const viewing = useStore((s) => s.viewing)
+  const graphDraft = useStore((s) => s.graphDraft)
+  const startDraft = useStore((s) => s.startDraft)
+  const setGraphDraft = useStore((s) => s.setGraphDraft)
+  const discardDraft = useStore((s) => s.discardDraft)
+  const flow = useReactFlow()
+  const wrap = useRef<HTMLDivElement>(null)
   const [positions, setPositions] = useState<Record<string, [number, number]>>(model.layout)
   const [measurements, setMeasurements] = useState<Record<string, Node['measured']>>({})
   const savedRef = useRef(model.layout)
   const spaces = useMemo(() => model.view.spaces ?? [], [model])
   const [showSpaces, setShowSpaces] = useState(true)
   const withSpaces = showSpaces && spaces.length > 0
+  // Draft mode: an earlier revision being browsed is read-only, so its draft waits.
+  const draft = viewing ? null : graphDraft
+  const [focus, setFocus] = useState<string | null>(null)  // the object open in the draft editor
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
 
   // Spaces sit left of what they contain: parent space -> inner space -> equipment located there.
   const spaceLinks = useMemo(() => withSpaces ? [
@@ -172,15 +198,29 @@ export function GraphView() {
   }, [model])
   const proposed = useMemo(() => new Set(proposal?.status === 'pending' ? proposal.changes.map((c) => c.entity_id) : []), [proposal])
 
-  const at = (id: string) => ({ x: positions[id]?.[0] ?? 0, y: positions[id]?.[1] ?? 0 })
+  // What is drawn: the model, with the draft (if any) overlaid on it.
+  const equipment = useMemo(() => draft ? draftEquipmentRows(model, draft) : model.view.equipment, [model, draft])
+  const connections = useMemo(() => draft ? draftConnectionRows(model, draft) : model.view.connections, [model, draft])
+  const problems = useMemo(() => draft ? compileDraft(model, draft).problems : [], [model, draft])
+  const problemIds = new Set(problems.map((p) => p.id))
+  const equipmentIds = new Set(equipment.map((e) => e.id))
+  const draftState = (id: string): DraftState => !draft ? null : isDraftId(id) ? 'new' : draft.edits[id] ? 'edited' : null
+  const draftPositions = new Map(draft?.equipment.map((e) => [e.key, e.position]) ?? [])
+  const focused = draft && focus && (equipmentIds.has(focus) || connections.some((c) => c.id === focus)) ? focus : null
+  const labelOf = (id: string) => equipment.find((e) => e.id === id)?.label || connections.find((c) => c.id === id)?.label || id
+
+  const at = (id: string) => {
+    const p = positions[id] ?? draftPositions.get(id)
+    return { x: p?.[0] ?? 0, y: p?.[1] ?? 0 }
+  }
   const nodes: Node<EqNodeData | SpaceNodeData>[] = [
-    ...model.view.equipment.map((row) => ({
+    ...equipment.map((row) => ({
       id: row.id, type: 'equipment', position: at(row.id), measured: measurements[row.id],
-      data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
-      selected: isSelected(selection, row.id),
+      data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id), draft: draftState(row.id), problem: problemIds.has(row.id) },
+      selected: isSelected(selection, row.id) || focused === row.id,
     })),
     ...(withSpaces ? spaces.map((row) => ({
-      id: row.id, type: 'space', position: at(row.id), measured: measurements[row.id],
+      id: row.id, type: 'space', position: at(row.id), measured: measurements[row.id], connectable: false,
       data: { row, issues: issueCounts.get(row.id) ?? 0, proposed: proposed.has(row.id) },
       selected: isSelected(selection, row.id),
     })) : []),
@@ -188,48 +228,128 @@ export function GraphView() {
   const shown = new Set(nodes.map((n) => n.id))
   const virtualEdges = (model.view.relationships ?? []).filter((r) => r.virtual && r.object
     && shown.has(r.subject.id) && shown.has(r.object.id))
-  const drawn = model.view.connections.filter((c) => c.from_equipment && c.to_equipment)
+  const drawn = connections.filter((c) => c.from_equipment && c.to_equipment)
   const offsets = parallelOffsets(drawn.map((c) => ({ id: c.id, a: c.from_equipment!.id, b: c.to_equipment!.id })))
   const edges: Edge[] = [
     ...drawn.map((c) => ({
       id: c.id, source: c.from_equipment!.id, target: c.to_equipment!.id,
       type: 'parallel', data: { offset: offsets.get(c.id) ?? 0 },
       label: `${c.label}${c.medium ? ` · ${c.medium.label.replace(/^.*?: /, '')}` : ''}`,
-      selected: isSelected(selection, c.id),
+      selected: isSelected(selection, c.id) || focused === c.id,
       markerEnd: c.directed ? { type: MarkerType.ArrowClosed } : undefined,
-      className: `${proposed.has(c.id) ? 'proposed' : ''} ${(issueCounts.get(c.id) ?? 0) > 0 ? 'has-issue' : ''}`,
+      className: `${proposed.has(c.id) ? 'proposed' : ''} ${(issueCounts.get(c.id) ?? 0) > 0 ? 'has-issue' : ''} ${draftClass(draftState(c.id), problemIds.has(c.id))}`,
       animated: proposed.has(c.id),
     })),
     ...model.view.containment.map(([parent, child]) => ({
-      id: `contains:${parent}>${child}`, source: parent, target: child, selectable: false,
+      id: `contains:${parent}>${child}`, source: parent, target: child, selectable: false, reconnectable: false,
       style: { strokeDasharray: '4 4' }, label: 'contains',
     })),
     ...spaceLinks.map(([kind, space, inner]) => ({
-      id: `${kind}:${space}>${inner}`, source: space, target: inner, selectable: false,
+      id: `${kind}:${space}>${inner}`, source: space, target: inner, selectable: false, reconnectable: false,
       className: `space-edge ${kind}`, label: kind === 'part_of' ? 'contains' : 'in',
     })),
     // Virtual relations between drawn nodes (rooms adjacent to each other...); not used for the layout.
     ...virtualEdges.map((r) => ({
-      id: `virtual:${r.id}`, source: r.subject.id, target: r.object!.id, selectable: false,
+      id: `virtual:${r.id}`, source: r.subject.id, target: r.object!.id, selectable: false, reconnectable: false,
       className: 'space-edge virtual', label: r.relation.label,
     })),
   ]
 
   const unassigned = model.view.points.filter((p) => !p.equipment).length
 
+  // ----------------------------------------------------------- draft gestures
+  const current = () => useStore.getState().graphDraft
+  const connect = (c: Connection) => {
+    const d = current()
+    if (!d || !c.source || !c.target || c.source === c.target) return
+    const [next, key] = addConnection(d, c.source, c.target)
+    setGraphDraft(next)
+    setFocus(key)
+  }
+  const reconnect = (old: Edge, c: Connection) => {
+    let d = current()
+    if (!d || !c.source || !c.target || c.source === c.target) return
+    if (c.source !== old.source) d = setField(model, d, old.id, 'from_equipment', { value: c.source, label: labelOf(c.source) })
+    if (c.target !== old.target) d = setField(model, d, old.id, 'to_equipment', { value: c.target, label: labelOf(c.target) })
+    setGraphDraft(d)
+    setFocus(old.id)
+  }
+  /** New equipment centred on a point in graph coordinates. */
+  const place = (x: number, y: number) => {
+    const d = current()
+    if (!d) return
+    const [next, key] = addEquipment(d, [Math.round(x - W / 2), Math.round(y - H / 2)])
+    setGraphDraft(next)
+    setFocus(key)
+  }
+  const placeInMiddle = () => {
+    const r = wrap.current?.getBoundingClientRect()
+    if (!r) return
+    const p = flow.screenToFlowPosition({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+    const nudge = ((current()?.equipment.length ?? 0) % 6) * 24  // repeated clicks don't stack exactly
+    place(p.x + nudge, p.y + nudge)
+  }
+  const begin = () => {
+    startDraft()
+    setFocus(null)
+    setConfirmDiscard(false)
+  }
+  /** Open an object in the draft editor, starting a draft if there is none. */
+  const edit = (id: string) => {
+    if (viewing) return
+    if (!draft) begin()
+    setFocus(id)
+  }
+  const leaveDraft = () => {
+    if (draft && draftCount(draft)) setConfirmDiscard(true)
+    else { discardDraft(); setFocus(null) }
+  }
+
   return (
-    <div className="graph-wrap">
-      {unassigned > 0 && <div className="graph-note">{unassigned} point(s) are not assigned to equipment — see the Points tab.</div>}
-      {spaces.length > 0 && <label className="graph-toggle">
-        <input type="checkbox" checked={showSpaces} onChange={(e) => setShowSpaces(e.target.checked)} /> Show spaces ({spaces.length})
-      </label>}
+    <div className={`graph-wrap ${draft ? 'drafting' : ''}`} ref={wrap}>
+      {unassigned > 0 && !draft && <div className="graph-note">{unassigned} point(s) are not assigned to equipment — see the Points tab.</div>}
+      {draft && <DraftBar draft={draft} problems={problems} labelOf={labelOf} onFocus={setFocus}
+        onAddEquipment={placeInMiddle} confirming={confirmDiscard} setConfirming={setConfirmDiscard} />}
+      <div className="graph-tools">
+        {spaces.length > 0 && <label className="graph-toggle">
+          <input type="checkbox" checked={showSpaces} onChange={(e) => setShowSpaces(e.target.checked)} /> Show spaces ({spaces.length})
+        </label>}
+        {!viewing && <button className={`draft-toggle ${draft ? 'active' : ''}`} aria-pressed={!!draft}
+          title={draft ? 'Leave draft mode'
+            : 'Draft changes: draw connections, add equipment and edit names, types, media and processes, then check and save them together as one edit'}
+          onClick={() => (draft ? leaveDraft() : begin())}>
+          <PencilIcon /> {draft ? 'Drafting' : 'Draft'}
+        </button>}
+      </div>
+      {draft && focused && <DraftPanel key={focused} id={focused} model={model} draft={draft} equipment={equipment}
+        connections={connections} problems={problems} onClose={() => setFocus(null)} />}
       <ReactFlow
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} fitView minZoom={0.2}
-        nodesConnectable={false} elementsSelectable
-        onNodeClick={(e, n) => click({ id: n.id }, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }, eqIds)}
-        onEdgeClick={(e, ed) => { if (!/^(contains|part_of|location|virtual):/.test(ed.id))
-          click({ id: ed.id, relationship: true }, { ctrl: e.ctrlKey || e.metaKey, shift: false }, []) }}
-        onPaneClick={() => clearSelection()}
+        nodesConnectable={!!draft} edgesReconnectable={!!draft} elementsSelectable zoomOnDoubleClick={false} deleteKeyCode={null}
+        isValidConnection={(c) => c.source !== c.target && equipmentIds.has(c.source) && equipmentIds.has(c.target)}
+        onConnect={draft ? connect : undefined}
+        onReconnect={draft ? reconnect : undefined}
+        onDragOver={(e) => {
+          if (draft && e.dataTransfer.types.includes(EQUIPMENT_DRAG)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }
+        }}
+        onDrop={(e) => {
+          if (!draft || !e.dataTransfer.types.includes(EQUIPMENT_DRAG)) return
+          e.preventDefault()
+          const p = flow.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+          place(p.x, p.y)
+        }}
+        onNodeClick={(e, n) => {
+          if (draft) setFocus(n.type === 'equipment' ? n.id : null)
+          if (!isDraftId(n.id)) click({ id: n.id }, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey }, eqIds)
+        }}
+        onNodeDoubleClick={(_, n) => { if (n.type === 'equipment') edit(n.id) }}
+        onEdgeClick={(e, ed) => {
+          if (CONTEXT_EDGE.test(ed.id)) return
+          if (draft) setFocus(ed.id)
+          if (!isDraftId(ed.id)) click({ id: ed.id, relationship: true }, { ctrl: e.ctrlKey || e.metaKey, shift: false }, [])
+        }}
+        onEdgeDoubleClick={(_, ed) => { if (!CONTEXT_EDGE.test(ed.id)) edit(ed.id) }}
+        onPaneClick={() => { clearSelection(); setFocus(null) }}
         onNodesChange={(changes) => {
           const moved: Record<string, [number, number]> = {}
           const measured: Record<string, Node['measured']> = {}
@@ -244,9 +364,22 @@ export function GraphView() {
         }}
         onNodeDragStop={(_, __, dragged) => {
           const moved: Record<string, [number, number]> = {}
-          for (const node of dragged) moved[node.id] = [node.position.x, node.position.y]
-          savedRef.current = { ...savedRef.current, ...moved }
-          void api.saveLayout(projectId, moved)
+          let d = current()
+          const drafted: string[] = []
+          for (const node of dragged) {
+            const at: [number, number] = [node.position.x, node.position.y]
+            if (isDraftId(node.id)) { if (d) d = moveEquipment(d, node.id, at); drafted.push(node.id) }
+            else moved[node.id] = at
+          }
+          // A drafted node's position lives in the draft until it is saved under its real id.
+          if (d && drafted.length) {
+            setGraphDraft(d)
+            setPositions((p) => Object.fromEntries(Object.entries(p).filter(([id]) => !drafted.includes(id))))
+          }
+          if (Object.keys(moved).length) {
+            savedRef.current = { ...savedRef.current, ...moved }
+            void api.saveLayout(projectId, moved)
+          }
         }}
       >
         <Background />

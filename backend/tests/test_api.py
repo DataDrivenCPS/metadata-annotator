@@ -72,6 +72,54 @@ def test_edit_undo_stale_and_export(client):
     assert s.json()["summary"] == "Equipment assignments for 2 points"
 
 
+def test_draft_preview_checks_without_saving(client):
+    """The graph's draft mode checks a batch of edits, then saves it as one edit and places the
+    new nodes under the ids the server minted for its placeholders."""
+    pid = client.post("/api/projects", json={"name": "Draft"}).json()["id"]
+    with open(SAMPLES / "model.ttl", "rb") as f:
+        client.post(f"/api/projects/{pid}/import", files={"file": ("model.ttl", f, "text/turtle")})
+    model = client.get(f"/api/projects/{pid}/model").json()
+    head = model["head"]
+    eq = {e["label"].split()[0]: e for e in model["view"]["equipment"]}
+    draft = [
+        {"op": "create_equipment", "id": "new:uv", "label": "UV-1", "type": "watr:UltravioletLightUnit"},
+        {"op": "create_connection", "id": "new:line", "from_equipment": eq["TK-201"]["id"], "to_equipment": "new:uv",
+         "medium": "watr:Water-Freshwater"},
+        {"op": "update_equipment", "id": eq["RO-1"]["id"], "label": "RO-1 Membrane Skid"},
+    ]
+
+    r = client.post(f"/api/projects/{pid}/edits/preview", json={"base_revision": head, "operations": draft})
+    assert r.status_code == 200, r.text
+    preview = r.json()
+    assert set(preview["ids"]) == {"new:uv", "new:line"}
+    assert preview["ids"]["new:uv"].startswith("eq-") and preview["ids"]["new:line"].startswith("cx-")
+    assert {preview["ids"]["new:uv"], eq["RO-1"]["id"]} <= {c["entity_id"] for c in preview["changes"]}
+    assert all(i["origin"] == "validation" for i in preview["introduced"] + preview["resolved"])
+    assert client.get(f"/api/projects/{pid}/model").json()["head"] == head  # nothing saved
+
+    # A 223P connection needs a medium: malformed, reported with its problems, still nothing saved.
+    r = client.post(f"/api/projects/{pid}/edits/preview", json={"base_revision": head, "operations": [
+        {"op": "create_connection", "from_equipment": eq["TK-201"]["id"], "to_equipment": eq["RO-1"]["id"]}]})
+    assert r.status_code == 422 and any("medium is required" in p for p in r.json()["problems"])
+
+    r = client.post(f"/api/projects/{pid}/edits", json={"base_revision": head, "operations": draft})
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    after = client.get(f"/api/projects/{pid}/model").json()
+    uv = next(e for e in after["view"]["equipment"] if e["label"] == "UV-1")
+    assert saved["ids"]["new:uv"] == uv["id"]
+    line = next(c for c in after["view"]["connections"] if c["id"] == saved["ids"]["new:line"])
+    assert line["from_equipment"]["id"] == eq["TK-201"]["id"] and line["to_equipment"]["id"] == uv["id"]
+    # the connection minted its own connection points on both ends
+    ports = {p["equipment"]["id"]: p["direction"] for p in after["view"]["connection_points"]
+             if p["connection"] and p["connection"]["id"] == line["id"]}
+    assert ports == {eq["TK-201"]["id"]: "outlet", uv["id"]: "inlet"}
+
+    # checking against a revision that is no longer the head is stale
+    r = client.post(f"/api/projects/{pid}/edits/preview", json={"base_revision": head, "operations": draft})
+    assert r.status_code == 409
+
+
 def test_source_upload_preview_confirm(client):
     pid = client.post("/api/projects", json={"name": "Sources"}).json()["id"]
     with open(SAMPLES / "points_wide.csv", "rb") as f:

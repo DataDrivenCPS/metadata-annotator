@@ -1,5 +1,5 @@
 import type {
-  AgentRun, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
+  AgentRun, EditPreview, EditResponse, IssueRepair, Observation, CsvGrid, CsvImportConfig, CsvPreview, ProviderHealth, Source, SourceRegion, SourceRole, EntityDetail, EntityRelations, ModelResponse, ViewData, ViewInfo, ProjectInfo, Proposal, Revision, Selection, Status, Term, TokenUsage,
 } from './types'
 
 export class ApiError extends Error {
@@ -50,7 +50,9 @@ export const api = {
     return req<Revision>('POST', `${P(pid)}/import`, fd)
   },
   edit: (pid: string, base_revision: string, operations: Record<string, unknown>[], summary?: string) =>
-    req<{ revision: Revision; notes: string[] }>('POST', `${P(pid)}/edits`, { base_revision, operations, summary }),
+    req<EditResponse>('POST', `${P(pid)}/edits`, { base_revision, operations, summary }),
+  previewEdit: (pid: string, base_revision: string, operations: Record<string, unknown>[]) =>
+    req<EditPreview>('POST', `${P(pid)}/edits/preview`, { base_revision, operations }),
   undo: (pid: string) => req<{ head: string }>('POST', `${P(pid)}/undo`),
   redo: (pid: string) => req<{ head: string }>('POST', `${P(pid)}/redo`),
   saveLayout: (pid: string, positions: Record<string, [number, number]>) =>

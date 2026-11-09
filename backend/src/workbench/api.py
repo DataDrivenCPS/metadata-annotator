@@ -285,7 +285,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, f"Malformed operations: {exc}") from None
         rev, cand = await asyncio.to_thread(p.edit, body.base_revision, ops, body.summary)
         return {"revision": rev.model_dump(mode="json"), "changes": [c.model_dump() for c in cand.changes],
-                "notes": cand.result.notes}
+                "notes": cand.result.notes, "ids": cand.ids}
+
+    @app.post("/api/projects/{pid}/edits/preview")
+    async def preview_edit(pid: str, body: EditRequest):
+        """Check a batch of edits without saving them (the graph's draft mode): changes, notes and
+        the validation issues they would introduce or resolve."""
+        p = project(pid)
+        try:
+            ops = OperationList.validate_python(body.operations)
+        except Exception as exc:
+            raise HTTPException(422, f"Malformed operations: {exc}") from None
+        return await asyncio.to_thread(p.preview_edit, body.base_revision, ops)
 
     @app.post("/api/projects/{pid}/undo")
     def undo(pid: str):

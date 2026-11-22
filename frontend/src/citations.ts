@@ -80,7 +80,7 @@ export function recordsToShow<T extends { id: string }>(records: T[], citedId: s
 }
 
 /** "4 of 5 changes link to a source", from the proposal alone, before anything is fetched. "Link", not
- * "cite": a create operation the model cited nothing on is given all the sources it was shown. */
+ * "cite": a create operation the model cited nothing on is given sources by the workbench, not the model. */
 export function citationSummary(proposal: Proposal): { cited: number; total: number; read: number } {
   const citedIds = new Set<string>()
   const citedEntities = new Set<string>()

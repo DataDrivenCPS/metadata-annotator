@@ -370,8 +370,8 @@ page's size from `document-preview`), an image region, a CSV record, or a text p
 `citations.locatePassage` highlights text only where it finds the passage itself, so a highlight
 never lands on words the citation did not quote. A vision model's description of a page
 (`generated`) is labelled as such and never highlighted as if it were source text. A link is not
-always the model's own choice: a `create_*` operation that cites nothing is given all the sources
-it was shown (`agent/correction.py`), which is why the interface says "link", not "cite".
+always the model's own choice: a `create_*` operation that cites nothing is given sources by the
+workbench (`agent/correction.py`), which is why the interface says "link", not "cite".
 
 Sources attached to an assistant message belong to that message: the composer drops them once
 the message starts a run, and a follow-up does not inherit them (`RunManager.continued_selection`).

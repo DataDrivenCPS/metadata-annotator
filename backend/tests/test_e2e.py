@@ -92,7 +92,10 @@ def page():
         errors: list[str] = []
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
-        pg.set_default_timeout(20000)
+        # Each apply or offered choice re-validates the model (~15-20 s per validation with WaTr 0.3.rc2,
+        # slower on CI runners), so waits on the backend get minutes, not the 5 s default.
+        pg.set_default_timeout(180000)
+        sync_api.expect.set_options(timeout=180000)
         yield pg
         browser.close()
         assert not errors, errors
@@ -131,7 +134,7 @@ def test_assistant_and_review_flow(live, page):
     health.click()
     tank = page.locator(".issue", has_text="TK-301")
     # the repair engine runs server-side when the list opens; slow CI runners need more than 5 s
-    expect(tank.locator(".repair-line")).to_contain_text("have 0, need 1", timeout=60000)
+    expect(tank.locator(".repair-line")).to_contain_text("have 0, need 1")
     tank.locator(".issue-message").click()
     expect(page.locator(".inspector h4")).to_contain_text("TK-301")
     expect(page.locator("nav.tabs button.active", has_text="Issues")).to_have_count(1)
@@ -176,7 +179,7 @@ def test_assistant_and_review_flow(live, page):
 
     # Apply the dismissal, then reopen it from the toast
     card.locator("button.primary", has_text="Dismiss 1 issue(s)").click()
-    expect(page.locator(".toast")).to_contain_text("Dismissed 1 issue(s)", timeout=60000)
+    expect(page.locator(".toast")).to_contain_text("Dismissed 1 issue(s)")
     expect(health).to_contain_text("1 dismissed")
     page.locator(".toast button", has_text="Reopen").click()
     expect(health).not_to_contain_text("dismissed")
@@ -213,7 +216,7 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
     expect(page.get_by_label('Role for manual.txt', exact=True)).to_have_value('reference')
     form.locator('textarea').fill('Build the storage tank; use the manual as evidence.')
     form.get_by_role('button', name='Build model', exact=True).click()
-    page.locator('.proposal-ref button', has_text='Review in Pending edits').click(timeout=60000)
+    page.locator('.proposal-ref button', has_text='Review in Pending edits').click()
     expect(page.locator('.pending-card .proposal')).to_contain_text('TK-100')
     proposals = httpx.get(f'{base}/api/projects/{pid}/proposals', timeout=120).json()
     assert len(proposals) == 1
@@ -232,11 +235,11 @@ def test_select_multiple_sources_and_attach_reference_to_followup(live, page):
                             'operations': [], 'questions': ['What is its capacity?']}]
     page.locator('.composer textarea').fill('Check the proposed tank against this manual.')
     page.locator('.composer button.primary').click()
-    expect(page.locator('.thread')).to_contain_text('What is its capacity?', timeout=60000)
+    expect(page.locator('.thread')).to_contain_text('What is its capacity?')
     assert 'role: reference' in llm.seen[-2][0]['content']
     page.locator('.proposal-ref button', has_text='Review in Pending edits').last.click()
     page.locator('.pending-card', has_text='TK-100').first.get_by_role('button', name='Apply change', exact=True).click()
-    expect(page.locator('.toast')).to_contain_text('Applied', timeout=60000)
+    expect(page.locator('.toast')).to_contain_text('Applied')
     page.locator('.model-pane nav.tabs').get_by_role('button', name=re.compile(r'^Equipment')).click()
     page.locator('.model-pane tbody tr', has_text='TK-100').click()
     expect(page.locator('.inspector').get_by_role('button', name='equipment.txt', exact=True)).to_be_visible()
@@ -268,7 +271,7 @@ def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     composer.fill("Fix the CT-201 unit")
     composer.press("Enter")
     choices = page.locator(".needs-input.choices")
-    expect(choices).to_contain_text("Which unit does CT-201 report?", timeout=120000)
+    expect(choices).to_contain_text("Which unit does CT-201 report?")
     expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
 
     # Picking an option opens the choice in Pending edits, each option a proposed change to choose.
@@ -278,7 +281,7 @@ def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     option = card.locator(".proposal", has_text="microsiemens")
     expect(option).to_contain_text("CT-201")
     option.get_by_role("button", name="Choose this", exact=True).click()
-    expect(page.locator(".toast")).to_contain_text("Applied", timeout=60000)
+    expect(page.locator(".toast")).to_contain_text("Applied")
     expect(choices).to_contain_text("✓ microsiemens per cm")
     statuses = [p["status"] for p in httpx.get(f"{base}/api/projects/{pid}/proposals", timeout=120).json()]
     assert sorted(statuses) == ["applied", "dismissed"]  # the other option was closed
@@ -338,9 +341,9 @@ def test_checking_citations_opens_the_source_at_the_cited_place(live, page, tmp_
     page.add_init_script(f"localStorage.setItem('workbench.project', '{pid}')")
     page.goto(base)
     # Reviewed in Pending edits: the Evidence line is on the proposal's card there.
-    page.locator(".proposal-ref button", has_text="Review in Pending edits").click(timeout=60000)
+    page.locator(".proposal-ref button", has_text="Review in Pending edits").click()
     summary = page.locator(".pending-card .proposal summary", has_text="1 of 2 changes link to a source")
-    expect(summary).to_be_visible(timeout=60000)
+    expect(summary).to_be_visible()
     summary.click()
     sources = page.locator(".proposal-sources")
     expect(sources.locator("section", has_text="RENAMED")).to_contain_text("No source linked.")

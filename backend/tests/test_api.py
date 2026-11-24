@@ -219,6 +219,7 @@ def test_chat_choices_become_options_and_a_new_request_closes_the_open_proposal(
     ])
     llm.health = Mock(return_value={"ok": True})
     monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    monkeypatch.setattr("workbench.runs.HEALTH_TTL_S", 3600)  # the first run's validation may outlast the real TTL
     monkeypatch.setattr(client.app.state.runs.pool, "submit", lambda fn, *args: fn(*args))
 
     first = client.post(f"/api/projects/{pid}/assist", json={

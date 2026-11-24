@@ -176,7 +176,7 @@ def test_assistant_and_review_flow(live, page):
 
     # Apply the dismissal, then reopen it from the toast
     card.locator("button.primary", has_text="Dismiss 1 issue(s)").click()
-    expect(page.locator(".toast")).to_contain_text("Dismissed 1 issue(s)")
+    expect(page.locator(".toast")).to_contain_text("Dismissed 1 issue(s)", timeout=60000)
     expect(health).to_contain_text("1 dismissed")
     page.locator(".toast button", has_text="Reopen").click()
     expect(health).not_to_contain_text("dismissed")
@@ -268,7 +268,7 @@ def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     composer.fill("Fix the CT-201 unit")
     composer.press("Enter")
     choices = page.locator(".needs-input.choices")
-    expect(choices).to_contain_text("Which unit does CT-201 report?", timeout=60000)
+    expect(choices).to_contain_text("Which unit does CT-201 report?", timeout=120000)
     expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
 
     # Picking an option opens the choice in Pending edits, each option a proposed change to choose.

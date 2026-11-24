@@ -97,9 +97,9 @@ DEFAULT_PROFILES = {
     "watr": {
         "label": "WaTr (water treatment, on ASHRAE 223P)",
         "family": "s223",
-        # 223P first, as the skill prescribes. The skill's https://watermetadata.org/water.ttl
-        # and watr-0.2.ttl return 404; watr-0.3.rc1.ttl is the current versioned release.
-        "sources": ["https://open223.info/223p.ttl", "https://watermetadata.org/watr-0.3.rc1.ttl"],
+        # 223P first, as the skill prescribes. The skill's https://watermetadata.org/water.ttl,
+        # watr-0.2.ttl and watr-0.3.rc1.ttl return 404; watr-0.3.rc2.ttl is the current versioned release.
+        "sources": ["https://open223.info/223p.ttl", "https://watermetadata.org/watr-0.3.rc2.ttl"],
         "description": "Treatment trains: equipment with treatment processes, pipes with water media, sensors.",
     },
     "223p": {

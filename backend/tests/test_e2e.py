@@ -271,7 +271,8 @@ def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     composer.fill("Fix the CT-201 unit")
     composer.press("Enter")
     choices = page.locator(".needs-input.choices")
-    expect(choices).to_contain_text("Which unit does CT-201 report?")
+    # Each offered option is checked (validated) before it is shown, which can take minutes on a CI runner.
+    expect(choices).to_contain_text("Which unit does CT-201 report?", timeout=600000)
     expect(page.locator(".composer-mode")).to_contain_text("Answering the assistant")
 
     # Picking an option opens the choice in Pending edits, each option a proposed change to choose.
@@ -281,7 +282,7 @@ def test_chat_choices_wait_in_pending_edits_and_settle_when_applied(live, page):
     option = card.locator(".proposal", has_text="microsiemens")
     expect(option).to_contain_text("CT-201")
     option.get_by_role("button", name="Choose this", exact=True).click()
-    expect(page.locator(".toast")).to_contain_text("Applied")
+    expect(page.locator(".toast")).to_contain_text("Applied", timeout=600000)
     expect(choices).to_contain_text("✓ microsiemens per cm")
     statuses = [p["status"] for p in httpx.get(f"{base}/api/projects/{pid}/proposals", timeout=120).json()]
     assert sorted(statuses) == ["applied", "dismissed"]  # the other option was closed

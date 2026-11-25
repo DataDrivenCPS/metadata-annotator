@@ -47,7 +47,7 @@ and connections are written into RDF, and an ordered list of sources:
 
 | Profile | Family | Sources (per the BuildingMOTIF skill) |
 |---|---|---|
-| `watr` | `s223` | `https://open223.info/223p.ttl`, then `https://watermetadata.org/watr-0.3.rc1.ttl` |
+| `watr` | `s223` | `https://open223.info/223p.ttl`, then `https://watermetadata.org/watr-0.3.rc2.ttl` |
 | `223p` | `s223` | `https://open223.info/223p.ttl` |
 | `brick` | `brick` | Brick nightly `https://github.com/BrickSchema/Brick/releases/download/nightly/Brick.ttl` (1.5.x, with RealEstateCore); cached once under its URL — delete `cache/*brick*` to refresh |
 
@@ -359,6 +359,19 @@ read explicitly selected pages, at most eight pages or images per build. Text an
 are supplied according to the model's image support; source regions and page references are
 retained as evidence. Source build proposals require review before applying and preserve
 existing human locks without marking extracted values as human-confirmed.
+
+**Checking citations.** A person can check a change's sources before applying it:
+`GET /proposals/{id}/citations` lists the observations linked per changed entity, those linked by
+operations that name no one entity (relations), and those the assistant read without linking.
+The proposal summarises this from its own operations and fetches the rest when opened. There and
+in the inspector, `Citation.tsx` opens a citation through the store's `citation`, which the
+sources tray follows to the cited place: a PDF page (with `box_pt` drawn over it, placed using the
+page's size from `document-preview`), an image region, a CSV record, or a text passage.
+`citations.locatePassage` highlights text only where it finds the passage itself, so a highlight
+never lands on words the citation did not quote. A vision model's description of a page
+(`generated`) is labelled as such and never highlighted as if it were source text. A link is not
+always the model's own choice: a `create_*` operation that cites nothing is given sources by the
+workbench (`agent/correction.py`), which is why the interface says "link", not "cite".
 
 Sources attached to an assistant message belong to that message: the composer drops them once
 the message starts a run, and a follow-up does not inherit them (`RunManager.continued_selection`).

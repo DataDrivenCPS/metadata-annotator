@@ -16,8 +16,10 @@ import logging
 import re
 import secrets
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rdflib import Graph, URIRef
 from rdflib.namespace import OWL, RDF
@@ -789,6 +791,29 @@ class Project:
 
     def sources(self) -> list[Source]:
         return [Source.model_validate(b) for b in self.store.list_bodies("sources", order="created_at")]
+
+    def cited_observations(self, ids: Iterable[str]) -> list[dict[str, Any]]:
+        """The stored observations behind these ids, each naming its file. Unknown ids are left out."""
+        bodies = (self.store.get_body("observations", oid) for oid in ids)
+        return [body | {"content": {"filename": self.source(body["source_id"]).filename, **body["content"]}}
+                for body in bodies if body]
+
+    def proposal_citations(self, proposal_id: str) -> dict[str, Any]:
+        """What a proposal links to: observation ids per changed entity, the evidence it was shown
+        but did not use, and each of those observations once (a build can cite one page many times)."""
+        prop = self.proposal(proposal_id)
+        changes: dict[str, list[str]] = {}
+        other: list[str] = []  # cited by an operation that names no one entity (a relation)
+        for op in prop.operations:
+            cited = op.evidence or []
+            entity = getattr(op, "id", None)
+            ids = changes.setdefault(entity, []) if entity and cited else other
+            ids.extend(oid for oid in cited if oid not in ids)
+        all_cited = {*other, *(oid for ids in changes.values() for oid in ids)}
+        read = list(dict.fromkeys(ref.ref for ref in prop.evidence
+                                  if ref.kind == "observation" and ref.ref not in all_cited))
+        return {"changes": changes, "other": other, "read": read,
+                "observations": {o["id"]: o for o in self.cited_observations([*sorted(all_cited), *read])}}
 
     def source(self, sid: str) -> Source:
         body = self.store.get_body("sources", sid)

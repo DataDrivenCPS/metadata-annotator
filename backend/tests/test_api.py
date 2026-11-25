@@ -107,6 +107,10 @@ def test_pdf_preview_build_and_review_flow(client, monkeypatch):
     assert source['kind'] == 'pdf' and source['page_count'] == 2
     preview = client.get(f'/api/projects/{pid}/sources/{sid}/document-preview?page=2')
     assert 'TK-2' in preview.json()['text']
+    width, height = preview.json()['page_size']  # the units of a cited passage's box
+    assert width > 0 and height > 0
+    assert client.get(f'/api/projects/{pid}/sources/{sid}/document-preview?page=3').status_code == 400
+    assert client.get(f'/api/projects/{pid}/proposals/prop-none/citations').status_code == 404
     rendered = client.get(f'/api/projects/{pid}/sources/{sid}/pages/2.png')
     assert rendered.status_code == 200 and rendered.headers['content-type'] == 'image/png'
     assert client.get(f'/api/projects/{pid}/sources/{sid}/pages/0.png').status_code == 400
@@ -215,6 +219,7 @@ def test_chat_choices_become_options_and_a_new_request_closes_the_open_proposal(
     ])
     llm.health = Mock(return_value={"ok": True})
     monkeypatch.setattr("workbench.runs.make_client", lambda cfg: llm)
+    monkeypatch.setattr("workbench.runs.HEALTH_TTL_S", 3600)  # the first run's validation may outlast the real TTL
     monkeypatch.setattr(client.app.state.runs.pool, "submit", lambda fn, *args: fn(*args))
 
     first = client.post(f"/api/projects/{pid}/assist", json={

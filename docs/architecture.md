@@ -383,6 +383,13 @@ the message starts a run, and a follow-up does not inherit them (`RunManager.con
 The conversation history records what was attached to each earlier message and that it was
 read then, so a later turn knows the evidence existed without paying to read it again.
 
+An object created during a source run without a citation is linked to the supplied sources
+that name it (`agent/citing.py`, matched in code): those containing its whole label, else
+those with the most of the tags in its label, spelled with or without separators (`P-101`,
+`P101`, `P 101`, and `P-101-STS` for `P-101`). Only when none names it, such as a drawing with
+no text layer, is it linked to every source supplied. The run's progress says how many created
+objects cited nothing and how many of those were linked by name.
+
 ### Source index (`retrieval/`)
 
 Uploaded PDFs, images and text documents are indexed in the background so later work can

@@ -157,3 +157,17 @@ def search_passages(project: "Project", query: str, embedder: "Embedder | None",
         return [{"note": f"No passages match {query!r}." + (f" Indexed sources: {', '.join(indexed)}." if indexed
                                                              else " No uploaded document is indexed yet.")}], []
     return results, refs
+
+
+def named_labels(project: "Project", sid: str, name: str, page: int | None = None) -> dict[str, Any]:
+    """Where a drawing labels ``name``: the figure labels (each with its box) of an indexed source
+    that name it, matched like an uncited object's sources (agent/citing.py). ``labelled`` says
+    whether the source has any labels to look in: only the Docling parser reads them."""
+    from ..agent.citing import naming
+
+    labels = [{"text": label["text"], "bbox": label["bbox"], "page": chunk.get("page")}
+              for chunk in _all_passages(project, sid) if chunk.get("kind") == "figure"
+              for label in chunk.get("labels") or []
+              if label.get("bbox") and (page is None or chunk.get("page") in (None, page))]
+    found = naming(name, {str(i): label["text"] for i, label in enumerate(labels)})
+    return {"labelled": bool(labels), "matches": [labels[int(i)] for i in found]}

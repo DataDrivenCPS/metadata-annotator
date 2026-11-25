@@ -250,6 +250,10 @@ export interface Observation {
 }
 /** An observation cited as evidence; its content names the file, and passages add text, section and box. */
 export type Citation = Observation
+/** A citation as opened: ``about`` is the object it was opened for, to look for on a whole drawing. */
+export type OpenCitation = Citation & { about?: string | null }
+/** Where an indexed drawing labels a name (``labelled``: it has labels to look in at all). */
+export interface SourceLabels { labelled: boolean; matches: { text: string; bbox: number[]; page: number | null }[] }
 export interface ProposalCitations {
   /** Observation ids cited per changed entity. */
   changes: Record<string, string[]>
